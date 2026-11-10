@@ -775,12 +775,27 @@ def export_file(path: str):
 class ExportMp4Request(BaseModel):
     video_path: str
     audio_path: str
+    boom: float = 0.0                 # 0 = off (plain mux, unchanged); 0-100 bakes the Boom pump
+    decay: float = 180.0
+    drops_only: bool = False
+    shake: bool = False
+    song_path: Optional[str] = None   # optional: original song for the beat grid (else the wav is analysed)
+    offset: float = 0.0               # song offset (s) of audio_path inside song_path
 
 
-def _run_export(job_id: str, vp: Path, ap: Path, out: Path):
+def _run_export(job_id: str, vp: Path, ap: Path, out: Path, pump: Optional[dict] = None,
+                song: Optional[Path] = None, offset: float = 0.0):
     job = JOBS[job_id]
     try:
-        media.export_mp4(vp, ap, out, progress=lambda f: job.update(done=int(f * 100)))
+        if pump and pump["boom"] > 0:
+            from . import render as R
+            pump = dict(pump)
+            pump["song"] = _song(str(song)) if song else _song(str(ap))
+            plan = {"offset": offset} if song else {}
+            R.render_plan(vp, plan, ap, out, interp="dup", pump=pump,
+                          progress_cb=lambda f: job.update(done=int(f * 100)))
+        else:
+            media.export_mp4(vp, ap, out, progress=lambda f: job.update(done=int(f * 100)))
         out = out.resolve()
         job.update(status="done", done=100, path=str(out), url=_export_url(out),
                    size=out.stat().st_size, message="Done")
@@ -801,11 +816,15 @@ def export_mp4(req: ExportMp4Request):
         raise HTTPException(403, "audio_path must be a wav rendered into the exports folder")
     stem = ap.stem.rsplit("__", 1)[0] if ap.stem.count("__") >= 2 else ap.stem
     out = EXPORTS / f"{stem}.mp4"
+    from .render import pump_params
+    pump = pump_params({"boom": req.boom, "decay": req.decay, "drops_only": req.drops_only,
+                        "shake": req.shake})
+    sp = _safe_song(req.song_path) if (req.song_path and pump["boom"] > 0) else None
     job_id = uuid.uuid4().hex[:12]
     with _jobs_lock:
         JOBS[job_id] = {"id": job_id, "status": "running", "stage": "export", "done": 0,
                         "total": 100, "message": "Exporting mp4", "error": None}
-    _pool.submit(_run_export, job_id, vp, ap, out)
+    _pool.submit(_run_export, job_id, vp, ap, out, pump, sp, req.offset)
     return {"job_id": job_id, "status": "running"}
 
 
@@ -876,6 +895,10 @@ class RenderMp4Request(BaseModel):
     song_path: str
     plan: dict
     interp: str = "auto"
+    boom: float = 0.0
+    decay: float = 180.0
+    drops_only: bool = False
+    shake: bool = False
 
 
 _render_lock = threading.Lock()
@@ -896,7 +919,9 @@ def render_mp4(req: RenderMp4Request):
         _render.JOBS[job["id"]] = job
         out = (EXPORTS / f"{_stem(vp)}__{_stem(sp)}__{job['id']}.mp4").resolve()
         EXPORTS.mkdir(parents=True, exist_ok=True)
-        _render._pool.submit(_render._run_render, job, str(vp), str(sp), req.plan, req.interp, out)
+        _render._pool.submit(_render._run_render, job, str(vp), str(sp), req.plan, req.interp, out,
+                             None, _render.pump_params({"boom": req.boom, "decay": req.decay,
+                                                        "drops_only": req.drops_only, "shake": req.shake}))
     return {"job_id": job["id"]}
 
 
