@@ -81,8 +81,8 @@ class CDP:
         self.call("Input.dispatchMouseEvent", type=typ, x=x, y=y, button=button,
                   buttons=1 if typ != "mouseReleased" else 0, clickCount=1)
 
-    def key(self, key, code=None, shift=False, vk=0, text=None):
-        mod = 8 if shift else 0
+    def key(self, key, code=None, shift=False, vk=0, text=None, mods=0):
+        mod = (8 if shift else 0) | mods   # Alt=1 Ctrl=2 Meta=4 Shift=8
         base = dict(key=key, code=code or key, modifiers=mod, windowsVirtualKeyCode=vk)
         self.call("Input.dispatchKeyEvent", type="keyDown", **base, **({"text": text} if text else {}))
         self.call("Input.dispatchKeyEvent", type="keyUp", **base)
@@ -647,11 +647,86 @@ def main():
               c.ev("__drop('#stage', __vid)")
               ok = wait_for(c, "document.querySelectorAll('.res .chip').length>=2 && document.getElementById('up-ring').classList.contains('hidden')", 120)
               check("queued songs are scored once the video arrives", ok and c.ev("D.queue.length") == 0)
+              c.ev("S.selClip='v';deleteSel()"); c.pump(0.4)
+              check("video removed: scores grey out", c.ev("document.querySelectorAll('.res.nov').length") > 0)
+              c.ev("__drop('#stage', __vid)")
+              ok = wait_for(c, "document.querySelectorAll('.res .chip').length>=2 && document.querySelectorAll('.res.nov').length==0 && document.getElementById('up-ring').classList.contains('hidden')", 120)
+              check("dropping a new video rescores all songs", ok and bool(c.ev("!!S.video")))
               c.ev("document.getElementById('up-clear').click();document.getElementById('up-yes').click()")
               wait_for(c, "document.getElementById('up-clear').disabled", 20)
               c.ev("document.getElementById('__scratch').remove()")
         else:
             print("SKIP  drag-and-drop checks (read-only server or fixtures missing)")
+
+        # ---- select / delete / undo / link
+        sel_vid = "/tmp/amvfx/orig.mp4" if os.path.exists("/tmp/amvfx/orig.mp4") else a.video
+        scan(sel_vid)
+        wait_for(c, "document.querySelectorAll('.res').length>0 && !document.getElementById('scan').disabled", 90)
+        has_orig = bool(c.ev("!!document.querySelector('.res.orig')"))
+        g = lambda: c.ev("(()=>{const r=document.getElementById('tl').getBoundingClientRect();return {l:r.left,t:r.top,w:r.width}})()")
+        def click_a1():
+            r = g(); x, y = r["l"] + r["w"] * 0.5, r["t"] + 26 + 84 + 40
+            c.mouse("mousePressed", x, y); c.mouse("mouseReleased", x, y); c.pump(0.2)
+        def click_v1():
+            r = g(); x, y = r["l"] + r["w"] * 0.5, r["t"] + 26 + 40
+            c.mouse("mousePressed", x, y); c.mouse("mouseReleased", x, y); c.pump(0.2)
+        song_btn = "[...document.querySelectorAll('.res:not(.orig) button.use')][0].click()"
+        c.ev(song_btn)
+        wait_for(c, "/Song /.test(document.getElementById('a1-lbl').textContent) && !!S.wf", 30)
+        check("regular song: link button disabled with tooltip",
+              bool(c.ev("document.getElementById('b-link').disabled")) and "Only a video" in (c.ev("document.getElementById('b-link').title") or ""))
+        click_a1()
+        check("click A1 selects audio clip, label highlighted", c.ev("S.selClip") == "a" and bool(c.ev("document.querySelector('.lbl.a1').classList.contains('sel')")), str(c.ev("S.selClip")))
+        c.key("Escape", "Escape", vk=27); c.pump(0.2)
+        check("Esc deselects", c.ev("S.selClip") is None)
+        click_a1(); off0 = c.ev("S.offset"); use0 = c.ev("S.inUse && S.inUse.path")
+        r = g(); c.mouse("mousePressed", r["l"] + 30, r["t"] + 5); c.mouse("mouseReleased", r["l"] + 30, r["t"] + 5); c.pump(0.2)
+        check("ruler click seeks only, keeps selection", c.ev("S.selClip") == "a")
+        c.ev("document.getElementById('video-path').focus()"); c.key("Backspace", "Backspace", vk=8); c.pump(0.2)
+        check("Backspace while typing in path box removes nothing", bool(c.ev("!!S.sel")) and not c.ev("S.a1Empty"))
+        c.ev("document.activeElement.blur()")
+        c.key("Backspace", "Backspace", vk=8); c.pump(0.4)
+        check("Backspace removes audio: A1 empty, no 'In use', Fit disabled 'No audio on A1'",
+              bool(c.ev("S.a1Empty && !S.sel && !S.inUse && !document.querySelector('.res button.use.on, .res.use')")) and "No audio on A1" in (c.ev("document.getElementById('fit-msg').textContent") or "")
+              and bool(c.ev("document.getElementById('ex-wav').disabled")))
+        check("removed song stays in sources list", c.ev("document.querySelectorAll('.res').length") > 1)
+        check("undo toast shown", "Undo" in (c.ev("document.getElementById('toasts').innerText") or ""), (c.ev("document.getElementById('toasts').innerText") or "")[:60])
+        c.key("z", "KeyZ", vk=90, mods=4); c.pump(0.6)
+        wait_for(c, "!!S.sel && !!S.wf", 10)
+        check("Cmd+Z restores clip with exact offset and In use", c.ev("S.offset") == off0 and c.ev("S.inUse && S.inUse.path") == use0 and not c.ev("S.a1Empty"), f"{off0} {c.ev('S.offset')}")
+        click_a1()
+        c.ev("document.getElementById('x-a').click()"); c.pump(0.3)
+        check("x button removes selected audio", bool(c.ev("S.a1Empty")))
+        c.ev("document.querySelector('.toast-undo').click()"); c.pump(0.6)
+        check("Undo button restores audio", bool(c.ev("!!S.sel && !S.a1Empty")))
+        click_v1()
+        check("click V1 selects video clip", c.ev("S.selClip") == "v", str(c.ev("S.selClip")))
+        c.key("Delete", "Delete", vk=46); c.pump(0.5)
+        check("Delete removes video: empty player, V1 empty, scores greyed 'needs a video'",
+              not c.ev("S.video") and not c.ev("document.getElementById('empty').classList.contains('hidden')")
+              and c.ev("document.querySelectorAll('.res.nov').length") > 0 and "needs a video" in (c.ev("document.querySelector('.res').innerText") or "")
+              and c.ev("document.getElementById('video-path').value") == "")
+        check("A1 song stays loaded after video removal", bool(c.ev("!!S.sel")))
+        c.key("z", "KeyZ", vk=90, mods=2); c.pump(0.6)
+        check("Ctrl+Z restores video and scores", bool(c.ev("!!S.video")) and c.ev("document.querySelectorAll('.res.nov').length") == 0)
+        if has_orig:
+            c.ev("document.querySelector('.res.orig button.use').click()")
+            wait_for(c, "S.sel && S.sel.source==='original' && !!S.wf", 20)
+            check("original audio: link icons shown, link toggle on", c.ev("document.querySelectorAll('.lk:not(.hidden)').length") == 2 and bool(c.ev("document.getElementById('b-link').classList.contains('on')")))
+            click_a1()
+            check("linked: selecting A1 selects both", c.ev("S.selClip") == "both")
+            c.key("Backspace", "Backspace", vk=8); c.pump(0.5)
+            check("linked: Delete removes video and its original audio", not c.ev("S.video") and bool(c.ev("S.a1Empty")) and "original audio" in (c.ev("document.getElementById('toasts').innerText") or ""))
+            c.key("z", "KeyZ", vk=90, mods=4); c.pump(0.8)
+            wait_for(c, "!!S.video && !!S.sel", 10)
+            check("linked: one Undo restores both", bool(c.ev("!!S.video && !!S.sel && !S.a1Empty && S.selClip==='both'")))
+            c.ev("document.getElementById('b-link').click()"); c.pump(0.2)
+            check("link toggle off", not c.ev("document.getElementById('b-link').classList.contains('on')"))
+            click_a1(); c.key("Backspace", "Backspace", vk=8); c.pump(0.4)
+            check("unlinked: Delete on A1 removes only audio", bool(c.ev("!!S.video && S.a1Empty")))
+            c.key("z", "KeyZ", vk=90, mods=4); c.pump(0.6)
+        else:
+            print("SKIP  link checks (no original-audio row)")
 
         # ---- error path
         if os.path.exists(a.bad_video):

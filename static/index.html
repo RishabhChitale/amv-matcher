@@ -45,14 +45,16 @@
         <button id="b-fwd" title="Frame forward (Right)">&#x23F5;</button>
         <button id="b-end" title="Go to end">&#x23ED;</button>
         <button id="b-loop" title="Loop" class="toggle">&#x21BB;</button>
+        <button id="b-link" class="toggle" disabled title="Only a video and its own audio can be linked"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M6.5 9.5l3-3M7 4.6l.9-.9a2.5 2.5 0 013.5 3.5l-.9.9M9 11.4l-.9.9a2.5 2.5 0 01-3.5-3.5l.9-.9"/></svg></button>
       </div>
       <div class="vol"><span>VOL</span><input type="range" id="vol" min="0" max="100" value="80"></div>
     </div>
     <div class="ovwrap glass" id="ov-wrap"><div class="ov-lbl">Song overview</div><canvas id="ov"></canvas><button id="ov-zoom" class="linkbtn ov-zoom hidden"></button></div>
     <div class="timeline glass" id="tl-wrap">
       <div id="a1-lbl" class="a1-lbl"></div>
-      <div class="tl-labels"><div style="height:26px"></div><div class="lbl v1">V1</div><div class="lbl a1">A1</div></div>
+      <div class="tl-labels"><div style="height:26px"></div><div class="lbl v1">V1<span class="lk hidden"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M6.5 9.5l3-3M7 4.6l.9-.9a2.5 2.5 0 013.5 3.5l-.9.9M9 11.4l-.9.9a2.5 2.5 0 01-3.5-3.5l.9-.9"/></svg></span></div><div class="lbl a1">A1<span class="lk hidden"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M6.5 9.5l3-3M7 4.6l.9-.9a2.5 2.5 0 013.5 3.5l-.9.9M9 11.4l-.9.9a2.5 2.5 0 01-3.5-3.5l.9-.9"/></svg></span></div></div>
       <canvas id="tl"></canvas>
+      <button id="x-v" class="x" title="Remove video (Delete)">&times;</button><button id="x-a" class="x" title="Remove audio (Delete)">&times;</button>
     </div>
     <div class="hint" id="tl-hint">Drag the song clip on A1 to set a manual offset. Keys: Space play/pause, &larr;/&rarr; frame, Shift+arrows 1 s, J/K/L shuttle.</div>
   </section>

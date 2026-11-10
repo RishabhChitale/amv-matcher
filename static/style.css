@@ -127,3 +127,15 @@ body.dragging #fit,body.dragging .ovwrap{opacity:.5;transition:opacity var(--eas
 .vc-start b{font-size:18px}.vc-start .chip{margin:2px 0 0;align-self:flex-start}.rsub{display:block;font-weight:400;font-size:11px;color:var(--mut);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
 .ov-zoom{position:absolute;right:12px;top:8px;background:rgba(10,12,20,.78);border-radius:6px;font-size:10px;padding:1px 6px;z-index:2}
+
+.lbl{flex-direction:column;gap:3px;border-radius:6px;transition:background .15s,color .15s}
+.lbl.sel{background:rgba(139,92,246,.28);color:#fff;box-shadow:0 0 0 1px var(--v),0 0 10px rgba(139,92,246,.6)}
+.lk{display:inline-flex;color:var(--c)}.lk.hidden{display:none}
+#b-link:disabled{opacity:.4;cursor:not-allowed}
+#b-link svg{display:block}
+.x{position:absolute;width:20px;height:20px;padding:0;line-height:18px;font-size:15px;border-radius:50%;display:none;z-index:5;background:rgba(10,10,18,.85);border:1px solid var(--v);color:#fff;cursor:pointer}
+.x.show{display:block}
+.res.nov{opacity:.55;filter:grayscale(1)}
+.res.nov .ring,.res.nov .pp{color:var(--mut);border-color:var(--mut);background:none}
+.nv{font-size:10px;color:var(--mut);font-style:italic}
+.toast-undo{margin-left:10px;background:none;border:1px solid var(--c);color:var(--c);border-radius:6px;padding:1px 8px;cursor:pointer;font-size:12px}

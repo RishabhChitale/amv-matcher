@@ -71,6 +71,10 @@ async function scoreAndShow(paths, replace) {
     }
     results.sort(byScore); S.results = results;
     const first = results.find(r => D.dropped.has(r.path)) || results[0];
+    if (replace && S.sel) {   // relink the song kept on A1 to its fresh score; a stale original-audio clip is dropped
+      const keep = S.sel.source === 'original' ? null : results.find(r => r.path === S.sel.path);
+      if (keep) { S.sel = keep; S.score = keep; if (!S.manual) S.offset = keep.best_offset_s || 0; } else { S.sel = null; S.wf = null; }
+    }
     S.sel = hadSel ? (results.find(r => r.path === hadSel) || null) : S.sel;
     renderResults({too_short: short, skipped: (S.skipped || []).concat((j.skipped || []).map(shown))});
     $('status').textContent = j.message || '';
@@ -86,7 +90,7 @@ async function doVideo(file) {
   ring.classList.remove('hidden');
   const setP = p => { fg.style.strokeDashoffset = L * (1 - p); txt.textContent = `Uploading ${file.name}: ${Math.round(p * 100)}%`; };
   try {
-    setP(0); pause();
+    setP(0); pause(); clearUndo();
     const up = await upload(file, 'video', setP);
     D.names[up.path] = up.name || file.name; D.videoPath = up.path; setVideoBox(up.path); D.dropped.add(up.path);
     fg.style.strokeDashoffset = 0; txt.textContent = 'Analyzing...';

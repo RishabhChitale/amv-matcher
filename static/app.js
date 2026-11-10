@@ -4,7 +4,7 @@ const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>'
 const vid = $('vid'), aud = $('aud'), cv = $('tl'), ctx = cv.getContext('2d');
 const S = {video: null, videoPath: '', results: [], sel: null, wf: null, offset: 0, fps: 30, dur: 0,
            playing: false, rate: 1, loop: false, vidOk: false, score: null,
-           inUse: null, sp: {on: false, max: 2, plan: null, url: '', path: '', seq: 0, busy: false, cache: {}}, a1label: '', cutMarks: 0};
+           inUse: null, selClip: null, linked: true, undo: null, a1Empty: false, sp: {on: false, max: 2, plan: null, url: '', path: '', seq: 0, busy: false, cache: {}}, a1label: '', cutMarks: 0};
 const jpost = (u, b) => fetch(u, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(b)});
 const fmtMS = s => { s = Math.max(0, Math.round(s)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
 
@@ -34,7 +34,7 @@ function syncAudio(force) {
   if (S.playing && aud.paused) aud.play().catch(() => {});
 }
 function play() {
-  if (!S.dur) return;
+  if (!S.dur || !S.video) return;
   S.playing = true; $('b-play').innerHTML = '&#x23F8;';
   if (vid.currentTime >= S.dur - 0.05) vid.currentTime = 0;
   vid.playbackRate = aud.playbackRate = S.rate;
@@ -56,9 +56,15 @@ vid.addEventListener('ended', () => { if (S.loop) { seek(0); play(); } else paus
 vid.addEventListener('error', () => { S.vidOk = false; $('vid-msg').classList.remove('hidden'); });
 vid.addEventListener('loadeddata', () => { S.vidOk = true; $('vid-msg').classList.add('hidden'); });
 document.addEventListener('keydown', e => {
-  if (/INPUT|TEXTAREA/.test(e.target.tagName) && e.target.type !== 'range' && e.target.type !== 'checkbox') return;
-  const k = e.key;
-  if (k === ' ') { e.preventDefault(); $('b-play').click(); }
+  const t = e.target, tag = t.tagName || '';
+  if (t.isContentEditable || (/INPUT|TEXTAREA/.test(tag) && t.type !== 'range' && t.type !== 'checkbox')) return;
+  const k = e.key, mod = e.metaKey || e.ctrlKey, field = /INPUT|TEXTAREA/.test(tag);
+  if (mod && !e.altKey && !e.shiftKey && (k === 'z' || k === 'Z')) { if (field) return; e.preventDefault(); undoRemoval(); return; }
+  if (mod && e.altKey && e.code === 'KeyL') { e.preventDefault(); toggleLink(); return; }
+  if (mod || e.altKey) return;
+  if (k === 'Backspace' || k === 'Delete') { if (field) return; e.preventDefault(); deleteSel(); }
+  else if (k === 'Escape') selectClip(null);
+  else if (k === ' ') { e.preventDefault(); $('b-play').click(); }
   else if (k === 'ArrowLeft') { e.preventDefault(); pause(); seek(vid.currentTime - (e.shiftKey ? 1 : 1 / S.fps)); }
   else if (k === 'ArrowRight') { e.preventDefault(); pause(); seek(vid.currentTime + (e.shiftKey ? 1 : 1 / S.fps)); }
   else if (k === 'k' || k === 'K') pause();
@@ -70,7 +76,7 @@ let lastWall = 0;
 // ---------- scan ----------
 let timer = null;
 $('scan').onclick = async () => {
-  clearInterval(timer); pause();
+  clearInterval(timer); pause(); clearUndo();
   $('scan').disabled = true; $('progress').classList.remove('hidden'); $('progress-bar').style.width = '0';
   $('status').textContent = 'Starting...';
   try {
@@ -99,7 +105,7 @@ function poll(id) {
   S.video = null; timer = setInterval(tick, 400); tick();
 }
 function loadVideo(j) {
-  S.video = j.video; S.videoPath = j.video_path; S.dur = j.video.duration; S.fps = j.video.fps || 30;
+  S.linked = true; S.video = j.video; S.videoPath = j.video_path; S.dur = j.video.duration; S.fps = j.video.fps || 30;
   $('empty').classList.add('hidden'); $('vid-msg').classList.add('hidden');
   vid.src = '/api/video?path=' + encodeURIComponent(j.video_path);
   $('vinfo').textContent = `${fmtMS(S.dur)} | ${j.video.motion_tempo_bpm.toFixed(0)} BPM motion`;
@@ -139,6 +145,7 @@ function renderResults(j) {
   const sk = j.skipped || [];
   $('skipped-wrap').classList.toggle('hidden', !sk.length); $('skip-n').textContent = sk.length;
   $('skipped').innerHTML = sk.map(r => `<div>${esc(r.name || r.path || r)} <span class="muted">${esc(r.reason || '')}</span></div>`).join('');
+  if (!S.video && S.results.length) noVideoUI();
   updateFit();
 }
 function markRows() {
@@ -147,9 +154,10 @@ function markRows() {
     e.classList.toggle('sel', r === S.sel); e.classList.toggle('use', u);
     const b = e.querySelector('.use'); if (b) b.textContent = u ? '✓ In use' : 'Use this audio';
   });
+  selUI();
 }
 async function selectSong(r) {
-  pause(); S.sel = r; S.score = r;
+  pause(); S.sel = r; S.score = r; S.a1Empty = false;
   S.offset = r.best_offset_s || 0; S.manual = false;
   markRows(); applyAudioSrc();
   try { S.wf = await (await fetch('/api/waveform?path=' + encodeURIComponent(r.path))).json(); } catch (e) { S.wf = null; }
@@ -196,15 +204,16 @@ function applyAfterSplice() {
   if (was) play();
 }
 function updateFit() {
-  const u = S.inUse, orig = !!u && u.source === 'original', off = !u || orig;
+  const u = S.inUse, orig = !!u && u.source === 'original', off = !u || orig || !S.video;
   $('sp-on').disabled = off; $('sp-on').checked = S.sp.on && !off;
   $('fit-src').textContent = u ? u.name : '';
   const tip = orig ? 'Original audio is already aligned, nothing to splice' : (!u ? 'Press "Use this audio" on a source first' : '');
   $('sp-sw').title = tip; $('sp-max').title = tip;
   document.querySelectorAll('#sp-max button').forEach(b => { b.disabled = off || !S.sp.on; b.classList.toggle('on', +b.dataset.n === S.sp.max); });
-  $('ex-wav').disabled = $('ex-mp4').disabled = !u || S.exporting; staleExport();
+  $('ex-wav').disabled = $('ex-mp4').disabled = !u || !S.video || S.exporting; staleExport();
   const m = $('fit-msg'), p = S.sp.plan; let t;
-  if (!u) t = 'Press "Use this audio" on a source to fit and export it.';
+  if (!u) t = S.a1Empty ? 'No audio on A1' : 'Press "Use this audio" on a source to fit and export it.';
+  else if (!S.video) t = 'Needs a video: drop one to fit and export.';
   else if (orig) t = 'Original audio is already aligned: no shift or splice needed.';
   else if (S.sp.busy) t = 'Finding the best cuts...';
   else if (!S.sp.on || !p) t = `Single trim: ${fmtMS(S.offset)} to ${fmtMS(S.offset + S.dur)} (${Math.round(u.total_pct)}%)`;
@@ -332,6 +341,10 @@ function resize() {
 }
 window.addEventListener('resize', resize);
 const x2t = x => x / W * S.dur, t2x = t => t / (S.dur || 1) * W;
+function emptyBand(y, h, text) {
+  ctx.save(); ctx.strokeStyle = 'rgba(255,255,255,.22)'; ctx.setLineDash([6, 5]); ctx.strokeRect(6.5, y + 4.5, W - 13, h - 9); ctx.setLineDash([]);
+  ctx.fillStyle = '#8b8f9c'; ctx.font = '12px Inter,sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(text, W / 2, y + h / 2); ctx.restore();
+}
 function draw() {
   if (!W) return; ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.fillRect(0, RULER, W, V1H + A1H + PUMPH);
@@ -353,8 +366,10 @@ function draw() {
     ec.forEach((e, i) => ctx.lineTo(t2x(i / hz), y0 + V1H - e * (V1H - 6))); ctx.lineTo(t2x(ec.length / hz), y0 + V1H); ctx.fill();
     ctx.strokeStyle = 'rgba(255,255,255,.5)'; (v.cut_times || []).forEach(t => { const x = t2x(t); ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y0 + 10); ctx.stroke(); });
   }
+  else emptyBand(y0, V1H, 'Drop video here');
   // A1
   const a0 = RULER + V1H + 4, mid = a0 + (A1H - 8) / 2, w = S.wf;
+  if (!w) emptyBand(a0, A1H - 8, 'Drop songs here, or click Use this audio');
   if (w) {
     const sp = spliceActive(), off = S.offset, eo = sp ? 0 : off;
     const segs = sp ? S.sp.plan.segments : [{src_start: off, src_end: off + D, dst_start: 0}];
@@ -394,6 +409,12 @@ function draw() {
       const h = ph * Math.min(1, (0.03 * FX.boom / 100 * e.s * (e.d ? 4 : 1)) / maxA);
       ctx.fillStyle = e.d ? '#22d3ee' : '#8b5cf6'; ctx.fillRect(x - 1, p0 + ph - h, 2, h); });
   }
+  if (S.selClip) {  // selection outline
+    ctx.save(); ctx.shadowColor = '#22d3ee'; ctx.shadowBlur = 14; ctx.strokeStyle = '#67e8f9'; ctx.lineWidth = 2;
+    if (S.selClip !== 'a') ctx.strokeRect(1, RULER + 1, W - 2, V1H - 2);
+    if (S.selClip !== 'v') ctx.strokeRect(1, a0 + 1, W - 2, A1H - 10);
+    ctx.restore();
+  }
   // playhead
   const px = t2x(vid.currentTime); ctx.shadowColor = '#ff3b4e'; ctx.shadowBlur = 10; ctx.strokeStyle = '#ff3b4e'; ctx.lineWidth = 2;
   ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, H); ctx.stroke(); ctx.lineWidth = 1; ctx.shadowBlur = 0;
@@ -409,7 +430,9 @@ function setOffset(o) {
 }
 cv.addEventListener('pointerdown', e => {
   const r = cv.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
-  if (y > RULER + V1H && y < RULER + V1H + A1H && S.wf && !locked()) drag = {kind: 'clip', x, off: S.offset};
+  const inV1 = y >= RULER && y < RULER + V1H, inA1 = y >= RULER + V1H && y < RULER + V1H + A1H;
+  if (y >= RULER) selectClip(inV1 ? 'v' : inA1 ? 'a' : null);   // ruler clicks only seek
+  if (inA1 && S.wf && !locked()) drag = {kind: 'clip', x, off: S.offset};
   else { drag = {kind: 'seek'}; seek(x2t(x)); }
   cv.setPointerCapture(e.pointerId);
 });
@@ -433,7 +456,8 @@ function readout() {
   $('vc-trim').textContent = !r ? '--' : orig ? 'Whole track' : spliceActive() ? partsText(S.sp.plan.segments) : 'Use ' + fmtMS(S.offset) + ' to ' + fmtMS(S.offset + S.dur);
   let l = ''; if (r) l = orig ? 'Original audio (from video)' : spliceActive() ? 'Spliced song, ' + (S.sp.plan.cuts.length + 1) + ' clips' : `Song ${fmtMS(S.offset)} to ${fmtMS(S.offset + S.dur)} (${S.manual ? 'manual' : 'auto'} start)`;
   $('a1-lbl').textContent = l; $('a1-lbl').classList.toggle('hidden', !l);
-  $('tl-hint').textContent = orig ? 'Original audio is already aligned, so there is no offset to drag.' : spliceActive() ? 'Smart splice is on: turn it off in Fit to drag the start.' : 'Drag the song clip on A1 (or the bracket in Song overview) to set a manual start. Keys: Space play/pause, \u2190/\u2192 frame, Shift+arrows 1 s, J/K/L shuttle.';
+  const hint = orig ? 'Original audio is already aligned, so there is no offset to drag.' : spliceActive() ? 'Smart splice is on: turn it off in Fit to drag the start.' : 'Drag the song clip on A1 (or the bracket in Song overview) to set a manual start. Keys: Space play/pause, \u2190/\u2192 frame, Shift+arrows 1 s, J/K/L shuttle.';
+  $('tl-hint').textContent = hint + ' Backspace/Delete removes the selected clip, Cmd+Z undoes.';
 }
 $('vc-reset').onclick = () => { if (!S.sel) return; S.manual = false; S.offset = S.sel.best_offset_s || 0; syncAudio(true); readout(); draw(); drawOv(); staleExport(); rescore(); };
 async function rescore() {
@@ -504,4 +528,116 @@ const scrubTo = e => { const r = $('scrub').getBoundingClientRect(); seek((e.cli
 $('scrub').addEventListener('pointerdown', e => { $('scrub').setPointerCapture(e.pointerId); $('scrub').dragging = true; scrubTo(e); });
 $('scrub').addEventListener('pointermove', e => { if ($('scrub').dragging) scrubTo(e); });
 $('scrub').addEventListener('pointerup', () => { $('scrub').dragging = false; });
-resize(); resizeOv();
+
+// ---------- select / delete / undo / link ----------
+const linkable = () => !!(S.video && S.sel && S.sel.source === 'original');   // only a video + its own audio can be linked
+const linkOn = () => S.linked && linkable();
+function selectClip(c) {
+  if (c === 'a' && !S.sel) c = null;
+  if (c === 'v' && !S.video) c = null;
+  if (c && linkOn()) c = 'both';
+  S.selClip = c; selUI(); draw();
+}
+let hov = null;
+function placeX(b, top, on) { b.style.left = (cv.offsetLeft + W - 26) + 'px'; b.style.top = (cv.offsetTop + top) + 'px'; b.classList.toggle('show', !!on); }
+function xUI() {
+  const c = S.selClip;
+  placeX($('x-v'), RULER + 4, S.video && (c === 'v' || c === 'both' || hov === 'v'));
+  placeX($('x-a'), RULER + V1H + 8, S.sel && (c === 'a' || c === 'both' || hov === 'a'));
+}
+function selUI() {
+  let c = S.selClip;
+  if ((c === 'v' && !S.video) || (c === 'a' && !S.sel)) c = null;
+  if (c === 'both' && !(S.video && S.sel)) c = S.video ? 'v' : S.sel ? 'a' : null;
+  if (c === 'both' && !linkOn()) c = 'a';
+  S.selClip = c;
+  const lk = linkOn();
+  document.querySelector('.lbl.v1').classList.toggle('sel', c === 'v' || c === 'both');
+  document.querySelector('.lbl.a1').classList.toggle('sel', c === 'a' || c === 'both');
+  document.querySelectorAll('.lk').forEach(e => e.classList.toggle('hidden', !lk));
+  const b = $('b-link'); b.classList.toggle('on', lk); b.disabled = !linkable();
+  b.title = linkable() ? 'Linked selection (Cmd+Opt+L)' : 'Only a video and its own audio can be linked';
+  xUI();
+}
+function toggleLink() {
+  if (!linkable()) return;
+  S.linked = !S.linked; if (!S.linked && S.selClip === 'both') S.selClip = 'a';
+  selUI(); draw();
+}
+$('b-link').onclick = toggleLink;
+cv.addEventListener('pointermove', e => {
+  if (drag) return; const y = e.clientY - cv.getBoundingClientRect().top;
+  hov = y >= RULER && y < RULER + V1H ? 'v' : y >= RULER + V1H && y < RULER + V1H + A1H ? 'a' : null; xUI();
+});
+cv.addEventListener('pointerleave', e => { if (!(e.relatedTarget && e.relatedTarget.classList && e.relatedTarget.classList.contains('x'))) { hov = null; xUI(); } });
+['x-v', 'x-a'].forEach(id => { $(id).onpointerleave = () => { hov = null; xUI(); }; $(id).onclick = e => { e.stopPropagation(); selectClip(id === 'x-v' ? 'v' : 'a'); deleteSel(); }; });
+$('stage').addEventListener('pointerdown', () => { if (S.video) selectClip('v'); });
+document.addEventListener('pointerdown', e => {
+  if (S.selClip && e.target.closest && !e.target.closest('#tl-wrap,#stage,.res,button,input,select,label,.toast,#ov-wrap')) selectClip(null);
+});
+window.addEventListener('resize', xUI);
+
+function noVideoUI() {   // greys the scores: they were computed against a video that is gone
+  document.querySelectorAll('.res').forEach(e => {
+    e.classList.add('nov');
+    if (!e.querySelector('.nv')) { const d = document.createElement('div'); d.className = 'nv'; d.textContent = 'needs a video'; e.querySelector('.rtxt').appendChild(d); }
+  });
+}
+function clearUndo() { if (S.undo && S.undo.t) S.undo.t.close(); S.undo = null; }
+function snapState(kind) {
+  const vb = $('video-path');
+  return {kind, video: S.video, videoPath: S.videoPath, dur: S.dur, fps: S.fps, sel: S.sel, score: S.score, wf: S.wf, offset: S.offset, manual: S.manual,
+          inUse: S.inUse, results: S.results.slice(), short: S.short, skipped: S.skipped, linked: S.linked,
+          sp: {on: S.sp.on, plan: S.sp.plan, url: S.sp.url, path: S.sp.path}, dvp: D.videoPath, vbox: vb.value, vreal: vb.dataset.real, vtitle: vb.title};
+}
+function dropAudio() {
+  pause(); S.sel = null; S.score = null; S.wf = null; S.inUse = null; S.sp.plan = null; S.sp.url = ''; S.a1Empty = true;
+  aud.removeAttribute('src'); aud.load(); aud.dataset.cur = '';
+  vid.style.transform = ''; vid.style.filter = '';
+  buildPump(); readout(); seek(0); draw(); drawOv(); updateFit(); markRows();
+}
+function dropVideo() {
+  pause(); const keep = S.sel && S.sel.source === 'original' ? S.inUse : null;
+  S.video = null; S.videoPath = ''; D.videoPath = ''; S.vidOk = false;
+  vid.removeAttribute('src'); vid.load(); vid.style.transform = ''; vid.style.filter = '';
+  $('vid-msg').classList.add('hidden'); $('empty').textContent = 'Drop video here'; $('empty').classList.remove('hidden');
+  const vb = $('video-path'); vb.value = ''; delete vb.dataset.real; vb.title = '';
+  ['vc-dur', 'vc-bpm', 'vc-cuts'].forEach(i => { $(i).textContent = '--'; }); $('vinfo').textContent = '';
+  S.results = S.results.filter(r => r.source !== 'original');
+  renderResults({too_short: S.short, skipped: S.skipped});
+  if (keep) S.inUse = keep;
+  seek(0); markRows(); updateFit(); readout();
+}
+function pushUndo(sn, text) {
+  clearUndo();
+  const t = toast(text, {ttl: 6000}), b = document.createElement('button');
+  b.className = 'toast-undo'; b.textContent = 'Undo'; b.onclick = undoRemoval; t.el.insertBefore(b, t.el.lastChild);
+  S.undo = {sn, t};
+}
+function deleteSel() {
+  const c = S.selClip; if (!c) return;
+  if ((c !== 'a' && !S.video) || (c !== 'v' && !S.sel)) return;
+  const sn = snapState(c), vn = S.video ? (D.names[S.videoPath] || baseName(S.videoPath)) : '', an = S.sel ? (S.sel.source === 'original' ? 'original audio' : S.sel.name) : '';
+  let msg;
+  if (c === 'a') { dropAudio(); msg = `Removed ${an} from A1 ·`; }
+  else if (c === 'v') { dropVideo(); msg = `Removed ${vn} from V1 ·`; }
+  else { dropAudio(); dropVideo(); msg = `Removed ${vn} and its original audio ·`; }
+  S.selClip = null; selUI(); draw(); pushUndo(sn, msg);
+}
+function undoRemoval() {
+  const u = S.undo; if (!u) return; const sn = u.sn; clearUndo(); pause();
+  if (sn.kind !== 'a') {
+    S.results = sn.results; S.short = sn.short; S.skipped = sn.skipped;
+    loadVideo({video: sn.video, video_path: sn.videoPath}); S.linked = sn.linked;
+    D.videoPath = sn.dvp; const vb = $('video-path'); vb.value = sn.vbox; vb.title = sn.vtitle || '';
+    if (sn.vreal) vb.dataset.real = sn.vreal; else delete vb.dataset.real;
+  }
+  if (sn.kind !== 'v') {
+    S.sel = sn.sel; S.score = sn.score; S.wf = sn.wf; S.offset = sn.offset; S.manual = sn.manual; S.inUse = sn.inUse; S.a1Empty = false;
+    Object.assign(S.sp, sn.sp); aud.dataset.cur = ''; applyAudioSrc();
+  } else if (S.sel === sn.sel && sn.sel && sn.sel.source === 'original') S.inUse = sn.inUse;
+  renderResults({too_short: S.short, skipped: S.skipped});
+  buildPump(); readout(); seek(0); draw(); drawOv(); updateFit(); markRows();
+  selectClip(sn.kind);
+}
+resize(); resizeOv(); selUI();
