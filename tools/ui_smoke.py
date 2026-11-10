@@ -342,6 +342,7 @@ def main():
         check("scrub bar drag seeks to ~80%", abs(tv - dur * 0.8) < dur * 0.06, f"t={tv:.2f}")
 
         # ---- clip drag + live rescore
+        c.ev("setOffset(Math.max(0,(S.sel.duration-S.dur))/2)"); c.pump(0.3)   # known mid-range start so the drag is not clamped at an edge
         off0 = c.ev("S.offset")
         sc_before = c.ev("S.score && S.score.total_pct")
         maxoff = c.ev("S.sel.duration - S.dur")
@@ -453,8 +454,10 @@ def main():
             check("song in use -> A1 label '(auto start)'", "auto start" in lbl, lbl)
             ow = c.ev("(()=>{const r=document.getElementById('ov').getBoundingClientRect();return {l:r.left,t:r.top,w:r.width,h:r.height}})()")
             check("song overview canvas has size", ow["w"] > 100 and ow["h"] > 20, str(ow))
-            c.mouse("mousePressed", ow["l"] + ow["w"] * 0.05, ow["t"] + ow["h"] / 2)
-            c.mouse("mouseReleased", ow["l"] + ow["w"] * 0.05, ow["t"] + ow["h"] / 2)
+            # click outside the current window so the overview jumps (inside it starts a drag instead)
+            fr = c.ev("(()=>{const T=S.wf.duration,e=S.offset+S.dur;return e+0.5>=T?(S.offset*0.5)/T:(e+(T-e)/2)/T})()")
+            c.mouse("mousePressed", ow["l"] + ow["w"] * fr, ow["t"] + ow["h"] / 2)
+            c.mouse("mouseReleased", ow["l"] + ow["w"] * fr, ow["t"] + ow["h"] / 2)
             c.pump(0.8)
             lbl = c.ev("document.getElementById('a1-lbl').textContent") or ""
             check("overview click sets manual start; Reset button shown", "manual start" in lbl and not c.ev("document.getElementById('vc-reset').classList.contains('hidden')"), lbl)
