@@ -848,6 +848,26 @@ def main():
                 ok = wait_for(c, "!!document.getElementById('rs-link') || /failed/.test(document.getElementById('rd-stage').textContent)", 120)
                 check("Resolve export yields a zip link", bool(c.ev("!!document.getElementById('rs-link')")), str(c.ev("document.getElementById('rd-stage').textContent")))
 
+        # ---- MJPG .avi plays through the automatic H.264 preview proxy
+        if not ro:
+            try:
+                sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+                from tests.synth import make_video_jumps
+                os.makedirs("/tmp/amvfx/avi", exist_ok=True)
+                if not os.path.exists("/tmp/amvfx/avi/mjpg.avi"):
+                    make_video_jumps("/tmp/amvfx/avi/mjpg.avi", [i * 0.5 for i in range(1, 19)], seconds=10.0)
+                scan("/tmp/amvfx/avi/mjpg.avi")
+                wait_for(c, "document.querySelectorAll('.res').length>0 && !document.getElementById('scan').disabled", 90)
+                okr = wait_for(c, "document.getElementById('vid').readyState>=2", 90)
+                c.ev("(()=>{const v=document.getElementById('vid');v.muted=true;v.currentTime=0;v.play().catch(()=>{})})()")
+                c.pump(1.5)
+                t = c.ev("document.getElementById('vid').currentTime") or 0
+                msg = c.ev("(()=>{const m=document.getElementById('vid-msg');return !!m&&!m.classList.contains('hidden')&&getComputedStyle(m).display!=='none'})()")
+                check("MJPG .avi plays via preview proxy (currentTime advances, no 'can't preview')",
+                      bool(okr) and t > 0.3 and not msg, f"ready={okr} t={t:.2f} msg={msg}")
+            except Exception as e:
+                print("SKIP  avi proxy check:", e)
+
         # ---- docs screenshot: auto-synced pair with a known slow section + locked original
         if not ro:
             sl_dir = os.path.join(prof, "slow")
