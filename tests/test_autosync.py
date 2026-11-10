@@ -300,7 +300,10 @@ def test_untouched_plan_zero_effort():
     plan = {"tempo_ratio": 1.0, "segments": [{"src_start": 0, "src_end": 30, "dst_start": 0}], "retime": None}
     e = effort_of(plan, 30.0)
     assert e["effort_pct"] == 0 and e["sections"] == 0 and e["splices"] == 0
-    heavy = {"tempo_ratio": 1.05, "segments": [{}, {}, {}],
+    heavy = {"tempo_ratio": 1.05,
+             "segments": [{"src_start": 0, "src_end": 10, "dst_start": 0},
+                          {"src_start": 40, "src_end": 50, "dst_start": 10},
+                          {"src_start": 5, "src_end": 15, "dst_start": 20}],
              "retime": {"sections": [{"v_start": 0, "v_end": 15, "speed": 1.3}]}}
     assert effort_of(heavy, 30.0)["effort_pct"] > e["effort_pct"]
     assert 0 < EFFORT_K
@@ -392,3 +395,55 @@ def test_arrange_skipped_under_tight_budget(monkeypatch):
     monkeypatch.setattr(AS, "plan_arrangement", lambda *a, **k: called.append(1) or {"eligible": False})
     auto_sync(make_song(90.0), make_video(np.arange(1, 56) * 0.52, tempo=115.4), budget_s=3.0)
     assert not called
+
+
+# ---- round 7: effort = deviation from untouched material; natural total; original-audio lock ----
+def test_effort_rearranged_fraction_and_scale():
+    from amv_matcher.autosync import effort_of, rearranged_fraction
+    plain = [{"src_start": 3, "src_end": 13, "dst_start": 0}, {"src_start": 13, "src_end": 33, "dst_start": 10}]
+    assert rearranged_fraction(plain) == 0.0                      # contiguous = one plain trim
+    one_move = [{"src_start": 0, "src_end": 27, "dst_start": 0}, {"src_start": 50, "src_end": 53, "dst_start": 27}]
+    assert abs(rearranged_fraction(one_move) - 0.1) < 1e-9        # 3 of 30 s differ
+    half = [{"src_start": 0, "src_end": 15, "dst_start": 0}, {"src_start": 60, "src_end": 75, "dst_start": 15}]
+    assert abs(rearranged_fraction(half) - 0.5) < 1e-9
+    small = effort_of({"segments": one_move}, 30.0)["effort_pct"]
+    big = effort_of({"segments": half}, 30.0)["effort_pct"]
+    assert 0 < small < big <= 100
+    # retime term: weighted dev / guardrail * retimed fraction; tempo: |ratio-1| / guardrail
+    rt = {"sections": [{"v_start": 0, "v_end": 30, "speed": 1.25}]}
+    assert abs(effort_of({"retime": rt}, 30.0)["effort_pct"] - 35.0) < 0.1
+    assert abs(effort_of({"tempo_ratio": 1.08}, 30.0)["effort_pct"] - 20.0) < 0.1
+    mx = effort_of({"segments": half, "retime": rt, "tempo_ratio": 1.08}, 30.0)["effort_pct"]
+    assert 0 < mx <= 100
+
+
+def test_natural_total_exposed():
+    r = auto_sync(make_song(90.0), make_video(np.arange(1, 56) * 0.52, duration=30.0, tempo=115.4))
+    f = r["final"]
+    assert f["natural_total_pct"] == int(round(r["steps"][0]["score_before"]))
+    assert f["natural_total_pct"] <= f["total_pct"]
+
+
+def test_original_audio_locked():
+    cuts = np.arange(1, 56) * 0.52
+    song, vid = make_song(60.0), make_video(cuts, duration=30.0, tempo=115.4)
+    r = auto_sync(song, vid, original=True)
+    p = r["plan"]
+    assert p["original_locked"] is True and "original audio locked" in r["limits_hit"]
+    assert p["offset"] == 0 and p["tempo_ratio"] == 1.0
+    assert len(p["segments"]) == 1 and p["segments"][0]["src_start"] == 0 and p["segments"][0]["dst_start"] == 0
+    assert not any(s["tool"] in ("tempo", "splice", "arrange") and s["kept"] for s in r["steps"])
+    assert r["final"]["effort"]["rearranged_fraction"] == 0
+    assert any(s["tool"] == "retime" for s in r["steps"]) or r["plan"]["retime"] is None
+    r2 = auto_sync(make_song(), make_video(slow_section_cuts()), original=True, min_gain=0.05)
+    assert r2["plan"]["retime"]                                   # retime is still allowed
+    assert r2["plan"]["offset"] == 0
+
+
+def test_original_unlock_restores_old_behaviour():
+    cuts = np.arange(1, 56) * 0.52
+    song, vid = make_song(90.0), make_video(cuts, duration=30.0, tempo=115.4)
+    a = auto_sync(song, vid)
+    b = auto_sync(song, vid, original=True, unlock_original=True)
+    assert b["plan"]["original_locked"] is False and "original audio locked" not in b["limits_hit"]
+    assert b["final"]["total_pct"] == a["final"]["total_pct"]
