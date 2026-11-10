@@ -38,6 +38,9 @@ def test_proxy_encode_replace_retried_and_tmp_cleaned(monkeypatch, tmp_path):
 @pytest.mark.parametrize("win", [True, False])
 def test_cache_keys_case_insensitive_on_windows(monkeypatch, tmp_path, win):
     monkeypatch.setattr(os.path, "normcase", (lambda p: p.lower()) if win else (lambda p: p))
+    if not win:
+        # real Windows would otherwise canonicalise case via GetLongPathName; force the POSIX path
+        monkeypatch.setattr(winsafe, "_is_win", lambda: False)
     f = tmp_path / "Clip.MP4"
     f.write_bytes(b"x")
     low = Path(str(f).lower())
