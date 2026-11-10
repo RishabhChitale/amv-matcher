@@ -81,11 +81,17 @@ def test_shutdown_guard_graceful_and_fallback():
 
 
 def test_kill_children_kills_descendants_only():
-    import subprocess, sys, time
-    p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    import os, subprocess, sys, time
+    code = ("import subprocess,sys,time;"
+            "subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)']);time.sleep(60)")
+    kids = [subprocess.Popen([sys.executable, "-c", code]) for _ in range(2)]
+    time.sleep(1.5)
+    deep = ns.descendants()
+    assert os.getpid() not in deep and len(deep) >= 4
     ns.kill_children()
-    for _ in range(50):
-        if p.poll() is not None:
+    for _ in range(100):
+        if all(k.poll() is not None for k in kids):
             break
         time.sleep(0.1)
-    assert p.poll() is not None
+    assert all(k.poll() is not None for k in kids)
+    assert os.getpid() > 0  # the test process survived

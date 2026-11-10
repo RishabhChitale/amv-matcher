@@ -249,32 +249,59 @@ class CloseGuard:
             self.finished.set()
 
 
-def kill_children() -> None:
-    """SIGKILL every descendant of this process (worker pool, resource tracker, ffmpeg/rife they started)."""
-    me = os.getpid()
-    if sys.platform.startswith("win"):
-        try:
-            subprocess.run(["taskkill", "/PID", str(me), "/T", "/F"], capture_output=True)
-        except Exception:  # noqa: BLE001
-            pass
-        return
+def _parent_map() -> dict:
+    """{parent pid: [child pids]} for every process (psutil if present, else ps / PowerShell CIM)."""
+    kids: dict = {}
     try:
+        import psutil  # type: ignore
+        for pr in psutil.process_iter(["pid", "ppid"]):
+            kids.setdefault(pr.info["ppid"], []).append(pr.info["pid"])
+        return kids
+    except ImportError:
+        pass
+    if sys.platform.startswith("win"):
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId) $($_.ParentProcessId)\" }"],
+            capture_output=True, text=True, timeout=20).stdout
+        pairs = [ln.split() for ln in out.splitlines()]
+    else:
         out = subprocess.run(["ps", "-axo", "pid=,ppid="], capture_output=True, text=True, timeout=5).stdout
-        kids: dict = {}
-        for ln in out.splitlines():
-            a = ln.split()
-            if len(a) == 2:
-                kids.setdefault(int(a[1]), []).append(int(a[0]))
-        todo, seen = list(kids.get(me, [])), []
-        while todo:
-            p = todo.pop()
-            seen.append(p)
-            todo.extend(kids.get(p, []))
+        pairs = [ln.split() for ln in out.splitlines()]
+    for a in pairs:
+        if len(a) == 2 and a[0].isdigit() and a[1].isdigit():
+            kids.setdefault(int(a[1]), []).append(int(a[0]))
+    return kids
+
+
+def descendants(root=None) -> list:
+    """All descendant pids of root (default: this process), deepest first. Never includes root itself."""
+    me = os.getpid() if root is None else root
+    kids = _parent_map()
+    order, todo = [], list(kids.get(me, []))
+    while todo:
+        p = todo.pop()
+        if p == me or p in order:
+            continue
+        order.append(p)
+        todo.extend(kids.get(p, []))
+    return order[::-1]
+
+
+def kill_children() -> None:
+    """Hard-kill every descendant of this process (worker pool, resource tracker, ffmpeg/rife they started).
+    Never touches our own pid."""
+    me = os.getpid()
+    try:
+        pids = [p for p in descendants(me) if p != me]
         import signal as _sg
-        for p in seen:
+        for p in pids:
             try:
-                os.kill(p, _sg.SIGKILL)
-            except OSError:
+                if sys.platform.startswith("win"):
+                    subprocess.run(["taskkill", "/PID", str(p), "/F"], capture_output=True, timeout=10)
+                else:
+                    os.kill(p, _sg.SIGKILL)
+            except Exception:  # noqa: BLE001
                 pass
     except Exception:  # noqa: BLE001
         log.exception("kill_children")
@@ -342,3 +369,119 @@ class ShutdownGuard:
                 except OSError:
                     return
         threading.Thread(target=waiter, daemon=True, name="signal-waiter").start()
+
+
+# ---- worker-child guard + single instance ------------------------------------------------------------------------
+
+def is_worker_child(argv=None) -> bool:
+    """True inside a multiprocessing child / resource tracker: those must never build a window."""
+    argv = sys.argv if argv is None else argv
+    if any(a.startswith("--multiprocessing-fork") for a in argv):
+        return True
+    if "-c" in argv and any("multiprocessing" in a for a in argv):
+        return True
+    try:
+        import multiprocessing
+        return multiprocessing.parent_process() is not None
+    except Exception:
+        return False
+
+
+class SingleInstance:
+    """One app per data dir. The first instance holds an exclusive lock file and listens on a loopback socket; a
+    second launch hands its args over (token-checked) so the first one focuses its window, then exits."""
+
+    def __init__(self, data_dir, on_activate=None):
+        self.dir = Path(data_dir)
+        self.on_activate = on_activate
+        self._lock = None
+        self._srv = None
+        self.token = ""
+
+    @property
+    def _lock_path(self) -> Path:
+        return self.dir / "instance.lock"
+
+    @property
+    def _info_path(self) -> Path:
+        return self.dir / "instance.json"
+
+    def acquire(self) -> bool:
+        self.dir.mkdir(parents=True, exist_ok=True)
+        f = open(self._lock_path, "a+")
+        try:
+            if sys.platform.startswith("win"):
+                import msvcrt
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            f.close()
+            return False
+        self._lock = f
+        self._listen()
+        return True
+
+    def _listen(self) -> None:
+        import secrets
+        import socket
+        import threading
+        self.token = secrets.token_hex(16)
+        self._srv = socket.socket()
+        self._srv.bind(("127.0.0.1", 0))
+        self._srv.listen(4)
+        tmp = self._info_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"pid": os.getpid(), "port": self._srv.getsockname()[1], "token": self.token}))
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
+        os.replace(tmp, self._info_path)
+        threading.Thread(target=self._serve, daemon=True, name="single-instance").start()
+
+    def _serve(self) -> None:
+        import hmac
+        while True:
+            try:
+                c, _ = self._srv.accept()
+            except OSError:
+                return
+            try:
+                c.settimeout(2.0)
+                data = b""
+                while not data.endswith(b"\n") and len(data) < 65536:
+                    chunk = c.recv(4096)
+                    if not chunk:
+                        break
+                    data += chunk
+                msg = json.loads(data.decode("utf-8"))
+                if hmac.compare_digest(str(msg.get("token", "")), self.token) and self.on_activate:
+                    self.on_activate([str(a) for a in msg.get("args", [])])
+            except Exception:
+                log.exception("single-instance message")
+            finally:
+                c.close()
+
+    @staticmethod
+    def notify_existing(data_dir, args=()) -> bool:
+        """Tell the running instance to focus (and open args). False if nobody answered."""
+        import socket
+        try:
+            info = json.loads((Path(data_dir) / "instance.json").read_text())
+            with socket.create_connection(("127.0.0.1", int(info["port"])), timeout=2.0) as s:
+                s.sendall((json.dumps({"token": info["token"], "args": list(args)}) + "\n").encode("utf-8"))
+            return True
+        except Exception:
+            return False
+
+    def release(self) -> None:
+        try:
+            if self._srv:
+                self._srv.close()
+            if self._lock:
+                self._lock.close()   # closing drops the flock
+            self._info_path.unlink()
+        except OSError:
+            pass

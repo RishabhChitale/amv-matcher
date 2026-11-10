@@ -5,6 +5,9 @@
 """
 from __future__ import annotations
 
+import multiprocessing
+multiprocessing.freeze_support()   # FIRST statement: a frozen spawn child runs its worker and exits before any app import
+
 import json
 import logging
 import os
@@ -265,6 +268,11 @@ def build_menu(fire):
 def run_window() -> int:
     import webview
     from webview.dom import DOMEventHandler
+    inst = ns.SingleInstance(paths.DATA)
+    if not inst.acquire():   # already running: focus that window (passing any file args), never open a second one
+        LOG.info("another instance is running; handing over and exiting")
+        ns.SingleInstance.notify_existing(paths.DATA, [a for a in sys.argv[1:] if not a.startswith("-")])
+        return 0
     seed_rife_from_dev_cache()
     SHUTDOWN = ns.ShutdownGuard(lambda: None, ns.kill_children, os._exit)
     SHUTDOWN.install()
@@ -276,6 +284,16 @@ def run_window() -> int:
     win = webview.create_window(TITLE, s.url + "/", js_api=api, min_size=(ns.MIN_W, ns.MIN_H),
                                 background_color="#0b0d12", **geom)
     api.window = win
+
+    def on_activate(args):
+        try:
+            win.restore()
+            win.show()
+        except Exception:
+            LOG.exception("activate window")
+        if args:
+            js("window.nativeDrop && window.nativeDrop(%s)" % json.dumps([ns.normalize_drop_path(a) for a in args]))
+    inst.on_activate = on_activate
 
     def js(code):
         try:
@@ -347,6 +365,7 @@ def run_window() -> int:
 
     webview.start(bind, menu=MENU, debug=bool(os.environ.get("AMV_DEBUG")))
     LOG.info("window closed; shutting down")
+    inst.release()
     s.stop()
     SHUTDOWN.cancel.set()
     return 0
@@ -484,11 +503,11 @@ def main(argv) -> int:
     if "--selftest" in argv:
         lp = argv[argv.index("--selftest-log") + 1] if "--selftest-log" in argv and argv.index("--selftest-log") + 1 < len(argv) else ""
         return selftest(lp)
+    if ns.is_worker_child(argv):   # a worker/tracker child must never build a window (the "another app opens" bug)
+        return 0
     setup_logging()
     return run_window()
 
 
 if __name__ == "__main__":
-    import multiprocessing
-    multiprocessing.freeze_support()
     sys.exit(main(sys.argv[1:]))
