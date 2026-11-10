@@ -441,6 +441,15 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
     if state["open"]:                       # interrupted mid-step (cancel): close it, nothing kept
         emit(state["open"], "end", _tot(cur), _tot(cur), False)
         state["open"] = None
+    if not state["cancelled"] and not _done(cur, target):
+        tried = {s["tool"] for s in steps}
+        for tool in order:                  # never silently drop a tool: say why it was not even tried
+            if tool in tried:
+                continue
+            if left() <= 0:
+                limits.append("budget: skipped %s" % tool)
+            else:
+                limits.append("skipped %s: not applicable" % tool)
     if state["cancelled"]:
         limits.append("cancelled")
     if left() <= 0 and not _done(cur, target):
@@ -520,7 +529,7 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
                 seen.add(orders[n]); keep.append(n)
         names = keep
         allow_splice = False
-    best, pruned = None, False
+    best, pruned, runs, skipped_names = None, False, [], []
     memo, deadline = {}, t0 + budget_s
     for i, name in enumerate(names):
         rem = budget_s - (time.perf_counter() - t0)
@@ -528,12 +537,14 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
             break
         if rem <= 0 and best:
             pruned = True
+            skipped_names = names[i:]
             break
         run = _run(song, video, orders[name], target, max(rem / max(1, len(names) - i), 2.0), max_speed_dev,
                    max_tempo_dev, min_section_s, max_cuts, min_gain, max_passes, allow_splice, lead_s,
                    loop_segs=loop_segs, memo=memo, deadline=deadline, lock_original=lock,
                    progress_cb=progress_cb, should_cancel=cancelled, t_start=t0)
         run["path"] = name
+        runs.append(run)
         if best is None or _rank(run["cur"]) > _rank(best["cur"]):
             best = run
         if _done(best["cur"], target):
@@ -541,6 +552,29 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
     cur, limits = best["cur"], list(best["limits"])
     if pruned:
         limits.append("budget")
+        seen_tools = {s["tool"] for r_ in runs for s in r_["steps"]}
+        for n in skipped_names:
+            for tool in orders[n]:
+                if tool not in seen_tools:
+                    seen_tools.add(tool)
+                    limits.append("budget: skipped %s" % tool)
+    # tools that the winning order does not contain but another order tried: keep a (not kept) record of them
+    mine = {s["tool"] for s in best["steps"]}
+    for r_ in runs:
+        if r_ is best:
+            continue
+        for tool in dict.fromkeys(s["tool"] for s in r_["steps"]):
+            if tool in mine or tool == "offset":
+                continue
+            mine.add(tool)
+            theirs = [s for s in r_["steps"] if s["tool"] == tool]
+            k = [s for s in theirs if s["kept"]]
+            tot = round(_tot(best["cur"]), 2)
+            best["steps"].append({"tool": tool, "params": dict(theirs[-1]["params"], path=r_["path"],
+                                                                  not_in_path=True, kept_in_that_path=bool(k),
+                                                                  total_in_that_path=round(_tot(r_["cur"]), 2)),
+                                  "score_before": tot, "score_after": tot, "kept": False,
+                                  "tightness_before": None, "tightness_after": None})
     if lock:
         limits.append("original audio locked")
     if cflag["on"]:

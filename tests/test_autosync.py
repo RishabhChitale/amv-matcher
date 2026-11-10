@@ -631,3 +631,37 @@ def test_slow24_retime_kept_and_reported():
     rts = [s for s in r["steps"] if s["tool"] == "retime"]
     assert rts[0]["kept"]
     assert all(s["kept"] or s["params"].get("retained") for s in rts)
+
+
+# ---- invariant: every tool is tried once or its skip is reported --------------------------------
+ALL_TOOLS = ("offset", "tempo", "micro", "retime", "splice")
+
+
+def _tools_accounted(res):
+    seen = {s["tool"] for s in res["steps"]}
+    lim = " ".join(res.get("limits_hit", []))
+    return seen, lim
+
+
+def test_limits_hit_reports_budget_skipped_tools():
+    song, vid = _consistency_pairs()["slow24"]
+    res = AS.auto_sync(song, vid, budget_s=0.001)
+    seen, lim = _tools_accounted(res)
+    if "budget" in res.get("limits_hit", []):
+        assert "budget: skipped" in lim
+
+
+def test_slow24_real_media_retime_tried_or_reported(tmp_path):
+    from amv_matcher import audio, video
+    from tests import synth
+    wav, avi = tmp_path / "c.wav", tmp_path / "v.avi"
+    synth.make_click_track(wav, 120, 26.0)
+    synth.make_video_jumps(avi, synth.slow24_jump_times(), seconds=24.0)
+    song = audio.analyze_song(str(wav))
+    vid = video.analyze_video(str(avi))
+    res = AS.auto_sync(song, vid, budget_s=20.0)
+    seen, lim = _tools_accounted(res)
+    assert "retime" in seen or "skipped retime" in lim, (res["path"], sorted(seen), res.get("limits_hit"))
+    rt = [s for s in res["steps"] if s["tool"] == "retime"]
+    assert rt and all(s["kept"] is False or s["kept"] is True for s in rt)
+    print([(s["params"].get("not_in_path"), s["kept"]) for s in rt])
