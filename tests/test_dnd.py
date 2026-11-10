@@ -1,6 +1,8 @@
 """U10: Do-not-disturb flag API + tools/relaunch_app.sh DND logic (always --dry-run / temp data dir; never touches the real app)."""
 import json
+import shutil
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -15,6 +17,23 @@ from amv_matcher.dnd_api import router
 SCRIPT = str(Path(__file__).resolve().parent.parent / "tools" / "relaunch_app.sh")
 
 
+def _real_bash():
+    """The relaunch script is macOS-only; need a real POSIX bash (Windows runners often have the WSL stub bash.exe)."""
+    if sys.platform == "win32":
+        return False
+    b = shutil.which("bash")
+    if not b:
+        return False
+    try:
+        r = subprocess.run([b, "-c", "echo ok"], capture_output=True, text=True, timeout=10)
+        return r.returncode == 0 and r.stdout.strip() == "ok"
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+needs_bash = pytest.mark.skipif(not _real_bash(), reason="tools/relaunch_app.sh is macOS-only; needs a real POSIX bash")
+
+
 def run(d, *args, timeout=30):
     return subprocess.run(["bash", SCRIPT, "--dry-run", "--data-dir", str(d), "--app", str(d / "X.app"), *args],
                           capture_output=True, text=True, timeout=timeout)
@@ -25,6 +44,7 @@ def set_dnd(d, on):
     (d / "dnd.json").write_text(json.dumps({"on": on, "since": 1, "by": "user"}))
 
 
+@needs_bash
 def test_off_or_missing_proceeds_at_once(tmp_path):
     r = run(tmp_path)                       # no dnd.json
     assert r.returncode == 0 and "proceeding" in r.stdout and "dry-run" in r.stdout
@@ -32,12 +52,14 @@ def test_off_or_missing_proceeds_at_once(tmp_path):
     assert run(tmp_path).returncode == 0
 
 
+@needs_bash
 def test_on_times_out_with_exit_3(tmp_path):
     set_dnd(tmp_path, True)
     r = run(tmp_path, "2", "--poll", "1")
     assert r.returncode == 3 and "untouched" in r.stderr and "dry-run" not in r.stdout
 
 
+@needs_bash
 def test_on_waits_then_proceeds_when_flipped_off(tmp_path):
     set_dnd(tmp_path, True)
     threading.Timer(1.5, set_dnd, (tmp_path, False)).start()
@@ -55,7 +77,15 @@ def test_dnd_api_roundtrip_atomic(tmp_path, monkeypatch):
     f = tmp_path / "ad" / "dnd.json"
     assert json.loads(f.read_text())["on"] is True and not list(f.parent.glob("*.tmp"))
     assert c.get("/api/dnd").json()["on"] is True
-    assert run(tmp_path / "ad", "1", "--poll", "1").returncode == 3     # the script sees the API's file
     assert c.post("/api/dnd", json={"on": False}).json()["on"] is False
-    assert run(tmp_path / "ad").returncode == 0
     f.write_text("garbage"); assert c.get("/api/dnd").json()["on"] is False
+
+
+@needs_bash
+def test_script_sees_api_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(P, "APP_DATA", tmp_path / "ad")
+    app = FastAPI(); app.include_router(router); c = TestClient(app)
+    c.post("/api/dnd", json={"on": True})
+    assert run(tmp_path / "ad", "1", "--poll", "1").returncode == 3     # the script sees the API's file
+    c.post("/api/dnd", json={"on": False})
+    assert run(tmp_path / "ad").returncode == 0
