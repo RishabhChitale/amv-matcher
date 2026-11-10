@@ -16,7 +16,7 @@ def test_slow_drift_fixed():
 
 
 def test_slow_section_retimed():
-    r = auto_sync(make_song(), make_video(slow_section_cuts()), min_gain=0.05)  # sync is near-saturated; 3 of ~50 cuts drift
+    r = auto_sync(make_song(), make_video(slow_section_cuts()), min_gain=0.05, lead_s=0.0)  # lead 0: scorer's sync term uses the bare grid; sync is near-saturated; 3 of ~50 cuts drift
     assert r["final"]["sync_pct"] >= 95
     rt = r["plan"]["retime"]
     assert rt and any(abs(s["speed"] - 1.25) < 0.1 for s in rt["sections"])
@@ -151,7 +151,7 @@ def _auto(name):
     """auto_sync result per fixture, computed once for the whole module."""
     if name not in _AUTO:
         song, vid = _fixtures()[name]
-        _AUTO[name] = auto_sync(song, vid)
+        _AUTO[name] = auto_sync(song, vid, lead_s=0.0)
     return _AUTO[name]
 
 
@@ -206,7 +206,7 @@ def test_negative_offset_auto_sync_valid_plan():
 
 
 def test_tail_ramps_to_speed_one_and_durations_reported():
-    r = auto_sync(make_song(), make_video(slow_section_cuts()), min_gain=0.05)  # sync is near-saturated; 3 of ~50 cuts drift
+    r = auto_sync(make_song(), make_video(slow_section_cuts()), min_gain=0.05, lead_s=0.0)  # lead 0: scorer's sync term uses the bare grid; sync is near-saturated; 3 of ~50 cuts drift
     assert r["final"]["video_duration_s"] == 30.0
     assert r["final"]["out_duration_s"] > 0
     rt = r["plan"]["retime"]
@@ -220,11 +220,11 @@ def test_tail_ramps_to_speed_one_and_durations_reported():
 def test_budget_prunes_but_stays_valid():
     song = make_song(90.0)
     vid = make_video(np.arange(1, 56) * 0.52, duration=30.0, tempo=115.4)
-    r = auto_sync(song, vid, budget_s=0.01)
+    r = auto_sync(song, vid, budget_s=0.01, lead_s=0.0)
     assert r["pruned"] and "budget" in r["limits_hit"]
     assert r["final"]["total_pct"] >= r["steps"][0]["score_before"] - 1
     assert "elapsed_s" in r
-    full = auto_sync(song, vid, budget_s=20.0)
+    full = auto_sync(song, vid, budget_s=20.0, lead_s=0.0)
     assert full["final"]["total_pct"] >= r["final"]["total_pct"]
 
 
@@ -239,3 +239,26 @@ def test_tightness_reported_and_lexicographic():
         if st["kept"] and st["tightness_before"] and st["tightness_after"]:
             if abs(st["score_after"] - st["score_before"]) < 1e-9:
                 assert st["tightness_after"]["tight_pct"] >= st["tightness_before"]["tight_pct"]
+
+
+def test_retime_headline_tightness_uses_lead():
+    """Retime lands cuts LEAD ahead of the beat, so the headline (lead-compensated) tightness is high."""
+    song, video = make_song(), make_video(slow_section_cuts())
+    if "tightness" not in S.score_at(song, video, 0.0):
+        pytest.skip("scorer has no tightness block yet")
+    rp = plan_retime(song, video, 0.0, lead_s=S.PERCEPTUAL_LEAD_S)
+    t = S.score_at(song, apply_warp(video, rp["warp"]), 0.0)["tightness"]
+    assert t["tight_pct"] >= 80 and t["median_err_ms"] < 20, t
+
+
+def test_lead_s_clamped_recorded_and_zero_on_beat():
+    song, video = make_song(), make_video(slow_section_cuts())
+    assert auto_sync(song, video, lead_s=0.5, budget_s=5)["plan"]["lead_s"] == 0.12
+    assert auto_sync(song, video, lead_s=-1, budget_s=5)["final"]["lead_s"] == 0.0
+    r = auto_sync(song, video, budget_s=5)
+    assert r["plan"]["lead_s"] == r["final"]["lead_s"] == S.PERCEPTUAL_LEAD_S
+    rp = plan_retime(song, video, 0.0, lead_s=0.0)       # lead 0: events on the beat
+    ev = np.asarray(apply_warp(video, rp["warp"])["cut_times"])
+    b = np.asarray(song["beat_times"])
+    err = np.abs(ev[:, None] - b[None, :]).min(axis=1)
+    assert np.median(err) < 0.02

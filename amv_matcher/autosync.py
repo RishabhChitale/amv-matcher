@@ -25,6 +25,8 @@ def _tot(r):
 # median_err_ms. score.py's tightness block is read defensively (.get), so this also works on a
 # scorer that does not emit it (every tightness term is then 0 / unknown and only the total counts).
 TIGHT_GAIN = 1.0         # tight_pct points that justify a step when the total does not drop
+TOTAL_SLACK = 2.5        # total points a lead-compensated move may cost ...
+TIGHT_BIG = 20.0         # ... when it raises tight_pct by at least this much
 MEDIAN_GAIN_MS = 5.0     # median error (ms) that justifies a step at equal tight_pct
 
 
@@ -57,14 +59,16 @@ def _gain(new, old, min_gain):
     if dt >= min_gain:
         return True
     if dt < -1e-9:
-        return False
+        # the scorer's sync term uses the bare beat grid, so moving events to beat - lead costs a
+        # little total; accept up to TOTAL_SLACK of it for a large tightness gain
+        return dt >= -TOTAL_SLACK and _tp(new) >= _tp(old) + TIGHT_BIG
     return _tp(new) >= _tp(old) + TIGHT_GAIN or \
         (_tp(new) >= _tp(old) and _me(new) <= _me(old) - MEDIAN_GAIN_MS)
 
 
 def _rank(r):
     """Sort key for choosing between whole runs: displayed total, then tightness, then median error."""
-    return (int(round(_tot(r))), _tp(r), -_me(r), _tot(r))
+    return (round(_tot(r) + 0.1 * _tp(r)), _tp(r), -_me(r), _tot(r))
 
 
 def _tvals(r):
@@ -100,7 +104,7 @@ def _best_offset(song, video, center=None, half=None, step=0.05):
     return best[1]
 
 
-def _nudge(song, video, offset, max_shift):
+def _nudge(song, video, offset, max_shift, lead=0.0):
     """Move cuts/peaks by at most max_shift s (one frame) when that brings them inside the tolerance."""
     beats = np.asarray(song["beat_times"], dtype=float)
     if len(beats) < 2:
@@ -111,9 +115,9 @@ def _nudge(song, video, offset, max_shift):
         res = arr.copy()
         for i, e in enumerate(arr):
             t = e + offset
-            b = beats[int(np.argmin(np.abs(beats - t)))]
+            b = beats[int(np.argmin(np.abs(beats - lead - t)))] - lead
             d = b - t
-            if S.TOLERANCE_S < abs(d) <= S.TOLERANCE_S + max_shift:
+            if 0.010 < abs(d) <= getattr(S, "TIGHT_TOL_S", S.TOLERANCE_S) + max_shift:
                 delta = float(np.sign(d) * min(abs(d), max_shift))
                 res[i] = e + delta
                 nudges.append({"kind": key, "t": round(float(e), 4), "delta": round(delta, 4)})
@@ -132,7 +136,7 @@ ORDER_COST = ("tempo_only", "retime_only", "splice_first", "default", "retime_fi
 
 
 def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min_section_s, max_cuts,
-         min_gain, max_passes, allow_splice):
+         min_gain, max_passes, allow_splice, lead_s=0.0):
     t0 = time.perf_counter()
     steps, limits = [], []
     vd = float(video["duration"])
@@ -212,7 +216,7 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
                         nudges, cur_video = [], sv
             elif tool == "retime":
                 # always planned from the ORIGINAL video against the current song/offset (replaces)
-                rp = plan_retime(cur_song, video, offset, max_speed_dev, min_section_s)
+                rp = plan_retime(cur_song, video, offset, max_speed_dev, min_section_s, lead_s=lead_s)
                 wv = apply_warp(video, rp["warp"])
                 rr = S.score_at(cur_song, wv, offset)
                 base = S.score_at(cur_song, sv, offset)       # current retime state, no nudges
@@ -235,7 +239,7 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
                                     _tot(cur), _tot(ar), True, cur, ar)
                                 segs, cur_song, offset, cur = sp["segments"], asm, 0.0, ar
             elif tool == "micro" and not nudges:
-                nv, nl = _nudge(cur_song, cur_video, offset, 1.0 / fps)
+                nv, nl = _nudge(cur_song, cur_video, offset, 1.0 / fps, lead_s)
                 nr = S.score_at(cur_song, nv, offset)
                 kept = bool(nl) and _gain(nr, cur, min_gain)
                 rec("micro", {"nudges": len(nl), "max_shift_s": round(1.0 / fps, 4)}, _tot(cur),
@@ -252,16 +256,18 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
         limits.append("speed_jump_over_0.15")
     out_dur = float(cur_video["duration"])
     return {"steps": steps, "cur": cur, "limits": limits, "out_duration": out_dur,
-            "plan": {"offset": round(offset, 3), "tempo_ratio": tempo_ratio, "segments": segs,
+            "plan": {"offset": round(offset, 3), "lead_s": lead_s, "tempo_ratio": tempo_ratio, "segments": segs,
                      "retime": retime, "nudges": nudges,
                      "lead_silence_s": lead_silence(segs) if segs else round(max(0.0, -offset), 6)}}
 
 
 def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20.0,
               max_speed_dev: float = 0.25, max_tempo_dev: float = 0.08, min_section_s: float = 0.75,
-              max_cuts: int = 3, min_gain: float = 0.5, max_passes: int = 2, allow_splice: bool = True) -> dict:
+              max_cuts: int = 3, min_gain: float = 0.5, max_passes: int = 2, allow_splice: bool = True, lead_s: float | None = None) -> dict:
     """Try several tool orders (each from the baseline) and keep the best path, so the result is never
     worse than any single tool applied directly."""
+    lead_s = S.PERCEPTUAL_LEAD_S if lead_s is None else lead_s
+    lead_s = min(0.12, max(0.0, float(lead_s)))   # cuts/peaks land lead_s before the beat (0 = on it)
     t0 = time.perf_counter()
     names = list(ORDER_COST)             # cheapest first; later (dearer) orders are pruned on budget
     best, pruned = None, False
@@ -271,7 +277,7 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
             pruned = True
             break
         run = _run(song, video, ORDERS[name], target, max(rem / max(1, len(names) - i), 2.0), max_speed_dev,
-                   max_tempo_dev, min_section_s, max_cuts, min_gain, max_passes, allow_splice)
+                   max_tempo_dev, min_section_s, max_cuts, min_gain, max_passes, allow_splice, lead_s)
         run["path"] = name
         if best is None or _rank(run["cur"]) > _rank(best["cur"]):
             best = run
@@ -289,6 +295,7 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
     final["video_duration_s"] = round(float(video["duration"]), 3)
     final["sync_headline"] = int(round(0.6 * cur["sync_pct"] + 0.4 * cur["tempo_pct"]))
     first = best["steps"][0] if best["steps"] else {}
+    final["lead_s"] = lead_s
     final["tightness_start"] = first.get("tightness_before")
     return {"steps": best["steps"], "final": final, "plan": best["plan"], "path": best["path"],
             "limits_hit": sorted(set(limits)), "pruned": pruned, "why_not_100": _why(final, target, limits),
