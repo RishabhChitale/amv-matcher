@@ -11,6 +11,21 @@ import websocket
 
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 PORT = 9333
+SRV_PORT = 8799
+
+
+def serve(d):
+    """Run the app with its upload/export/extract dirs redirected into a temp dir (no backend change needed)."""
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+    from pathlib import Path
+    import uvicorn
+    from amv_matcher import server
+    server.UPLOADS = Path(d) / "uploads"
+    server.EXPORTS = Path(d) / "exports"
+    server.EXTRACTED = Path(d) / "extracted"
+    server.ALLOWED_ORIGINS = {f"http://127.0.0.1:{SRV_PORT}", f"http://localhost:{SRV_PORT}"}
+    uvicorn.run(server.app, host="127.0.0.1", port=SRV_PORT, log_level="warning")
+    return 0
 
 
 class CDP:
@@ -95,13 +110,40 @@ def wait_for(c, expr, timeout=60, step=0.4):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--url", default="http://127.0.0.1:8765")
+    ap.add_argument("--server", default=None, help="test an existing server read-only (writes are skipped); default: own temp server on :8799")
+    ap.add_argument("--_serve", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--video", default="/tmp/amvfx/clip.mp4")
     ap.add_argument("--music", default="/tmp/amvfx/music")
     ap.add_argument("--allow-clear", action="store_true")
     ap.add_argument("--bad-video", default="/tmp/amvfx/clip.mkv")
     ap.add_argument("--shot", default=os.path.join(os.path.dirname(__file__), "..", "docs", "ui.png"))
     a = ap.parse_args()
+    if a._serve:
+        return serve(a._serve)
+    ro = a.server is not None
+    srv = None
+    sdir = None
+    if ro:
+        a.url = a.server
+    else:
+        sdir = tempfile.mkdtemp(prefix="amv-srv-")
+        a.url = f"http://127.0.0.1:{SRV_PORT}"
+        srv = subprocess.Popen([sys.executable, os.path.abspath(__file__), "--_serve", sdir],
+                               cwd=os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."),
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(100):
+            try:
+                urllib.request.urlopen(a.url + "/api/uploads", timeout=1)
+                break
+            except Exception:
+                time.sleep(0.2)
+        else:
+            print("FAIL  temp server did not start on", a.url)
+            srv.kill()
+            shutil.rmtree(sdir, ignore_errors=True)
+            return 2
+    print("server:", a.url, "(read-only)" if ro else f"(own temp instance, state in {sdir})")
+    a.allow_clear = not ro
 
     prof = tempfile.mkdtemp(prefix="amv-ui-")
     proc = subprocess.Popen([CHROME, "--headless=new", f"--remote-debugging-port={PORT}", f"--user-data-dir={prof}",
@@ -361,8 +403,9 @@ def main():
                 os.makedirs(os.path.dirname(os.path.abspath(a.shot)), exist_ok=True)
                 import base64
                 png = c.call("Page.captureScreenshot", format="png")["data"]
-                open(a.shot, "wb").write(base64.b64decode(png))
-                check("screenshot saved (drop.wav at the drop)", os.path.getsize(a.shot) > 10000, os.path.abspath(a.shot))
+                tmpshot = os.path.join(prof, "drop.png")
+                open(tmpshot, "wb").write(base64.b64decode(png))
+                check("screenshot captured (drop.wav at the drop)", os.path.getsize(tmpshot) > 10000, tmpshot)
         else:
             print("SKIP  drop checks (no drop.wav in", a.music + ")")
 
@@ -421,19 +464,75 @@ def main():
                 check("splice on -> fit message (percentages only)", ("Fit:" in fm or "No splice" in fm) and "objective" not in fm.lower(), fm)
                 lbl = c.ev("document.getElementById('a1-lbl').textContent") or ""
                 check("A1 label reflects splice or single trim", "Spliced" in lbl or "Song" in lbl, lbl)
-            c.ev("document.getElementById('ex-wav').click()")
-            ok = wait_for(c, "!!document.querySelector('#ex-link')", 90)
-            href = c.ev("(document.querySelector('#ex-link')||{}).href")
-            st = c.ev(f"fetch({json.dumps(href or '')}).then(r=>r.status)") if href else None
-            check("Export .wav -> download link works", ok and st == 200, f"{href} {st}")
-            c.ev("document.getElementById('ex-mp4').click()")
-            ok = wait_for(c, "/\\.mp4/.test((document.querySelector('#ex-link')||{}).href||'')", 180)
-            href = c.ev("(document.querySelector('#ex-link')||{}).href")
-            st = c.ev(f"fetch({json.dumps(href or '')}).then(r=>r.status)") if href else None
-            check("Export .mp4 -> job completes, download works", ok and st == 200, f"{href} {st}")
+            if ro:
+                print("SKIP  export checks (read-only server)")
+            else:
+                c.ev("document.getElementById('ex-wav').click()")
+                ok = wait_for(c, "!!document.querySelector('#ex-link')", 90)
+                href = c.ev("(document.querySelector('#ex-link')||{}).href")
+                st = c.ev(f"fetch({json.dumps(href or '')}).then(r=>r.status)") if href else None
+                check("Export .wav -> download link works", ok and st == 200, f"{href} {st}")
+                c.ev("document.getElementById('ex-mp4').click()")
+                ok = wait_for(c, "/\\.mp4/.test((document.querySelector('#ex-link')||{}).href||'')", 180)
+                href = c.ev("(document.querySelector('#ex-link')||{}).href")
+                st = c.ev(f"fetch({json.dumps(href or '')}).then(r=>r.status)") if href else None
+                check("Export .mp4 -> job completes, download works", ok and st == 200, f"{href} {st}")
+            import base64
+            # restore the main fixture for the following checks
+            scan(a.video)
+            wait_for(c, "document.querySelectorAll('.res').length>0 && !document.getElementById('scan').disabled", 90)
+            c.ev("document.querySelector('.res').click()")
+            wait_for(c, "!!(S.sel && S.wf) && document.getElementById('vid').readyState>=2", 30)
+
+        # ---- multi-cut splice (cuts clearly win) + layout, final docs/ui.png
+        sd = "/tmp/amvfx/splice"
+        try:
+            sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+            from tests.synth import make_peaks_video, make_loud_windows
+            os.makedirs(sd, exist_ok=True)
+            if not os.path.exists(sd + "/peaks.mp4"):
+                make_peaks_video(sd + "/peaks.mp4")
+            if not os.path.exists(sd + "/song_drop40.wav"):
+                make_loud_windows(sd + "/song_drop40.wav", seconds=240, loud=((40, 48),))
+        except Exception as e:
+            print("SKIP  multi-cut fixtures:", e)
+        if os.path.exists(sd + "/peaks.mp4") and os.path.exists(sd + "/song_drop40.wav"):
+            mc_dir = os.path.join(prof, "mc")
+            os.makedirs(mc_dir, exist_ok=True)
+            shutil.copy(sd + "/song_drop40.wav", mc_dir)
+            keep = a.music
+            a.music = mc_dir
+            scan(sd + "/peaks.mp4")
+            wait_for(c, "document.querySelectorAll('.res').length>0 && !document.getElementById('scan').disabled", 90)
+            a.music = keep
+            c.ev("[...document.querySelectorAll('.res:not(.orig) button.use')][0].click()")
+            wait_for(c, "/Song /.test(document.getElementById('a1-lbl').textContent)", 30)
+            c.ev("document.querySelector('#sp-max button[data-n=\"3\"]').click()")
+            if not c.ev("document.getElementById('sp-on').checked"):
+                c.ev("document.getElementById('sp-on').click()")
+            ok = wait_for(c, "!!(S.sp.plan && S.sp.plan.cuts!==undefined) && !S.sp.busy", 60)
+            fm = c.ev("document.getElementById('fit-msg').textContent") or ""
+            ncut = c.ev("S.sp.plan ? (S.sp.plan.cuts||[]).length : -1")
+            check("multi-cut: plan has >= 1 cut and Fit message shows an improvement", ok and ncut >= 1 and "\u2192" in fm and "cut" in fm.lower() and "objective" not in fm.lower(), f"cuts={ncut} {fm}")
+            wait_for(c, "/export-file|render/.test(document.getElementById('aud').src||'')", 40)
+            c.pump(0.6)
+            asrc = c.ev("document.getElementById('aud').src") or ""
+            check("multi-cut: spliced playback uses the rendered wav", "/api/export-file" in asrc or "render" in asrc, asrc[-60:])
+            nclip = c.ev("(S.sp.plan.segments||[]).length")
+            check("multi-cut: A1 draws >= 2 clips (plan segments)", nclip >= 2, f"segments={nclip}")
+            c.pump(0.3)
+            ovn = c.ev("(typeof OVX!=='undefined'&&OVX.brackets)?OVX.brackets:null")
+            check("multi-cut: overview draws numbered brackets", ovn is not None and ovn >= 2, f"brackets={ovn}")
+            c.ev("seek(0)")
+            c.pump(0.5)
+            # layout at 1440x900: transport, overview, V1 and A1 all visible without scrolling
+            bot = c.ev("(()=>{const e=document.getElementById('tl');return e.getBoundingClientRect().bottom})()")
+            sy = c.ev("document.scrollingElement.scrollHeight")
+            check("layout 1440x900: A1/pump lane fully visible without scrolling", bot <= 900.5, f"tl bottom={bot} scrollHeight={sy}")
             import base64
             shotv2 = os.path.join(os.path.dirname(os.path.abspath(a.shot)), "ui.png")
             open(shotv2, "wb").write(base64.b64decode(c.call("Page.captureScreenshot", format="png")["data"]))
+            check("screenshot saved (multi-cut splice on)", os.path.getsize(shotv2) > 10000, shotv2)
             # restore the main fixture for the following checks
             scan(a.video)
             wait_for(c, "document.querySelectorAll('.res').length>0 && !document.getElementById('scan').disabled", 90)
@@ -443,7 +542,7 @@ def main():
         # ---- drag-and-drop / Browse uploads
         mus = lambda n: os.path.join(a.music, n)
         have = [n for n in ("click120.wav", "click140.wav", "click97.wav") if os.path.exists(mus(n))]
-        if os.path.exists(a.video) and len(have) >= 2:
+        if not ro and os.path.exists(a.video) and len(have) >= 2:
             c.ev("""(()=>{const i=document.createElement('input');i.type='file';i.multiple=true;i.id='__scratch';document.body.appendChild(i)})()""")
             root = c.call("DOM.getDocument")["root"]["nodeId"]
             nid = c.call("DOM.querySelector", nodeId=root, selector="#__scratch")["nodeId"]
@@ -458,7 +557,7 @@ def main():
             check("audio dropped on the video zone -> 'Not a video' toast", wait_for(c, "/Not a video/.test(__toasts())", 5), (c.ev("__toasts()") or "")[:60])
 
             c.ev("__drop('#stage', __vid)")
-            ok = wait_for(c, "/\\.uploads\\//.test(decodeURIComponent(document.getElementById('vid').src||'')) && document.getElementById('up-ring').classList.contains('hidden')", 90)
+            ok = wait_for(c, "/\\/uploads\\/video\\//.test(decodeURIComponent(document.getElementById('vid').src||'')) && document.getElementById('up-ring').classList.contains('hidden')", 90)
             check("dropping a video uploads it and the player switches to it", ok, (c.ev("document.getElementById('vid').src") or "")[-50:])
             wait_for(c, "!document.getElementById('scan').disabled && document.querySelectorAll('.res').length>0", 60)
 
@@ -519,7 +618,7 @@ def main():
               wait_for(c, "document.getElementById('up-clear').disabled", 20)
               c.ev("document.getElementById('__scratch').remove()")
         else:
-            print("SKIP  drag-and-drop checks (fixtures missing)")
+            print("SKIP  drag-and-drop checks (read-only server or fixtures missing)")
 
         # ---- error path
         if os.path.exists(a.bad_video):
@@ -542,6 +641,13 @@ def main():
         except Exception:
             proc.kill()
         shutil.rmtree(prof, ignore_errors=True)
+        if srv:
+            srv.terminate()
+            try:
+                srv.wait(5)
+            except Exception:
+                srv.kill()
+            shutil.rmtree(sdir, ignore_errors=True)
 
 
 if __name__ == "__main__":

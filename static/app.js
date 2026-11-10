@@ -125,7 +125,7 @@ function renderResults(j) {
   order.forEach(i => {
     const r = S.results[i], orig = r.source === 'original';
     const d = document.createElement('div'); d.className = 'res' + (orig ? ' orig' : ''); d.dataset.i = i;
-    d.innerHTML = ring(r.total_pct) + `<div class="rtxt"><div class="rname" title="${esc(r.name)}">${orig ? '' : (++rank) + '. '}${esc(r.name)}${orig ? '<span class="chip">from video</span>' : ''}${r.dropped ? '<span class="chip">dropped</span>' : ''}</div>
+    d.innerHTML = ring(r.total_pct) + `<div class="rtxt"><div class="rname" title="${esc(r.name)}">${orig ? 'Original audio' : (++rank) + '. ' + esc(r.name)}${orig ? '<span class="chip">from video</span>' : ''}${r.dropped ? '<span class="chip">dropped</span>' : ''}</div>${orig ? `<div class="rsub">${esc((r.name.match(/\((.*)\)\s*$/) || [, ''])[1])}</div>` : ''}
       <div class="rmeta">${metaText(r)}</div></div><div class="pill"><span class="pp">${Math.round(r.total_pct)}%</span><button class="use" title="Use this audio for playback, splice and export">Use this audio</button></div>`;
     d.onclick = () => selectSong(r);
     d.querySelector('.use').onclick = e => { e.stopPropagation(); useAudio(r); };
@@ -413,7 +413,9 @@ cv.addEventListener('pointerup', () => { drag = null; });
 function clampOff(o) { const mx = S.wf ? Math.max(0, S.wf.duration - S.dur) : 0; return Math.min(mx, Math.max(0, o)); }
 function readout() {
   const r = S.sel, orig = r && r.source === 'original';
-  $('vc-off').textContent = !r ? '--' : orig ? 'Original audio, no shift' : spliceActive() ? 'Spliced from ' + (S.sp.plan.cuts.length + 1) + ' clips' : 'Song starts at ' + fmtMS(S.offset) + (S.manual ? ', set manually' : ', auto-picked for best fit');
+  $('vc-off').textContent = !r ? '--' : orig ? 'Original audio, no shift' : spliceActive() ? 'Spliced from ' + (S.sp.plan.cuts.length + 1) + ' clips' : 'Starts at ' + fmtMS(S.offset);
+  $('vc-chip').textContent = !r || orig || spliceActive() ? '' : S.manual ? 'manual' : 'auto-picked';
+  $('vc-chip').classList.toggle('hidden', !$('vc-chip').textContent);
   $('vc-reset').classList.toggle('hidden', !r || orig || !S.manual);
   $('vc-trim').textContent = !r ? '--' : orig ? 'Whole track' : 'Use ' + fmtMS(S.offset) + ' to ' + fmtMS(S.offset + S.dur);
   let l = ''; if (r) l = orig ? 'Original audio (from video)' : spliceActive() ? 'Spliced song, ' + (S.sp.plan.cuts.length + 1) + ' clips' : `Song ${fmtMS(S.offset)} to ${fmtMS(S.offset + S.dur)} (${S.manual ? 'manual' : 'auto'} start)`;
@@ -456,6 +458,7 @@ function drawOv() {
     octx.beginPath(); octx.moveTo(xa + 4, 1); octx.lineTo(xa + 1, 1); octx.lineTo(xa + 1, OH - 1); octx.lineTo(xa + 4, OH - 1); octx.moveTo(xb - 4, 1); octx.lineTo(xb - 1, 1); octx.lineTo(xb - 1, OH - 1); octx.lineTo(xb - 4, OH - 1); octx.stroke(); octx.lineWidth = 1;
     if (sp) { octx.fillStyle = '#fff'; octx.font = 'bold 10px sans-serif'; octx.fillText(String(k + 1), xa + 5, 12); }
   });
+  window.OVX = {brackets: sp ? segs.length : 0};
 }
 const ovX = e => e.clientX - ov.getBoundingClientRect().left;
 ov.addEventListener('pointerdown', e => {

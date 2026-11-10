@@ -123,3 +123,44 @@ def make_video_with_audio(path, wav, seconds=10.0, fps=30, jump_every=0.5, size=
     for p in a.encode(None):
         out.mux(p)
     out.close()
+
+
+def make_peaks_video(path, seconds=30.0, peaks=(10.0, 25.0), peak_len=4.0, fps=30, size=(320, 240)):
+    """Static square, with a rapidly jumping square during each (start, start+peak_len) peak."""
+    w, h = size
+    vw = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"MJPG"), fps, size)
+    assert vw.isOpened(), "OpenCV could not open a VideoWriter"
+    pos = [(40, 40), (240, 160), (200, 40), (60, 150)]
+    for f in range(int(seconds * fps)):
+        t = f / fps
+        img = np.zeros((h, w, 3), np.uint8)
+        pk = next((p for p in peaks if p <= t < p + peak_len), None)
+        x, y = (40, 40) if pk is None else pos[int((t - pk) / 0.2) % 4]
+        cv2.rectangle(img, (x, y), (x + 40, y + 40), (255, 255, 255), -1)
+        vw.write(img)
+    vw.release()
+
+
+def make_loud_windows(path, bpm=120, seconds=60.0, loud=((40.0, 48.0),), seed=0):
+    """Quiet clicks, with loud clicks plus a 60 Hz thump on every beat inside each (start, end) window."""
+    rng = np.random.default_rng(seed)
+    y = np.zeros(int(SR * seconds), dtype=np.float32)
+    n = int(0.03 * SR)
+    t = np.arange(n) / SR
+    click = (np.sin(2 * np.pi * 1000 * t) * np.exp(-t * 150)).astype(np.float32)
+    nt = int(0.25 * SR)
+    tt = np.arange(nt) / SR
+    thump = (np.sin(2 * np.pi * 60 * tt) * np.exp(-tt * 8)).astype(np.float32)
+    period = 60.0 / bpm
+    k = 0
+    while k * period < seconds - 0.3:
+        b = k * period
+        i = int(b * SR)
+        if any(a <= b < e for a, e in loud):
+            y[i:i + n] += 0.9 * click
+            y[i:i + nt] += 0.9 * thump[: len(y) - i][:nt]
+        else:
+            y[i:i + n] += 0.08 * click
+        k += 1
+    y += (0.002 * rng.standard_normal(len(y))).astype(np.float32)
+    sf.write(str(path), np.clip(y, -1, 1), SR)
