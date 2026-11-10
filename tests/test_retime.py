@@ -76,3 +76,18 @@ def test_apply_tempo():
     s = apply_tempo(make_song(60, 120), 1.05)
     assert abs(s["bpm"] - 126) < 1e-6 and abs(s["duration"] - 60 / 1.05) < 1e-6
     assert abs(s["beat_times"][2] - 1.0 / 1.05) < 1e-6
+
+
+def test_negative_offset_retime():
+    cuts = np.arange(0, 55) * 0.5 + 0.63
+    song, vid = make_song(), make_video(cuts, duration=28.0)
+    r = plan_retime(song, vid, -0.63)
+    assert r["speed_jump_ok"]
+    assert r["sync_after"] >= r["sync_before"] - 1e-9
+
+
+def test_tail_returns_to_speed_one():
+    r = plan_retime(make_song(), make_video(slow_section_cuts()), 0.0)
+    w = np.asarray(r["warp"], dtype=float)
+    spd = np.diff(w[:, 0]) / np.diff(w[:, 1])
+    assert abs(spd[-1] - 1.0) < 1e-2 and r["speed_jump_ok"]

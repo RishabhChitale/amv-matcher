@@ -153,3 +153,17 @@ def test_tv_size_song_two_drops():
     video = make_video(30.03)
     r = plan_splice(song, video, 2)
     assert r["cuts"] and r["improvement_pct"] > 3, r
+
+
+def test_negative_offset_assemble_and_plan():
+    from amv_matcher.splice import _assemble, lead_silence
+    song, video = make_song(), make_video()
+    vd = video["duration"]
+    segs = [{"src_start": -0.63, "src_end": vd - 0.63, "dst_start": 0.0}]
+    asm = _assemble(song, segs, vd)               # used to raise ValueError
+    en = np.asarray(asm["energy_curve"])
+    assert lead_silence(segs) == 0.63 and np.all(en[:int(0.6 * 10)] == 0)
+    r = plan_splice(song, video, 2, allow_negative=True)
+    assert r["eligible"] and r["lead_silence_s"] >= 0.0
+    if r["lead_silence_s"] > 0:
+        assert r["segments"][0]["src_start"] < 0

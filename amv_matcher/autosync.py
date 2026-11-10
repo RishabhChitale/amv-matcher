@@ -11,25 +11,9 @@ import numpy as np
 
 from . import score as S
 from .retime import apply_warp, plan_retime
-from .splice import _assemble, plan_splice
+from .splice import _assemble, lead_silence, plan_splice
 
 
-def _safe_plan(song, video, max_cuts):
-    try:
-        return plan_splice(song, video, max_cuts)
-    except ValueError:      # negative best offset: splice.py cannot assemble it yet
-        return {"eligible": False, "segments": []}
-
-
-def _safe_assemble(song, segs, dur):
-    """splice.py cannot yet assemble segments that start before the song (negative src_start);
-    skip those plans instead of crashing (negative offsets are deferred)."""
-    if any(float(g["src_start"]) < 0 or float(g["dst_start"]) < 0 for g in segs):
-        return None
-    try:
-        return _assemble(song, segs, dur)
-    except ValueError:
-        return None
 from .tempo import apply_tempo, plan_tempo
 
 
@@ -46,13 +30,13 @@ def _best_offset(song, video, center=None, half=None, step=0.05):
     """Best offset by sync+arc (same rule as score.score); full scan or a window around center."""
     song, video = _fast(song), _fast(video)
     vd, sd = float(video["duration"]), float(song["duration"])
-    hi = max(0.0, sd - vd)
+    lo_lim, hi = S.MIN_OFFSET_S, max(0.0, sd - vd)       # offsets may be negative (song starts late)
     if center is None:
-        offs = np.arange(0.0, hi + 1e-9, max(0.1, round(hi / S.MAX_OFFSET_STEPS, 1))) if hi > 0 else np.array([0.0])
+        offs = np.arange(lo_lim, hi + 1e-9, max(0.1, round((hi - lo_lim) / S.MAX_OFFSET_STEPS, 1)))
     else:
-        offs = np.arange(max(0.0, center - half), min(hi, center + half) + 1e-9, step)
+        offs = np.arange(max(lo_lim, center - half), min(hi, center + half) + 1e-9, step)
         if len(offs) == 0:
-            offs = np.array([min(max(center, 0.0), hi)])
+            offs = np.array([min(max(center, lo_lim), hi)])
     ev_t, ev_w = S._events(video)
     ok = len(ev_t) > 0 and len(song["beat_times"]) >= 2
     best = None
@@ -93,6 +77,7 @@ ORDERS = {
     "retime_only": ("retime", "micro"),
     "tempo_only": ("tempo", "micro"),
 }
+ORDER_COST = ("tempo_only", "retime_only", "splice_first", "default", "retime_first")   # cheapest first
 
 
 def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min_section_s, max_cuts,
@@ -160,11 +145,11 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
                     limits.append("max_tempo_dev")
             elif tool == "splice" and allow_splice and segs is None and left() > 2.0 \
                     and float(cur_song["duration"]) >= svd:
-                sp = _safe_plan(cur_song, sv, max_cuts)
+                sp = plan_splice(cur_song, sv, max_cuts, allow_negative=True)
                 if sp.get("eligible") and len(sp["segments"]) > 1:
-                    asm = _safe_assemble(cur_song, sp["segments"], svd)
-                    asm_r = S.score_at(asm, sv, 0.0) if asm is not None else cur
-                    kept = asm is not None and _tot(asm_r) >= _tot(cur) + min_gain
+                    asm = _assemble(cur_song, sp["segments"], svd)
+                    asm_r = S.score_at(asm, sv, 0.0)
+                    kept = _tot(asm_r) >= _tot(cur) + min_gain
                     rec("splice", {"max_cuts": max_cuts, "cuts": sp["cuts"]}, _tot(cur),
                         _tot(asm_r) if kept else _tot(cur), kept)
                     if kept:
@@ -184,13 +169,13 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
                     retime, cur_video, cur, nudges = rp, wv, rr, []
                     if segs is not None and allow_splice and left() > 2.0:
                         # events moved: re-splice against the retimed video (one extra pass)
-                        sp = _safe_plan(song if tempo_ratio == 1.0 else apply_tempo(song, tempo_ratio),
-                                         wv, max_cuts)
+                        sp = plan_splice(song if tempo_ratio == 1.0 else apply_tempo(song, tempo_ratio),
+                                         wv, max_cuts, allow_negative=True)
                         if sp.get("eligible") and len(sp["segments"]) > 1:
                             base_s = song if tempo_ratio == 1.0 else apply_tempo(song, tempo_ratio)
-                            asm = _safe_assemble(base_s, sp["segments"], float(wv["duration"]))
-                            ar = S.score_at(asm, wv, 0.0) if asm is not None else cur
-                            if asm is not None and _tot(ar) >= _tot(cur) + min_gain:
+                            asm = _assemble(base_s, sp["segments"], float(wv["duration"]))
+                            ar = S.score_at(asm, wv, 0.0)
+                            if _tot(ar) >= _tot(cur) + min_gain:
                                 rec("splice", {"max_cuts": max_cuts, "cuts": sp["cuts"], "after_retime": True},
                                     _tot(cur), _tot(ar), True)
                                 segs, cur_song, offset, cur = sp["segments"], asm, 0.0, ar
@@ -205,14 +190,16 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
         if _tot(cur) >= target - 1e-9 or _tot(cur) < start_total + min_gain:
             break
     if left() <= 0 and _tot(cur) < target:
-        limits.append("budget_s")
+        limits.append("budget")
     if retime and any(abs(s["speed"] - 1) >= max_speed_dev - 0.01 for s in retime["sections"]):
         limits.append("max_speed_dev")
     if retime and not retime.get("speed_jump_ok", True):
         limits.append("speed_jump_over_0.15")
-    return {"steps": steps, "cur": cur, "limits": limits,
+    out_dur = float(cur_video["duration"])
+    return {"steps": steps, "cur": cur, "limits": limits, "out_duration": out_dur,
             "plan": {"offset": round(offset, 3), "tempo_ratio": tempo_ratio, "segments": segs,
-                     "retime": retime, "nudges": nudges}}
+                     "retime": retime, "nudges": nudges,
+                     "lead_silence_s": lead_silence(segs) if segs else round(max(0.0, -offset), 6)}}
 
 
 def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20.0,
@@ -221,11 +208,12 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
     """Try several tool orders (each from the baseline) and keep the best path, so the result is never
     worse than any single tool applied directly."""
     t0 = time.perf_counter()
-    names = ["default", "retime_only", "retime_first", "splice_first", "tempo_only"]
-    best = None
+    names = list(ORDER_COST)             # cheapest first; later (dearer) orders are pruned on budget
+    best, pruned = None, False
     for i, name in enumerate(names):
         rem = budget_s - (time.perf_counter() - t0)
         if rem <= 0 and best:
+            pruned = True
             break
         run = _run(song, video, ORDERS[name], target, max(rem / max(1, len(names) - i), 2.0), max_speed_dev,
                    max_tempo_dev, min_section_s, max_cuts, min_gain, max_passes, allow_splice)
@@ -234,12 +222,16 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
             best = run
         if _tot(best["cur"]) >= target - 1e-9:
             break
-    cur, limits = best["cur"], best["limits"]
+    cur, limits = best["cur"], list(best["limits"])
+    if pruned:
+        limits.append("budget")
     final = {k: cur[k] for k in ("total_pct", "tempo_pct", "sync_pct", "arc_pct")}
     final["total_pct"] = int(round(_tot(cur)))
+    final["out_duration_s"] = round(float(best["out_duration"]), 3)
+    final["video_duration_s"] = round(float(video["duration"]), 3)
     final["sync_headline"] = int(round(0.6 * cur["sync_pct"] + 0.4 * cur["tempo_pct"]))
     return {"steps": best["steps"], "final": final, "plan": best["plan"], "path": best["path"],
-            "limits_hit": sorted(set(limits)), "why_not_100": _why(final, target, limits),
+            "limits_hit": sorted(set(limits)), "pruned": pruned, "why_not_100": _why(final, target, limits),
             "elapsed_s": round(time.perf_counter() - t0, 2)}
 
 

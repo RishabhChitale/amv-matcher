@@ -11,6 +11,7 @@ BUCKET = 0.05            # incoming-speed buckets kept per DP state
 MERGE_S = 0.15           # events closer than this are placed together
 LOOKBACK = 6             # matched events a chain may skip back over
 NEAR = 2                 # candidate beats per side of an event
+TAIL_STEP_S = 1.0        # video seconds per tail ramp step
 SPEED_COST = 0.02        # tie-break: prefer speeds near 1
 
 
@@ -84,7 +85,7 @@ def _anchors(events, sync_unit, arc_unit, drops, lulls, beats_out, dev, jump):
     """DP over (event, candidate output time, incoming speed bucket).
 
     Chain links have speed in [1-dev, 1+dev]; consecutive link speeds differ by <= jump;
-    the tail after the last anchor keeps the last link's speed (no extra jump).
+    plan_retime ramps the tail back to 1.0 after the last anchor.
     Returns [(video_t, out_t)]."""
     n = len(events)
     lo, hi = 1.0 - dev, 1.0 + dev
@@ -199,7 +200,17 @@ def plan_retime(song: dict, video: dict, offset: float, max_speed_dev: float = 0
     elif warp[-1][0] < vd:
         (v0, o0), (v1, o1) = warp[-2], warp[-1]
         sp = (v1 - v0) / max(o1 - o0, 1e-9)
-        warp.append([vd, o1 + (vd - v1) / sp])
+        # tail: ramp the speed back to 1.0 in steps within the jump limit (TAIL_STEP_S video seconds
+        # each), then play at 1.0, so out_duration only changes by what anchored sections need
+        v, o = v1, o1
+        while abs(sp - 1.0) > 1e-9 and v < vd - 1e-6:
+            sp = sp + max(-DP_JUMP, min(DP_JUMP, 1.0 - sp))
+            nv = min(vd, v + TAIL_STEP_S)
+            o += (nv - v) / sp
+            v = nv
+            warp.append([v, o])
+        if v < vd - 1e-9:
+            warp.append([vd, o + (vd - v)])
     warp = [[round(a, 4), round(b, 4)] for a, b in warp]
     w = np.asarray(warp)
     spd = np.diff(w[:, 0]) / np.maximum(np.diff(w[:, 1]), 1e-9)

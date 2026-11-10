@@ -81,8 +81,20 @@ def _single(off, vd):
     return [{"src_start": round(off, 6), "src_end": round(off + vd, 6), "dst_start": 0.0}]
 
 
+def lead_silence(segments):
+    """Seconds of silence before the song starts (negative first src_start), 0.0 if none."""
+    if not segments:
+        return 0.0
+    first = min(segments, key=lambda g: g["dst_start"])
+    return round(max(0.0, -float(first["src_start"])) if first["dst_start"] <= 1e-9 else 0.0, 6)
+
+
 def _assemble(song, segments, vd):
-    """Build a song dict as heard after splicing (output time 0..vd)."""
+    """Build a song dict as heard after splicing (output time 0..vd).
+
+    A segment with src_start < 0 means the song starts AFTER that segment's start: the first
+    -src_start seconds of the segment are silence (zero energy, no beats). Only the first
+    segment (dst_start == 0) may do this; plan_splice reports it as plan["lead_silence_s"]."""
     hz = S.ENERGY_HZ
     se = np.asarray(song["energy_curve"], dtype=float)
     n_out = int(math.ceil(vd * hz))
@@ -94,6 +106,9 @@ def _assemble(song, segments, vd):
     for sg in segments:
         a, b, d0 = sg["src_start"], sg["src_end"], sg["dst_start"]
         i0, o0 = int(round(a * hz)), int(round(d0 * hz))
+        if i0 < 0:                      # silence padding before the song starts
+            o0 -= i0
+            i0 = 0
         n = min(int(round((b - a) * hz)), n_out - o0, max(0, len(se) - i0))
         if n > 0:
             en[o0:o0 + n] = se[i0:i0 + n]
@@ -307,16 +322,25 @@ def _strongest_peak(video):
 
 def _empty(reason, phase):
     return {"eligible": False, "reason": reason, "segments": [], "cuts": [], "total_pct": 0, "tempo_pct": 0.0,
-            "sync_pct": 0.0, "arc_pct": 0.0, "objective": 0.0, "bar_phase": phase,
+            "sync_pct": 0.0, "arc_pct": 0.0, "objective": 0.0, "bar_phase": phase, "lead_silence_s": 0.0,
             "baseline": {"offset": 0.0, "total_pct": 0}, "improvement_pct": 0}
 
 
-def plan_splice(song: dict, video: dict, max_cuts: int, min_segment_s: float = 2.0) -> dict:
+def plan_splice(song: dict, video: dict, max_cuts: int, min_segment_s: float = 2.0,
+                allow_negative: bool = False) -> dict:
+    """Plan: {"eligible", "segments": [{"src_start","src_end","dst_start"}], "cuts", scores...,
+    "lead_silence_s"}.
+
+    PLAN FORMAT (negative offsets): with allow_negative the baseline offset may be down to -3 s
+    (song starts after the video). Then segments[0]["src_start"] is negative and
+    plan["lead_silence_s"] = -src_start is the silence the renderer must pad before the song
+    (output 0..lead_silence_s is silent; the song plays from 0 at output time lead_silence_s).
+    lead_silence_s is 0.0 for ordinary plans."""
     vd, sd = float(video["duration"]), float(song["duration"])
     phase = _bar_phase(song)
     if sd < vd:
         return _empty("song shorter than video", phase)
-    base = S.score(song, video)
+    base = S.score(song, video, allow_negative=allow_negative)
     if not base.get("eligible", True):
         return _empty("song shorter than video", phase)
     off = float(base["best_offset_s"])
@@ -330,7 +354,7 @@ def plan_splice(song: dict, video: dict, max_cuts: int, min_segment_s: float = 2
                 "tempo_pct": r["tempo_pct"], "sync_pct": r["sync_pct"], "arc_pct": r["arc_pct"],
                 "objective": round(obj, 3), "bar_phase": phase,
                 "baseline": {"offset": off, "total_pct": base_total},
-                "improvement_pct": r["total_pct"] - base_total}
+                "improvement_pct": r["total_pct"] - base_total, "lead_silence_s": lead_silence(segs)}
 
     best = (base_segs, base_res, base_obj)
     bars, bt = _bars(song, phase)

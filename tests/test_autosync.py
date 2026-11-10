@@ -135,12 +135,11 @@ def _single_tools(song, vid, **kw):
     pt = plan_tempo(song, vid, 0.08)
     st = apply_tempo(song, pt["ratio"])
     out["tempo"] = _tot(S.score_at(st, vid, _best_offset(st, vid)))
-    from amv_matcher.autosync import _safe_assemble, _safe_plan
-    sp = _safe_plan(song, vid, 3)
+    from amv_matcher.splice import _assemble, plan_splice
+    sp = plan_splice(song, vid, 3, allow_negative=True)
     if sp.get("eligible") and len(sp["segments"]) > 1:
-        asm = _safe_assemble(song, sp["segments"], float(vid["duration"]))
-        if asm is not None:
-            out["splice"] = _tot(S.score_at(asm, vid, 0.0))
+        asm = _assemble(song, sp["segments"], float(vid["duration"]))
+        out["splice"] = _tot(S.score_at(asm, vid, 0.0))
     return out
 
 
@@ -188,3 +187,41 @@ def test_sync_headline():
         f = _auto(name)["final"]
         assert f["sync_headline"] == round(0.6 * f["sync_pct"] + 0.4 * f["tempo_pct"]), name
         assert "total_pct" in f
+
+
+# ---- round 2: negative offsets, tail ramp, budget ----
+def _neg_pair():
+    cuts = np.arange(0, 55) * 0.5 + 0.63              # beats at k*0.5: best offsets are -0.13 / -0.63
+    return make_song(90.0), make_video(cuts, duration=28.0, tempo=120.0)
+
+
+def test_negative_offset_auto_sync_valid_plan():
+    song, vid = _neg_pair()
+    r = auto_sync(song, vid, budget_s=8.0)
+    base = r["steps"][0]["score_before"]
+    assert r["final"]["total_pct"] >= base - 1
+    assert "lead_silence_s" in r["plan"] and r["plan"]["lead_silence_s"] >= 0.0
+    assert r["plan"]["offset"] >= -3.0 - 1e-9
+
+
+def test_tail_ramps_to_speed_one_and_durations_reported():
+    r = auto_sync(make_song(), make_video(slow_section_cuts()))
+    assert r["final"]["video_duration_s"] == 30.0
+    assert r["final"]["out_duration_s"] > 0
+    rt = r["plan"]["retime"]
+    if rt:
+        w = np.asarray(rt["warp"], dtype=float)
+        spd = np.diff(w[:, 0]) / np.diff(w[:, 1])
+        assert abs(spd[-1] - 1.0) < 1e-2 or w[-1][0] - w[-2][0] < 1e-6
+        assert np.max(np.abs(np.diff(spd))) <= 0.15 + 1e-9
+
+
+def test_budget_prunes_but_stays_valid():
+    song = make_song(90.0)
+    vid = make_video(np.arange(1, 56) * 0.52, duration=30.0, tempo=115.4)
+    r = auto_sync(song, vid, budget_s=0.01)
+    assert r["pruned"] and "budget" in r["limits_hit"]
+    assert r["final"]["total_pct"] >= r["steps"][0]["score_before"] - 1
+    assert "elapsed_s" in r
+    full = auto_sync(song, vid, budget_s=20.0)
+    assert full["final"]["total_pct"] >= r["final"]["total_pct"]
