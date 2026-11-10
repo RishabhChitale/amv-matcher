@@ -713,6 +713,90 @@ def build_audio(song_path, plan: dict, out_duration: float, out_wav: Path) -> No
             tmp.unlink(missing_ok=True)
 
 
+# --------------------------------------------------------------------------- boom / pump effect
+
+PUMP_DEFAULTS = {"boom": 0.0, "decay": 180.0, "drops_only": False, "shake": False}
+
+
+def pump_params(d: Optional[dict]) -> dict:
+    """Validate/clamp the Boom params: boom 0-100 (default 0 = off), decay 50-400 ms (default 180),
+    drops_only / shake bool. Other keys (e.g. "song") pass through."""
+    d = dict(d or {})
+
+    def num(k, lo, hi):
+        try:
+            v = float(d.get(k, PUMP_DEFAULTS[k]))
+        except (TypeError, ValueError):
+            v = PUMP_DEFAULTS[k]
+        if v != v:
+            v = PUMP_DEFAULTS[k]
+        return min(hi, max(lo, v))
+    d["boom"], d["decay"] = num("boom", 0.0, 100.0), num("decay", 50.0, 400.0)
+    d["drops_only"], d["shake"] = bool(d.get("drops_only", False)), bool(d.get("shake", False))
+    return d
+
+
+def output_song_events(song: dict, plan: dict, out_duration: float) -> dict:
+    """Song analysis (beat_times, beat_strengths, drops) in OUTPUT time, mapped as the audio is built:
+    tempo ratio r (time / r), then the plan's segments (src_start..src_end -> dst_start, same selection
+    and shift as splice._assemble; src_start < 0 = lead silence) or, without segments, the plain offset
+    (negative = song starts late)."""
+    r = float(plan.get("tempo_ratio") or 1.0) or 1.0
+    bt = np.asarray(song.get("beat_times", []), dtype=float) / r
+    bs = song.get("beat_strengths")
+    bs = np.asarray(bs, dtype=float) if bs is not None and len(bs) == len(bt) else np.ones(len(bt))
+    dr = np.asarray(song.get("drops", []), dtype=float) / r
+    segs = plan.get("segments")
+    if not segs:
+        off = float(plan.get("offset") or 0.0)
+        lead = max(0.0, -off)
+        segs = [{"src_start": max(0.0, off), "src_end": max(0.0, off) + out_duration - lead, "dst_start": lead}]
+    beats, strengths, drops = [], [], []
+    for g in segs:
+        a, b, d0 = float(g["src_start"]), float(g["src_end"]), float(g["dst_start"])
+        sel = (bt >= a) & (bt < b)
+        beats += list(bt[sel] - a + d0)
+        strengths += list(bs[sel])
+        drops += list(dr[(dr >= a) & (dr < b)] - a + d0)
+    order = np.argsort(beats, kind="stable") if len(beats) else []
+    return {"beat_times": [beats[i] for i in order], "beat_strengths": [strengths[i] for i in order],
+            "drops": sorted(drops), "duration": out_duration}
+
+
+def pump_track(pump: Optional[dict], plan: dict, out_duration: float, fps: float, n_out: int):
+    """Per output frame k: (scale, brightness, dx, dy) from pump.pump_keyframes on the output-time song
+    (t = output time, clip-relative), or None when the effect is off (boom <= 0)."""
+    if not pump:
+        return None
+    pp = pump_params(pump)
+    if pp["boom"] <= 0:
+        return None
+    if not pp.get("song"):
+        raise RenderError("Boom needs the song analysis")
+    from . import pump as P
+    ev = output_song_events(pp["song"], plan, out_duration)
+    kf = P.pump_keyframes(ev, boom=pp["boom"], decay_ms=pp["decay"], drops_only=pp["drops_only"],
+                          fps=fps, duration=n_out / fps, shake=pp["shake"])
+    return [(k["scale"], k["brightness"], k["dx"], k["dy"]) for k in kf]
+
+
+def apply_pump(arr: np.ndarray, scale: float, bright: float, dx: float = 0.0, dy: float = 0.0) -> np.ndarray:
+    """Scale about the centre (frame size kept), shift by dx,dy px, multiply brightness.
+    Returns `arr` itself when all are neutral."""
+    if scale == 1.0 and bright == 1.0 and not dx and not dy:
+        return arr
+    out = arr
+    if scale != 1.0 or dx or dy:
+        h, w = arr.shape[:2]
+        M = np.float32([[scale, 0, (1 - scale) * w / 2.0 + dx], [0, scale, (1 - scale) * h / 2.0 + dy]])
+        import cv2
+        out = cv2.warpAffine(np.ascontiguousarray(arr), M, (w, h), flags=cv2.INTER_LINEAR,
+                             borderMode=cv2.BORDER_REPLICATE)
+    if bright != 1.0:
+        out = np.clip(out.astype(np.float32) * bright + 0.5, 0, 255).astype(np.uint8)
+    return out
+
+
 # --------------------------------------------------------------------------- render
 
 class _Frames:
@@ -759,10 +843,14 @@ class _Frames:
 def render_plan(video_path, plan: dict, audio_wav, out_path, interp: str = "auto",
                 progress_cb: Optional[Callable[[float], None]] = None, song_path=None,
                 gpu_id: Optional[int] = None, cancel: Optional[threading.Event] = None,
-                info_cb: Optional[Callable[[dict], None]] = None) -> dict:
+                info_cb: Optional[Callable[[dict], None]] = None,
+                pump: Optional[dict] = None) -> dict:
     """Render the plan to out_path (mp4). Returns {"interp","frames","interpolated","out_duration",
     "seconds","gpu"}. audio_wav=None builds the audio from song_path + plan. `cancel` (Event) stops at the
-    next frame boundary, kills RIFE, removes temps and raises RenderCancelled (no out_path written)."""
+    next frame boundary, kills RIFE, removes temps and raises RenderCancelled (no out_path written).
+    `pump` = {boom 0-100 (0/None = off: pixels untouched), decay 50-400, drops_only, shake, song: analysis
+    of the ORIGINAL song}: Boom (pump.py math) applied per output frame after interpolation, beats mapped
+    to output time through the plan (output_song_events)."""
     t_start = time.time()
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -790,6 +878,8 @@ def render_plan(video_path, plan: dict, audio_wav, out_path, interp: str = "auto
     n_out = len(i_arr)
     if n_out < 1:
         raise RenderError("Nothing to render")
+
+    track = pump_track(pump, plan, out_dur, fps, n_out)
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="amv-render-", dir=out_path.parent))
     try:
@@ -863,6 +953,8 @@ def render_plan(video_path, plan: dict, audio_wav, out_path, interp: str = "auto
                     raise RenderCancelled("cancelled")
                 for k in idx:
                     arr = frames[k][:height, :width]
+                    if track is not None:
+                        arr = apply_pump(arr, *track[min(k, len(track) - 1)])
                     vf = av.VideoFrame.from_ndarray(np.ascontiguousarray(arr), format="rgb24")
                     vf.pts = k
                     vf.time_base = Fraction(1) / rate
@@ -913,12 +1005,16 @@ def _upd(job, **kw):
 _CANCELS: dict = {}
 
 
-def _run_render(job, video_path, song_path, plan, interp, out, gpu_id=None):
+def _run_render(job, video_path, song_path, plan, interp, out, gpu_id=None, pump=None):
     ev = _CANCELS.setdefault(job["id"], threading.Event())
     try:
         if ev.is_set():
             raise RenderCancelled("cancelled")
-        info = render_plan(video_path, plan, None, out, interp=interp, song_path=song_path,
+        pump = pump_params(pump) if pump else None
+        if pump and pump["boom"] > 0 and not pump.get("song"):
+            from .audio import analyze_song
+            pump["song"] = analyze_song(str(song_path))
+        info = render_plan(video_path, plan, None, out, interp=interp, song_path=song_path, pump=pump,
                            progress_cb=lambda f: _upd(job, done=int(f * 100)),
                            gpu_id=gpu_id, cancel=ev, info_cb=lambda d: _upd(job, **d))
         _upd(job, status="done", done=100, path=str(out), size=Path(out).stat().st_size,
@@ -952,6 +1048,10 @@ def _make_router():
         plan: dict
         interp: str = "auto"
         gpu_id: Optional[int] = None
+        boom: float = 0.0
+        decay: float = 180.0
+        drops_only: bool = False
+        shake: bool = False
 
     class EstimateRequest(BaseModel):
         video_path: str
@@ -975,7 +1075,9 @@ def _make_router():
         out = paths.EXPORTS / (Path(req.video_path).stem + "-synced.mp4")
         job = _new("render")
         _CANCELS[job["id"]] = threading.Event()
-        _pool.submit(_run_render, job, req.video_path, req.song_path, req.plan, req.interp, out, req.gpu_id)
+        _pool.submit(_run_render, job, req.video_path, req.song_path, req.plan, req.interp, out, req.gpu_id,
+                     pump_params({"boom": req.boom, "decay": req.decay, "drops_only": req.drops_only,
+                                  "shake": req.shake}))
         return {"job_id": job["id"]}
 
     @r.post("/api/render-mp4/{job_id}/cancel")

@@ -344,3 +344,97 @@ def test_tempo_wav_excerpt_stops_early(tmp_path):
     n_full, n_part = sf.info(str(full)).duration, sf.info(str(part)).duration
     assert abs(n_full - 60 / 1.03) < 0.5
     assert 6.0 / 1.03 <= n_part < 12.0 / 1.03     # ~ max_in_s / ratio, not the whole 58 s
+
+
+# --------------------------------------------------------------------------- Boom / pump
+
+def _luma(a):
+    return a.astype(float).mean()
+
+
+def _boom_render(clip, tmp_path, name, song, plan=None, **pump):
+    plan = plan or plan_of([[0, 0], [4, 4]], offset=0.0)
+    out = tmp_path / name
+    render_plan(clip, plan, make_wav(tmp_path / (name + ".wav"), 4.0), out, interp="dup",
+                pump=dict(pump, song=song) if pump else None)
+    return out
+
+
+def test_pump_params_validation():
+    p = render.pump_params({"boom": 500, "decay": 1})
+    assert p["boom"] == 100 and p["decay"] == 50
+    p = render.pump_params({"boom": -5, "decay": 9999, "shake": 1})
+    assert p["boom"] == 0 and p["decay"] == 400 and p["shake"] is True and p["drops_only"] is False
+    p = render.pump_params(None)
+    assert (p["boom"], p["decay"], p["drops_only"], p["shake"]) == (0.0, 180.0, False, False)
+    p = render.pump_params({"boom": "x", "decay": float("nan")})
+    assert p["boom"] == 0.0 and p["decay"] == 180.0
+
+
+def test_output_song_events_maps_plan():
+    song = {"beat_times": [1.0, 2.0, 3.0, 4.0], "beat_strengths": [.1, .2, .3, .4], "drops": [3.0]}
+    # tempo 2: times halve; one segment [0.5,1.5) of tempo'd timeline lands at dst 1.0 (lead silence)
+    plan = {"tempo_ratio": 2.0, "segments": [{"src_start": 0.5, "src_end": 1.5, "dst_start": 1.0}]}
+    ev = render.output_song_events(song, plan, 3.0)
+    assert np.allclose(ev["beat_times"], [1.0, 1.5]) and ev["beat_strengths"] == [.1, .2]
+    assert ev["drops"] == []                    # drop at 3.0/2 = 1.5 is at src_end: excluded
+    plan2 = {"offset": -1.0}                    # negative offset = song starts 1 s late
+    ev = render.output_song_events({"beat_times": [0.5], "drops": [2.0]}, plan2, 4.0)
+    assert np.allclose(ev["beat_times"], [1.5]) and np.allclose(ev["drops"], [3.0])
+
+
+def test_boom_zoom_and_brightness_at_drop(clip, tmp_path):
+    song = {"beat_times": [], "drops": [2.0], "duration": 4.0}
+    base = frames(_boom_render(clip, tmp_path, "b0.mp4", song))
+    out = frames(_boom_render(clip, tmp_path, "b1.mp4", song, boom=80, decay=180))
+    k = 2 * FPS                                   # drop frame
+    assert _luma(out[k]) > _luma(base[k]) * 1.15    # brighter (peak 1.28)
+    assert abs(_luma(out[k]) / _luma(base[k]) - 1.28) < 0.06
+    # zoom: the bright box (x 0..20 at k=48 -> moves) grows; compare a non-beat frame untouched
+    assert np.abs(out[10] - base[10]).mean() < 1.0
+    assert np.abs(out[k] - base[k]).mean() > 5.0
+
+
+def test_boom_zero_is_identical(clip, tmp_path):
+    song = {"beat_times": [1.0, 2.0], "drops": [2.0], "duration": 4.0}
+    a = _boom_render(clip, tmp_path, "z0.mp4", song)
+    b = _boom_render(clip, tmp_path, "z1.mp4", song, boom=0)
+    assert a.read_bytes() == b.read_bytes()
+    assert render.pump_track({"boom": 0, "song": song}, {}, 4.0, FPS, 96) is None
+    arr = np.zeros((4, 4, 3), np.uint8)
+    assert render.apply_pump(arr, 1.0, 1.0, 0, 0) is arr
+
+
+def test_boom_shake_moves_at_most_6px(clip, tmp_path):
+    song = {"beat_times": [], "drops": [2.0], "duration": 4.0}
+    tr = render.pump_track({"boom": 100, "shake": True, "song": song}, plan_of([[0, 0], [4, 4]]),
+                           4.0, FPS, 4 * FPS)
+    assert max(max(abs(t[2]), abs(t[3])) for t in tr) <= 6.0 + 1e-6
+    assert any(t[2] or t[3] for t in tr)
+    img = np.zeros((90, 160, 3), np.uint8)
+    img[40:50, 70:80] = 255
+    out = render.apply_pump(img, 1.0, 1.0, 5.0, -3.0)
+    ys, xs = np.nonzero(out[..., 0] > 127)
+    assert abs(xs.min() - 75) <= 1 and abs(ys.min() - 37) <= 1
+
+
+def test_boom_beats_land_on_output_frames_for_plan(clip, tmp_path):
+    song = {"beat_times": [], "drops": [3.0], "duration": 6.0}
+    plan = plan_of([[0, 0], [4, 4]], lead_silence_s=1.0, offset=-1.0,
+                   segments=[{"src_start": 0.0, "src_end": 3.5, "dst_start": 0.5}])
+    tr = render.pump_track({"boom": 100, "song": song}, plan, 4.0, FPS, 4 * FPS)
+    k = max(range(len(tr)), key=lambda i: tr[i][1])
+    assert k == int(round(3.5 * FPS))             # drop 3.0 -> output 3.5 s
+
+
+def test_boom_audio_unaffected(clip, tmp_path):
+    song = {"beat_times": [], "drops": [2.0], "duration": 4.0}
+    a = _boom_render(clip, tmp_path, "a0.mp4", song)
+    b = _boom_render(clip, tmp_path, "a1.mp4", song, boom=80)
+    ia, ib = info(a), info(b)
+    assert ia["frames"] == ib["frames"] and abs(ia["asec"] - ib["asec"]) < 1e-3
+    with av.open(str(a)) as c:
+        ya = np.concatenate([f.to_ndarray()[0] for f in c.decode(audio=0)])
+    with av.open(str(b)) as c:
+        yb = np.concatenate([f.to_ndarray()[0] for f in c.decode(audio=0)])
+    assert np.array_equal(ya, yb)
