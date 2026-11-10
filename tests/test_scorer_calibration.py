@@ -89,3 +89,21 @@ def test_tightness_metric():
     assert off["tight_pct"] == 0.0 and 99 < off["p90_err_ms"] < 101
     assert score_at(song, vid([1.0, 1.5, 2.0, 2.5]), 0.0)["tightness"]["n_events"] == 4
     assert tightness(song, vid([]), 0.0)["median_err_ms"] is None
+
+
+def test_lead_s_consistent_in_sync_and_tightness():
+    from amv_matcher.score import PERCEPTUAL_LEAD_S, score_at
+    beats = [i * 0.5 for i in range(1, 121)]
+    song = {"bpm": 120.0, "beat_times": beats, "duration": 60.0, "energy_curve": [0.5] * 60,
+            "drops": [], "lulls": []}
+    cuts = [1.0 + 0.5 * i - PERCEPTUAL_LEAD_S for i in range(20)]          # a lead-shifted edit
+    vid = {"cut_times": cuts, "motion_peaks": [], "duration": 20.0, "energy_curve": [0.5] * 20,
+           "motion_tempo_bpm": 120.0, "motion_tempo_candidates": []}
+    dflt = score_at(song, vid, 0.0)
+    assert dflt == score_at(song, vid, 0.0, lead_s=PERCEPTUAL_LEAD_S)      # None == default lead
+    nolead = score_at(song, vid, 0.0, lead_s=0.0)
+    assert dflt["sync_pct"] >= nolead["sync_pct"]
+    assert dflt["tightness"]["tight_pct"] == 100.0 and nolead["tightness"]["tight_pct"] == 0.0
+    assert nolead["tightness"]["lead_ms"] == 0
+    assert score_at(song, vid, 0.0, lead_s=5.0)["tightness"]["lead_ms"] == 120   # clamped to 0.12
+    assert score_at(song, vid, 0.0, lead_s=-1.0)["tightness"]["lead_ms"] == 0

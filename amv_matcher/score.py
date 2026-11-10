@@ -71,9 +71,24 @@ def _dist_to(t, ref):
     return np.minimum(np.abs(t - left), np.abs(t - right))
 
 
-def _beat_level(ev_t, ev_w, beats, vd, off):
+# Human editors cut slightly BEFORE the beat (perceptual sync). Median signed event-to-nearest-beat
+# error on the two ground-truth AMVs: A -65 ms, B -53 ms -> 0.06 s. Every event-vs-beat comparison
+# (sync phase/coherence, fine term, phrase term, tightness) uses the SAME lead: an event is "on the
+# beat" when it lands lead_s before it.
+PERCEPTUAL_LEAD_S = 0.06
+MAX_LEAD_S = 0.12
+
+
+def _lead(lead_s=None):
+    """None -> PERCEPTUAL_LEAD_S; otherwise clamped to 0..MAX_LEAD_S."""
+    if lead_s is None:
+        return PERCEPTUAL_LEAD_S
+    return float(min(max(float(lead_s), 0.0), MAX_LEAD_S))
+
+
+def _beat_level(ev_t, ev_w, beats, vd, off, lead_s=None):
     """Chance-corrected soft credit of events by distance to the nearest beat (0..1)."""
-    t = ev_t + off
+    t = ev_t + off + _lead(lead_s)          # event vs (beat - lead)
     ok = t >= 0
     if not np.any(ok) or len(beats) < 2:
         return 0.0
@@ -85,7 +100,7 @@ def _beat_level(ev_t, ev_w, beats, vd, off):
     return float(np.clip((f - base) / max(1e-6, 1.0 - base), 0.0, 1.0))
 
 
-def _phrase_level(song, cut_t, vd, off):
+def _phrase_level(song, cut_t, vd, off, lead_s=None):
     """Cuts near bar / half-bar boundaries of the song's grid (0..1, chance-corrected)."""
     grid = song.get("beat_grid")
     period = float(song.get("grid_period") or 0)
@@ -93,7 +108,7 @@ def _phrase_level(song, cut_t, vd, off):
     if grid is None or len(grid) < bpb * 2 or period <= 0 or not song.get("grid_used") or len(cut_t) == 0:
         return None
     grid = np.asarray(grid, dtype=float)
-    t = cut_t + off
+    t = cut_t + off + _lead(lead_s)
     t = t[t >= 0]
     if len(t) == 0:
         return None
@@ -112,7 +127,6 @@ def _phrase_level(song, cut_t, vd, off):
 
 LOCK_A = 1.5                  # logistic slope on the lock prominence z
 LOCK_B = 1.5                  # z at which sync is 50%
-LOCK_LAG_S = -0.05            # human edits land ~50 ms before the beat
 LOCK_TOL_S = 0.06             # no penalty within this of the expected lag
 LOCK_FINE_W = 0.15
 LOCK_RAW_W = 0.05             # un-saturated beat credit: keeps small local gains visible to planners
@@ -157,7 +171,7 @@ def _lock(song, ev_t, ev_w):
     return out
 
 
-def _sync_pct_at(song, ev_t, ev_w, vd, off):
+def _sync_pct_at(song, ev_t, ev_w, vd, off, lead_s=None):
     """Discriminative sync 0..100: logistic of the tempo-lock prominence z, times how well
     the offset puts the events at the expected lag from the beat (cosine of phase error)."""
     ev_t = np.asarray(ev_t, dtype=float)
@@ -167,14 +181,14 @@ def _sync_pct_at(song, ev_t, ev_w, vd, off):
         return 0.0
     z, z0c, T, g0 = k
     # coherence of events shifted by off, relative to the grid origin and expected lag
-    ph = np.exp(2j * np.pi * (off - g0 - LOCK_LAG_S) / T) * z0c
+    ph = np.exp(2j * np.pi * (off - g0 + _lead(lead_s)) / T) * z0c
     r = abs(z0c)
     err = abs(float(np.angle(ph))) / (2 * np.pi) * T          # seconds from the expected lag
     align = 1.0 if err <= LOCK_TOL_S else float(np.exp(-0.5 * ((err - LOCK_TOL_S) / LOCK_TOL_S) ** 2))
     lock = 100.0 / (1.0 + np.exp(-LOCK_A * (z - LOCK_B))) * align
     # small fine-alignment term: keeps retime/splice/nudge improvements visible once the
     # lock itself has saturated (real edits are only loosely sample-accurate, so weight is low)
-    b = _beat_level(ev_t, ev_w, _beats(song), vd, off)
+    b = _beat_level(ev_t, ev_w, _beats(song), vd, off, lead_s)
     fine = 100.0 * (1.0 - np.exp(-b / 0.05))
     return float(np.clip((1 - LOCK_FINE_W - LOCK_RAW_W) * lock + LOCK_FINE_W * fine + LOCK_RAW_W * 100.0 * b, 0, 100))
 
@@ -222,9 +236,6 @@ def _combine(tempo_pct, sync_pct, arc_pct):
 
 
 TIGHT_TOL_S = 0.040           # an event is "tight" when within +-40 ms of the grid
-# Human editors cut slightly BEFORE the beat (perceptual sync). Median signed event-to-nearest-beat
-# error on the two ground-truth AMVs: A -65 ms, B -53 ms -> 0.06 s.
-PERCEPTUAL_LEAD_S = 0.06
 
 
 def _tight_stats(t, w, ref, T):
@@ -244,30 +255,31 @@ def _tight_stats(t, w, ref, T):
     }
 
 
-def tightness(song: dict, video: dict, offset: float) -> dict:
+def tightness(song: dict, video: dict, offset: float, lead_s: float = None) -> dict:
     """Non-saturating alignment of the video's locked events (cuts + peaks, same weights as
     the sync score) to the song's beat grid at `offset`. The main numbers are measured against
     the lead-compensated grid (beat_time - PERCEPTUAL_LEAD_S, since editors cut before the beat);
     `raw` is the same measure against the bare beat grid. The half-beat grid is used when the
     edit locks at 8ths (2nd-harmonic coherence beats the beat's). tight_pct = weighted % of
     events within +-40 ms of the grid; median/p90 are absolute errors in ms."""
+    lead = _lead(lead_s)
     ev_t, ev_w = _events(video)
     beats = _beats(song)
     blank = {"tight_pct": 0.0, "median_err_ms": None, "p90_err_ms": None, "grid": "beat", "chance_pct": 0.0}
     if len(ev_t) == 0 or len(beats) < 2:
-        return {**blank, "n_events": 0, "lead_ms": round(PERCEPTUAL_LEAD_S * 1000), "raw": dict(blank)}
+        return {**blank, "n_events": 0, "lead_ms": round(lead * 1000), "raw": dict(blank)}
     ref = np.asarray(beats, dtype=float)
     T = float(np.median(np.diff(ref)))
     w = ev_w / ev_w.sum()
     t = ev_t + float(offset)
-    out = _tight_stats(t + PERCEPTUAL_LEAD_S, w, ref, T)   # event vs (beat - lead)
+    out = _tight_stats(t + lead, w, ref, T)   # event vs (beat - lead)
     out["n_events"] = int(len(ev_t))
-    out["lead_ms"] = round(PERCEPTUAL_LEAD_S * 1000)
+    out["lead_ms"] = round(lead * 1000)
     out["raw"] = _tight_stats(t, w, ref, T)
     return out
 
 
-def _pack(song, video, off, tempo_pct, rate, sync_pct, arc_pct):
+def _pack(song, video, off, tempo_pct, rate, sync_pct, arc_pct, lead_s=None):
     return {
         "eligible": True,
         "total_pct": int(round(_combine(tempo_pct, sync_pct, arc_pct))),
@@ -278,7 +290,7 @@ def _pack(song, video, off, tempo_pct, rate, sync_pct, arc_pct):
         "trim_start_s": round(off, 2),
         "trim_end_s": round(off + float(video["duration"]), 2),
         "best_rate": rate,
-        "tightness": tightness(song, video, off),
+        "tightness": tightness(song, video, off, lead_s),
     }
 
 
@@ -293,13 +305,14 @@ def _tempo(song, video):
     return pct, rate
 
 
-def score_at(song: dict, video: dict, offset: float) -> dict:
-    """Score one explicit offset (manual placement of the song on the timeline)."""
+def score_at(song: dict, video: dict, offset: float, lead_s: float = None) -> dict:
+    """Score one explicit offset (manual placement of the song on the timeline). lead_s: perceptual
+    lead in seconds (None = PERCEPTUAL_LEAD_S, clamped 0..0.12), applied to sync and tightness alike."""
     tempo_pct, rate = _tempo(song, video)
     ev_t, ev_w = _events(video)
     vd = float(video["duration"])
-    sync = _sync_pct_at(song, ev_t, ev_w, vd, offset) if len(ev_t) and len(song["beat_times"]) >= 2 else 0.0
-    return _pack(song, video, offset, tempo_pct, rate, sync, _arc_pct_at(song, video, offset))
+    sync = _sync_pct_at(song, ev_t, ev_w, vd, offset, lead_s) if len(ev_t) and len(song["beat_times"]) >= 2 else 0.0
+    return _pack(song, video, offset, tempo_pct, rate, sync, _arc_pct_at(song, video, offset), lead_s)
 
 
 def _xcorr_offsets(song, ev_t, ev_w, lo, hi):
@@ -335,10 +348,11 @@ def _xcorr_offsets(song, ev_t, ev_w, lo, hi):
     return out
 
 
-def score(song: dict, video: dict, allow_negative: bool = False) -> dict:
+def score(song: dict, video: dict, allow_negative: bool = False, lead_s: float = None) -> dict:
     """Best placement of the video window inside the song; ineligible if the song is shorter.
     With allow_negative the song may also start up to 3 s after the video (padded with
-    silence, no length penalty). Off by default: splice/auto-sync need trim_start_s >= 0."""
+    silence, no length penalty). Off by default: splice/auto-sync need trim_start_s >= 0.
+    lead_s: perceptual lead in seconds (None = PERCEPTUAL_LEAD_S, clamped 0..0.12)."""
     vd, sd = float(video["duration"]), float(song["duration"])
     if sd < vd:
         return {
@@ -356,7 +370,7 @@ def score(song: dict, video: dict, allow_negative: bool = False) -> dict:
     offsets = np.arange(lo, max_off + 1e-9, step)
 
     def comb_at(o):
-        sync = _sync_pct_at(song, ev_t, ev_w, vd, o) if has_sync else 0.0
+        sync = _sync_pct_at(song, ev_t, ev_w, vd, o, lead_s) if has_sync else 0.0
         arc = _arc_pct_at(song, video, o)
         return W_SYNC * sync + W_ARC * arc, sync, arc
 
@@ -373,4 +387,4 @@ def score(song: dict, video: dict, allow_negative: bool = False) -> dict:
             if best is None or c > best[0]:
                 best = (c, o, sy, ar)
     _, off, sync, arc = best
-    return _pack(song, video, off, tempo_pct, rate, sync, arc)
+    return _pack(song, video, off, tempo_pct, rate, sync, arc, lead_s)

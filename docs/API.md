@@ -49,6 +49,7 @@ Notes: `results` = eligible songs only, ranked by `total_pct` (ties: `sync_pct`)
 
 **`tightness`** (every score output, same shape in scan results, `/api/score`, splice/autosync scoring; pure and cheap, `score.tightness(song, video, offset)`): non-saturating alignment of the video's locked events (cuts + motion peaks, same cut/peak weights as the sync score) to the song's beat grid at the reported offset. Unlike `sync_pct` it does not saturate near the top, so use it to see fine improvements in auto-sync.
 - Main numbers are measured against the lead-compensated grid `beat_time - PERCEPTUAL_LEAD_S` (`lead_ms`, 60 ms: the median amount human editors cut before the beat, measured on two ground-truth AMVs). `tightness.raw` has the same fields (`tight_pct`, errors, `grid`, `chance_pct`) against the bare beat grid.
+- The same lead is applied everywhere events are compared with beats (sync phase/coherence, fine term, phrase term, tightness). `score()`, `score_at()` and `tightness()` take `lead_s: float = None` (None = `PERCEPTUAL_LEAD_S`; clamped 0-0.12 s); `lead_s=0` reproduces bare-beat scoring.
 - `tight_pct`: weighted % of events within ±40 ms of the grid.
 - `median_err_ms`, `p90_err_ms`: median / 90th percentile of the absolute distance (ms) from an event to the nearest grid line.
 - `n_events`: number of events used. `null` errors and 0 when there are no events or no grid.
