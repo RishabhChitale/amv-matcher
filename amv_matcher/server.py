@@ -315,7 +315,7 @@ def _safe_song(path: str) -> Path:
         p = Path(path).expanduser().resolve()
     except Exception:
         raise HTTPException(400, "Bad path")
-    if not (_in_music_dirs(p) or winsafe.norm_case_path(p) in ALLOWED_SONGS or _in_uploads(p) or _under(p, EXTRACTED)) or p.suffix.lower() not in AUDIO_EXTS or not p.is_file():
+    if not (_in_music_dirs(p) or winsafe.in_allowed(p, ALLOWED_SONGS) or _in_uploads(p) or _under(p, EXTRACTED)) or p.suffix.lower() not in AUDIO_EXTS or not p.is_file():
         raise HTTPException(403, "Path is not a song inside a scanned music folder or the uploads folder")
     return p
 
@@ -325,7 +325,7 @@ def _safe_video(path: str) -> Path:
         p = Path(path).expanduser().resolve()
     except Exception:
         raise HTTPException(400, "Bad path")
-    if not (winsafe.norm_case_path(p) in ALLOWED_VIDEOS or _in_uploads(p)) or p.suffix.lower() not in VIDEO_EXTS or not p.is_file():
+    if not (winsafe.in_allowed(p, ALLOWED_VIDEOS) or _in_uploads(p)) or p.suffix.lower() not in VIDEO_EXTS or not p.is_file():
         raise HTTPException(403, "Path is not a scanned or uploaded video")
     return p
 

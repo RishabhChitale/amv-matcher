@@ -40,15 +40,43 @@ def replace_retry(src, dst, tries=10, delay=0.05):
             time.sleep(delay * (1 + i))
 
 
+def _long_path(s: str) -> str:
+    """Windows only: expand 8.3 short names (RUNNER~1) via GetLongPathNameW; unchanged when it fails or
+    the path does not exist."""
+    try:
+        import ctypes
+        buf = ctypes.create_unicode_buffer(32768)
+        n = ctypes.windll.kernel32.GetLongPathNameW(s, buf, len(buf))
+        return buf.value if 0 < n < len(buf) else s
+    except Exception:  # noqa: BLE001
+        return s
+
+
 def norm_case_path(p) -> str:
-    """Absolute, normalised string; lower-cased on Windows (W-04). Does not touch the filesystem."""
-    return os.path.normcase(os.path.abspath(str(p)))
+    """The ONE normaliser for allowed-set adds AND lookups: absolute, 8.3 short names expanded and
+    separators/case normalised on Windows (W-04). POSIX: abspath only, exact case."""
+    s = os.path.abspath(str(p))
+    if _is_win():
+        s = _long_path(s)
+        if len(s) > 1 and s[1] == ":":
+            s = s[0].upper() + s[1:]
+        s = s.replace("/", "\\")
+    return os.path.normcase(s)
+
+
+def in_allowed(p, allowed) -> bool:
+    """p (normalised) is in the set `allowed`, whether its members were stored normalised or raw."""
+    k = norm_case_path(p)
+    return k in allowed or any(norm_case_path(x) == k for x in allowed)
 
 
 def is_relative_to_ci(child, parent) -> bool:
     """child is parent or inside it; case-insensitive on Windows, exact on POSIX (W-05)."""
     c, p = norm_case_path(child), norm_case_path(parent)
-    return c == p or c.startswith(p.rstrip(os.sep) + os.sep)
+    if c == p:
+        return True
+    p = p.rstrip("/\\")
+    return c.startswith(p) and c[len(p):len(p) + 1] in ("/", "\\", os.sep)
 
 
 def _inside(path, root) -> bool:
