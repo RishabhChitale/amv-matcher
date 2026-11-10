@@ -31,13 +31,14 @@ System-Python fallback: `stems_api.find_system_python()` returns an argv prefix 
 - macOS/Linux: `python3.12` .. `python3.9`, `python3`, `python`, then `/usr/bin/python3`, Homebrew paths.
 The venv is always built with that interpreter, never `sys.executable` (which is the app when frozen). Microsoft Store stubs fail the version check and are skipped.
 
-## Install flow (to implement)
-Reuses the existing job conventions in `stems_api` (`INSTALL` state dict, polled status endpoint, cancel flag):
-1. `POST /api/stems/install {mode: "pack" | "system"}` starts `_install_job` in a thread; `GET` status returns `{status, phase, progress, message, error}`.
-2. Phases: `manifest` -> `download` (bytes/total) -> `verify` -> `extract` -> `selftest` -> `done`.
-3. Cancel: sets the cancel event; download loop checks it per chunk and keeps the `.part` for resume; extract/self-test children are killed with `winsafe.kill_tree`. Temp dirs removed via `safe_rmtree`; anything locked goes to `LEAKED_TEMP` and is retried on next start.
-4. Preflight: `free_bytes(data_dir)` must exceed 2x installed size (archive + extracted); otherwise fail before downloading.
-5. System mode (today's behaviour): venv + `pip install` with progress parsed from pip output.
+## Install flow (implemented: system-Python pack)
+`stems_api.py`; jobs poll like separation jobs.
+- `POST /api/stems/install` -> job JSON `{id, status: running|done|error|cancelled, stage: starting|venv|downloading|installing|verifying|done, progress 0..1, message, error, package, started, seconds?, torch?, demucs?}`. 200 = started (or `{id:null,status:"done"}` if already installed), **409** one already running, **507** under 3 GB free, **501** frozen app without a system Python 3.9-3.12.
+- `GET /api/stems/install` latest job + `installed` + `pack`; `GET /api/stems/install/{job}` that job (404 unknown); `POST /api/stems/install/{job}/cancel` -> `{cancelled, job}` (kills pip's process tree via `winsafe.kill_tree`, removes the half venv); `GET /api/stems/pack` -> `pack_status()`.
+- Steps: `find_system_python()` (dev: the running interpreter) -> venv in the app-data `stems-pack` dir -> `pip install -r requirements-stems.txt` (+ `-c constraints-stems-macos.txt` on macOS Python 3.9). Progress is parsed from pip output (percent by package count). Then VERIFY: the venv python imports torch + demucs and prints versions.
+- Resume-safe: `pack.json` (`{version, python, torch, demucs, installed_at}`) is written atomically LAST. A venv dir without it, or with another `PACK_VERSION`, is "half installed" and is deleted and rebuilt by the next install.
+- `pack_status()` -> `{installed, version, python_path, size_mb, source, half_installed, weights_cached}`.
+- Weights: Demucs downloads htdemucs weights on first separation into `TORCH_HOME` (app-data cache, `<cache>/torch`); the separation job reports stage `downloading_weights` (message "Downloading Demucs weights (first time only)") until the model is loaded, then `separating`.
 
 ## Failure modes
 - No network / proxy: manifest fetch fails -> error text, HPSS still usable, retry button.

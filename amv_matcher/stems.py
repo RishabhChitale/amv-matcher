@@ -27,7 +27,11 @@ from . import winsafe
 CACHE_DIR = _paths.CACHE / "stems"           # module var so tests can redirect it
 VENV_DIR = _paths.STEMS_PACK if _paths.FROZEN else ROOT / ".venv-stems"
 PACK_MISSING_MSG = "Stems pack not installed: quick split only"
+# Demucs weights (~80 MB) are downloaded on the FIRST separation, not at install time.  The runner is
+# started with TORCH_HOME=this dir so they land in the app-data cache (<app data>/cache/torch), never in
+# ~/.cache/torch; they are shared by every pack version and survive a pack rebuild.
 TORCH_HOME = _paths.CACHE / "torch"
+WEIGHTS_MSG = "Downloading Demucs weights (first time only)"
 SR = 44100
 ENERGY_HZ = 10
 MIN_FREE_BYTES = 3 * 1024 ** 3
@@ -71,9 +75,24 @@ def stem_dir(path, provider: str) -> Path:
     return CACHE_DIR / song_key(path) / provider
 
 
+def venv_python(venv_dir=None) -> Path:
+    """Interpreter path inside a venv by platform layout: Scripts/python.exe (Windows) or bin/python."""
+    v = Path(venv_dir or VENV_DIR)
+    return v / "Scripts" / "python.exe" if winsafe._is_win() else v / "bin" / "python"
+
+
 def demucs_python() -> Path:
     win = VENV_DIR / "Scripts" / "python.exe"
     return win if win.is_file() else VENV_DIR / "bin" / "python"
+
+
+def weights_cached() -> bool:
+    """htdemucs weights (*.th) already in the app-data cache (TORCH_HOME/hub/checkpoints)."""
+    d = TORCH_HOME / "hub" / "checkpoints"
+    try:
+        return d.is_dir() and any(d.glob("*.th"))
+    except OSError:
+        return False
 
 
 def demucs_installed() -> bool:
@@ -161,6 +180,9 @@ def separate_demucs(song_path, out: Path, progress=None, cancel=None, proc_holde
     runner = Path(__file__).with_name("_demucs_runner.py")
     tmp = out / "_tmp"
     _cleanup_dir(tmp, out)
+    need_weights = not weights_cached()
+    if need_weights and progress:
+        progress(0.02, WEIGHTS_MSG)
     # own session/process group (POSIX) so kill_tree reaches demucs' worker grandchildren; Windows: taskkill /T
     kw = {} if winsafe._is_win() else {"start_new_session": True}
     proc = winsafe.popen([str(demucs_python()), "-I", str(runner), str(src), str(tmp)],
@@ -177,7 +199,10 @@ def separate_demucs(song_path, out: Path, progress=None, cancel=None, proc_holde
             if line.startswith("PROGRESS "):
                 parts = line.split()
                 if progress:
-                    progress(float(parts[1]), "Separating with Demucs (CPU)")
+                    loading = len(parts) > 2 and parts[2] == "loading-model"
+                    msg = (WEIGHTS_MSG if need_weights else "Loading Demucs model") if loading \
+                        else "Separating with Demucs (CPU)"
+                    progress(float(parts[1]), msg)
             elif line:
                 tail.append(line)
                 tail = tail[-8:]

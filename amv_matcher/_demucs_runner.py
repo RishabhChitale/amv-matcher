@@ -1,7 +1,8 @@
 """Runs inside the stems venv (.venv-stems): htdemucs on a stereo 44.1 kHz wav -> one wav per stem.
 
 usage: python _demucs_runner.py in.wav out_dir
-Prints 'PROGRESS <0..1>' lines on stdout; weights are cached under TORCH_HOME (set by the parent).
+Prints 'PROGRESS <0..1>' lines on stdout; weights are cached under TORCH_HOME (set by the parent to the
+app-data cache); get_model() downloads them on first use, during 'PROGRESS 0.02 loading-model'.
 """
 import os
 import re

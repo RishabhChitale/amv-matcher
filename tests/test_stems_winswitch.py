@@ -141,24 +141,28 @@ def test_find_system_python_never_returns_app_exe_and_checks_version(monkeypatch
 
 
 def test_pack_status_shapes(monkeypatch, tmp_path):
+    monkeypatch.setattr(S, "VENV_DIR", tmp_path / "none")
     monkeypatch.setattr(S, "demucs_installed", lambda: False)
+    monkeypatch.setattr(S, "weights_cached", lambda: False)
     st = A.pack_status()
-    assert st == {"installed": False, "version": None, "python_path": None, "size_mb": 0.0, "source": None}
-    (tmp_path / "pack.json").write_text(json.dumps({"version": "1.2.3"}))
+    assert st == {"installed": False, "version": None, "python_path": None, "size_mb": 0.0, "source": None,
+                  "half_installed": False, "weights_cached": False}
+    (tmp_path / "pack.json").write_text(json.dumps({"version": A.PACK_VERSION}))
     (tmp_path / "f.bin").write_bytes(b"x" * 1024 * 1024)
     monkeypatch.setattr(S, "VENV_DIR", tmp_path)
     monkeypatch.setattr(S, "demucs_installed", lambda: True)
     monkeypatch.setattr(S, "demucs_python", lambda: tmp_path / "bin" / "python")
     monkeypatch.setattr(S, "paths_frozen", lambda: True)
     st = A.pack_status()
-    assert st["installed"] and st["version"] == "1.2.3" and st["source"] == "pack" and st["size_mb"] >= 1.0
+    assert st["installed"] and st["version"] == A.PACK_VERSION and st["source"] == "pack"
+    assert st["size_mb"] >= 1.0 and not st["half_installed"]
 
 
 def test_install_job_frozen_builds_venv_with_system_python(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(S, "VENV_DIR", tmp_path / "v")
-    monkeypatch.setattr(S, "demucs_python", lambda: tmp_path / "v" / "py")
     monkeypatch.setattr(A, "find_system_python", lambda: ["py", "-3.11"])
+    monkeypatch.setattr(A, "_py_version", lambda c: (3, 11))
     seen = []
     monkeypatch.setattr(winsafe, "run", lambda cmd, **kw: seen.append(cmd))
 
