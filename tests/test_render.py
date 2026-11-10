@@ -169,3 +169,92 @@ def test_rife_interpolates(clip, tmp_path):
 @pytest.mark.skipif(os.environ.get("AMV_REAL") != "1", reason="AMV_REAL=1 only")
 def test_real_media_render():
     pytest.skip("run via scratchpad real_render.py")
+
+
+# ---------------------------------------------------------------- revision 1
+
+def test_auto_is_blend(clip, tmp_path):
+    assert render.resolve_interp("auto") == "blend"
+    wav = make_wav(tmp_path / "a.wav", 4.25)
+    r = render_plan(clip, plan_of(SLOW), wav, tmp_path / "o.mp4", interp="auto")
+    assert r["interp"] == "blend" and r["gpu"] is None
+
+
+FAKE = [{"id": 0, "name": "Intel(R) UHD Graphics 630"}, {"id": 1, "name": "AMD Radeon Pro 5300M"},
+        {"id": 2, "name": "llvmpipe (LLVM 15)"}]
+
+
+def test_gpu_pick_heuristic(monkeypatch):
+    monkeypatch.delenv("AMV_RIFE_GPU", raising=False)
+    assert render.pick_gpu_order(FAKE) == [1, 0, 2]            # discrete, integrated, software
+    assert render.pick_gpu_order(FAKE, override=0) == [0, 1, 2]
+    assert render.pick_gpu_order(FAKE, override=-1)[0] == -1
+    assert render.pick_gpu_order([]) == []
+    monkeypatch.setenv("AMV_RIFE_GPU", "2")
+    assert render.pick_gpu_order(FAKE)[0] == 2
+    txt = "[0 AMD Radeon Pro 5300M]  queueC=0[1]\n[1 Intel(R) UHD Graphics 630]  queueC=0[1]\n"
+    assert render.parse_vulkan_devices(txt) == [{"id": 0, "name": "AMD Radeon Pro 5300M"},
+                                                {"id": 1, "name": "Intel(R) UHD Graphics 630"}]
+    assert [render.device_class(d["name"]) for d in render.parse_vulkan_devices(txt)] == [0, 1]
+
+
+def test_estimate_shape(clip, tmp_path, monkeypatch):
+    monkeypatch.setattr(render, "tools_dir", lambda: tmp_path)
+    e = render.estimate_render(plan_of(SLOW), "blend", clip)
+    assert set(e) >= {"frames", "interpolated", "est_seconds", "estimated"}
+    assert e["frames"] == round(4.25 * FPS) and e["interpolated"] > 0 and e["est_seconds"] > 0
+    assert e["estimated"] is True
+    assert render.estimate_render(plan_of(SLOW), "dup", clip)["interpolated"] == 0
+    assert render.estimate_render(plan_of(SLOW), "auto", clip)["interp"] == "blend"
+    render._save_cost("base", f"{W}x{H}", 0.001)
+    render._save_cost("blend", f"{W}x{H}", 0.001)
+    assert render.estimate_render(plan_of(SLOW), "blend", clip)["estimated"] is False
+
+
+def test_cancel_cleans_up(clip, tmp_path):
+    import threading
+    ev = threading.Event()
+    ev.set()
+    out = tmp_path / "o.mp4"
+    with pytest.raises(render.RenderCancelled):
+        render_plan(clip, plan_of(SLOW), make_wav(tmp_path / "a.wav", 4.25), out, interp="blend", cancel=ev)
+    assert not out.exists() and not list(tmp_path.glob("*.tmp.mp4")) and not list(tmp_path.glob("amv-render-*"))
+
+
+def test_cancel_midway_and_endpoint(clip, tmp_path, monkeypatch):
+    import threading
+    ev = threading.Event()
+    seen = []
+    def cb(f):
+        seen.append(f)
+        if f > 0.3:
+            ev.set()
+    out = tmp_path / "o.mp4"
+    with pytest.raises(render.RenderCancelled):
+        render_plan(clip, plan_of(SLOW), make_wav(tmp_path / "a.wav", 4.25), out, interp="blend",
+                    cancel=ev, progress_cb=cb)
+    assert not out.exists() and not list(tmp_path.glob("*.tmp.mp4"))
+    if render.router is None:
+        return
+    job = {"id": "j1", "status": "running", "stage": "render", "done": 0}
+    render.JOBS["j1"] = job
+    render._CANCELS["j1"] = threading.Event()
+    h = {r.path: r.endpoint for r in render.router.routes}
+    h["/api/render-mp4/{job_id}/cancel"]("j1")
+    assert render._CANCELS["j1"].is_set()
+    render._run_render(job, str(clip), str(make_wav(tmp_path / "s.wav", 6)), plan_of(SLOW), "blend",
+                       tmp_path / "e.mp4")
+    assert job["status"] == "cancelled" and not (tmp_path / "e.mp4").exists()
+
+
+def test_prune_and_marker(tmp_path, monkeypatch):
+    monkeypatch.setattr(render, "tools_dir", lambda: tmp_path)
+    d = render.rife_dir() / "pkg"
+    (d / "rife-v4.6").mkdir(parents=True)
+    (d / "rife-v2").mkdir()
+    (d / "README.md").write_text("x")
+    (d / "LICENSE").write_text("x")
+    (d / render._asset()["exe"]).write_text("bin")
+    monkeypatch.setattr(render, "rife_exe", lambda: d / render._asset()["exe"])
+    render.prune_rife()
+    assert sorted(p.name for p in d.iterdir()) == sorted(["LICENSE", "rife-v4.6", render._asset()["exe"]])
