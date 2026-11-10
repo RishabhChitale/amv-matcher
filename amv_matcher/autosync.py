@@ -11,6 +11,7 @@ import numpy as np
 
 from . import score as S
 from .retime import apply_warp, plan_retime
+from .arrange import plan_arrangement
 from .splice import _assemble, lead_silence, plan_splice
 
 
@@ -160,17 +161,21 @@ def _nudge(song, video, offset, max_shift, lead=0.0):
 
 
 ORDERS = {
-    "default": ("tempo", "splice", "retime", "micro"),
-    "retime_first": ("retime", "tempo", "splice", "retime", "micro"),
-    "splice_first": ("splice", "retime", "micro"),
+    "default": ("tempo", "splice", "arrange", "retime", "micro"),
+    "retime_first": ("retime", "tempo", "splice", "arrange", "retime", "micro"),
+    "splice_first": ("splice", "arrange", "retime", "micro"),
     "retime_only": ("retime", "micro"),
     "tempo_only": ("tempo", "micro"),
 }
 ORDER_COST = ("tempo_only", "retime_only", "splice_first", "default", "retime_first")   # cheapest first
 
 
+ARRANGE_MAX_MOVES = 3
+ARRANGE_MIN_LEFT_S = 8.0   # arrange costs ~5 s on a 4-minute song: skipped when the overall budget has less left
+
+
 def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min_section_s, max_cuts,
-         min_gain, max_passes, allow_splice, lead_s=0.0, loop_segs=None):
+         min_gain, max_passes, allow_splice, lead_s=0.0, loop_segs=None, memo=None, deadline=None):
     t0 = time.perf_counter()
     steps, limits = [], []
     vd = float(video["duration"])
@@ -251,6 +256,25 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
                     if kept:
                         segs, cur_song, offset, cur = sp["segments"], asm, 0.0, asm_r
                         nudges, cur_video = [], sv
+            elif tool == "arrange" and allow_splice and segs is None and left() > 0 \
+                    and float(cur_song["duration"]) >= svd \
+                    and (deadline is None or deadline - time.perf_counter() > ARRANGE_MIN_LEFT_S):
+                key = (id(cur_song), id(sv), lead_s)
+                if memo is not None and key in memo:
+                    ap = memo[key][2]
+                else:
+                    ap = plan_arrangement(cur_song, sv, ARRANGE_MAX_MOVES, lead_s=lead_s)
+                    if memo is not None:
+                        memo[key] = (cur_song, sv, ap)       # keep the objects alive so ids stay unique
+                if ap.get("eligible") and len(ap.get("segments") or []) > 1:
+                    asm = _assemble(cur_song, ap["segments"], svd)
+                    asm_r = S.score_at(asm, sv, 0.0, lead_s=lead_s)
+                    kept = _gain(asm_r, cur, min_gain)
+                    rec("arrange", {"moves": ap["moves"], "sections_used": ap["sections_used"]}, _tot(cur),
+                        _tot(asm_r) if kept else _tot(cur), kept, cur, asm_r)
+                    if kept:
+                        segs, cur_song, offset, cur = ap["segments"], asm, 0.0, asm_r
+                        nudges, cur_video = [], sv
             elif tool == "retime":
                 # always planned from the ORIGINAL video against the current song/offset (replaces)
                 rp = plan_retime(cur_song, video, offset, max_speed_dev, min_section_s, lead_s=lead_s)
@@ -328,6 +352,7 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
         allow_splice = False
     names = list(ORDER_COST)             # cheapest first; later (dearer) orders are pruned on budget
     best, pruned = None, False
+    memo, deadline = {}, t0 + budget_s
     for i, name in enumerate(names):
         rem = budget_s - (time.perf_counter() - t0)
         if rem <= 0 and best:
@@ -335,7 +360,7 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
             break
         run = _run(song, video, ORDERS[name], target, max(rem / max(1, len(names) - i), 2.0), max_speed_dev,
                    max_tempo_dev, min_section_s, max_cuts, min_gain, max_passes, allow_splice, lead_s,
-                   loop_segs=loop_segs)
+                   loop_segs=loop_segs, memo=memo, deadline=deadline)
         run["path"] = name
         if best is None or _rank(run["cur"]) > _rank(best["cur"]):
             best = run

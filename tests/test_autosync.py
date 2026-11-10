@@ -315,3 +315,80 @@ def test_heavy_retime_effort_penalised():
     f = r["final"]
     assert f["effort"]["sections"] > 0 and f["effort"]["retimed_fraction"] > 0
     assert f["effort_pct"] > 0 and f["fit_after_effort"] < f["total_pct"]
+
+
+# ---- arrange step (synthetic) ----
+from amv_matcher import autosync as AS
+from amv_matcher.arrange import plan_arrangement
+from tests import test_arrange as TA
+
+
+def _arr_pair():
+    """Song with loud/quiet sections vs a video that wants peak/calm/peak/calm: a rearrangement helps."""
+    song, vid = TA.make_song(), TA.make_video()
+    vid = dict(vid, duration=3 * TA.SEC)
+    vid["energy_curve"] = vid["energy_curve"][:int(3 * TA.SEC * TA.HZ)]
+    vid["motion_peaks"] = [c for c in vid["motion_peaks"] if c < 3 * TA.SEC]
+    vid["lulls"] = [[TA.SEC, 2 * TA.SEC]]
+    vid["peak_segments"] = [[0, TA.SEC], [2 * TA.SEC, 3 * TA.SEC]]
+    return song, vid
+
+
+def test_arrange_step_picked_when_it_helps(monkeypatch):
+    monkeypatch.setattr(AS, "plan_splice", lambda *a, **k: {"eligible": False})   # leave the win to arrange
+    r = auto_sync(TA.make_song(), TA.make_video(), budget_s=60.0)
+    kept = [s for s in r["steps"] if s["tool"] == "arrange" and s["kept"]]
+    assert kept and set(kept[0]["params"]) == {"moves", "sections_used"}
+    assert kept[0]["score_after"] > kept[0]["score_before"] + 5
+    segs = r["plan"]["segments"]
+    assert len(segs) > 1 and r["final"]["effort"]["splices"] == len(segs) - 1
+    assert r["final"]["effort_pct"] > 0
+    assert r["plan"]["lead_silence_s"] == 0.0 or r["plan"]["lead_silence_s"] >= 0
+
+
+def test_arrange_kept_forced(monkeypatch):
+    """Stubbed planner whose plan is accepted: recorded as 'arrange', moves counted as splices."""
+    song, vid = _arr_pair()
+    segs = [{"src_start": 16.0, "src_end": 32.0, "dst_start": 0.0},
+            {"src_start": 0.0, "src_end": 16.0, "dst_start": 16.0},
+            {"src_start": 48.0, "src_end": 64.0, "dst_start": 32.0}]
+    calls = []
+
+    def fake(s, v, max_moves, lead_s=None):
+        calls.append(max_moves)
+        return {"eligible": True, "segments": segs, "sections_used": ["a", "b", "c"], "moves": 2}
+    monkeypatch.setattr(AS, "plan_arrangement", fake)
+    monkeypatch.setattr(AS, "plan_splice", lambda *a, **k: {"eligible": False})
+    monkeypatch.setattr(AS, "_done", lambda r, t: False)
+    monkeypatch.setattr(AS, "_gain", lambda new, old, mg: True)
+    monkeypatch.setattr(AS, "ORDER_COST", ("splice_first",))
+    r = auto_sync(song, vid, budget_s=60.0)
+    arr = [s for s in r["steps"] if s["tool"] == "arrange"]
+    assert calls and calls[0] == 3 and arr and arr[0]["kept"] and arr[0]["params"]["moves"] == 2
+    assert AS.effort_of({"segments": segs}, 48.0)["splices"] == 2
+
+
+def test_arrange_not_picked_when_no_gain(monkeypatch):
+    song, vid = make_song(90.0), make_video(np.arange(1, 56) * 0.52, tempo=115.4)
+    monkeypatch.setattr(AS, "plan_arrangement", lambda s, v, m, lead_s=None: {
+        "eligible": True, "segments": [{"src_start": 0.0, "src_end": 30.0, "dst_start": 0.0},
+                                       {"src_start": 40.0, "src_end": 50.0, "dst_start": 30.0}], "moves": 1,
+        "sections_used": ["x"]})
+    monkeypatch.setattr(AS, "_gain", lambda new, old, mg: False)
+    r = auto_sync(song, vid, budget_s=60.0)
+    assert not any(s["kept"] for s in r["steps"] if s["tool"] == "arrange")
+    assert not (r["plan"]["segments"] or [])
+
+
+def test_arrange_not_called_when_ineligible(monkeypatch):
+    called = []
+    monkeypatch.setattr(AS, "plan_arrangement", lambda *a, **k: called.append(1))
+    r = auto_sync(make_song(20.0), make_video(np.arange(1, 56) * 0.52, duration=30.0))
+    assert r["eligible"] is False and not called and r["steps"] == []
+
+
+def test_arrange_skipped_under_tight_budget(monkeypatch):
+    called = []
+    monkeypatch.setattr(AS, "plan_arrangement", lambda *a, **k: called.append(1) or {"eligible": False})
+    auto_sync(make_song(90.0), make_video(np.arange(1, 56) * 0.52, tempo=115.4), budget_s=3.0)
+    assert not called
