@@ -21,6 +21,57 @@ def _tot(r):
     return S._combine(r["tempo_pct"], r["sync_pct"], r["arc_pct"])
 
 
+# Lexicographic objective: total first, then tightness.tight_pct (within +-40 ms), then a lower
+# median_err_ms. score.py's tightness block is read defensively (.get), so this also works on a
+# scorer that does not emit it (every tightness term is then 0 / unknown and only the total counts).
+TIGHT_GAIN = 1.0         # tight_pct points that justify a step when the total does not drop
+MEDIAN_GAIN_MS = 5.0     # median error (ms) that justifies a step at equal tight_pct
+
+
+def _tight(r):
+    return (r.get("tightness") or {}) if isinstance(r, dict) else {}
+
+
+def _tp(r):
+    return float(_tight(r).get("tight_pct") or 0.0)
+
+
+def _me(r):
+    m = _tight(r).get("median_err_ms")
+    return float(m) if m is not None else 1e9
+
+
+def _has_tight(r):
+    return bool(_tight(r).get("n_events"))
+
+
+def _done(r, target):
+    """Target met on the total and, when the scorer measures tightness, on tight_pct as well."""
+    return _tot(r) >= target - 1e-9 and (not _has_tight(r) or _tp(r) >= target - 1e-9)
+
+
+def _gain(new, old, min_gain):
+    """`new` beats `old`: total up by min_gain; or total not lower and tighter (tight_pct up by
+    TIGHT_GAIN, or equal tight_pct and the median error down by MEDIAN_GAIN_MS)."""
+    dt = _tot(new) - _tot(old)
+    if dt >= min_gain:
+        return True
+    if dt < -1e-9:
+        return False
+    return _tp(new) >= _tp(old) + TIGHT_GAIN or \
+        (_tp(new) >= _tp(old) and _me(new) <= _me(old) - MEDIAN_GAIN_MS)
+
+
+def _rank(r):
+    """Sort key for choosing between whole runs: displayed total, then tightness, then median error."""
+    return (int(round(_tot(r))), _tp(r), -_me(r), _tot(r))
+
+
+def _tvals(r):
+    t = _tight(r)
+    return {"tight_pct": t.get("tight_pct"), "median_err_ms": t.get("median_err_ms")}
+
+
 def _fast(d):
     """Same dict with array-valued curves, so score.py's np.asarray calls are free in scan loops."""
     return dict(d, **{k: np.asarray(d[k], dtype=float) for k in ("energy_curve", "beat_times") if k in d})
@@ -90,9 +141,12 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
     def left():
         return budget_s - (time.perf_counter() - t0)
 
-    def rec(tool, params, before, after, kept):
+    def rec(tool, params, before, after, kept, rb=None, ra=None):
+        """rb/ra: score results before/after (tightness is reported from them; ra only when kept)."""
         steps.append({"tool": tool, "params": params, "score_before": round(before, 2),
-                      "score_after": round(after, 2), "kept": bool(kept)})
+                      "score_after": round(after, 2), "kept": bool(kept),
+                      "tightness_before": _tvals(rb) if rb is not None else None,
+                      "tightness_after": _tvals(ra if (kept and ra is not None) else rb) if rb is not None else None})
 
     cur_song, offset = song, 0.0
     cur_video = video                       # original video + retime (nudges are applied on top)
@@ -103,15 +157,15 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
     else:
         limits.append("song_shorter_than_video")
     cur = S.score_at(cur_song, cur_video, offset)
-    rec("offset", {"offset": round(offset, 2)}, _tot(r0), _tot(cur), True)
+    rec("offset", {"offset": round(offset, 2)}, _tot(r0), _tot(cur), True, r0, cur)
 
     def src_video():                        # video the song-side tools see (retimed, no nudges)
         return apply_warp(video, retime["warp"]) if retime else video
 
     for ps in range(max_passes):
-        start_total = _tot(cur)
+        start_cur = cur
         for tool in order:
-            if _tot(cur) >= target - 1e-9 or left() <= 0:
+            if _done(cur, target) or left() <= 0:
                 break
             sv = src_video()
             svd = float(sv["duration"])
@@ -135,12 +189,13 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
                     if sc3 >= best[0]:
                         best = (sc3, best[1], st, o3)
                 kept = best[0] >= _tot(cur) + min_gain
+                newr = S.score_at(best[2], sv, best[3]) if kept else cur
                 rec("tempo", {"ratio": best[1], "bpm_from": pt["bpm_from"], "bpm_to": round(song["bpm"] * best[1], 2)},
-                    _tot(cur), best[0] if kept else _tot(cur), kept)
+                    _tot(cur), best[0] if kept else _tot(cur), kept, cur, newr)
                 if kept:
                     tempo_ratio, cur_song, offset = best[1], best[2], best[3]
                     nudges, cur_video = [], sv
-                    cur = S.score_at(cur_song, cur_video, offset)
+                    cur = newr
                 if abs(best[1] - 1.0) >= max_tempo_dev - 1e-9:
                     limits.append("max_tempo_dev")
             elif tool == "splice" and allow_splice and segs is None and left() > 2.0 \
@@ -149,9 +204,9 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
                 if sp.get("eligible") and len(sp["segments"]) > 1:
                     asm = _assemble(cur_song, sp["segments"], svd)
                     asm_r = S.score_at(asm, sv, 0.0)
-                    kept = _tot(asm_r) >= _tot(cur) + min_gain
+                    kept = _gain(asm_r, cur, min_gain)
                     rec("splice", {"max_cuts": max_cuts, "cuts": sp["cuts"]}, _tot(cur),
-                        _tot(asm_r) if kept else _tot(cur), kept)
+                        _tot(asm_r) if kept else _tot(cur), kept, cur, asm_r)
                     if kept:
                         segs, cur_song, offset, cur = sp["segments"], asm, 0.0, asm_r
                         nudges, cur_video = [], sv
@@ -161,10 +216,10 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
                 wv = apply_warp(video, rp["warp"])
                 rr = S.score_at(cur_song, wv, offset)
                 base = S.score_at(cur_song, sv, offset)       # current retime state, no nudges
-                gate = max(_tot(base), _tot(cur) if not nudges else 0.0)
-                kept = bool(rp["sections"]) and rp["speed_jump_ok"] and _tot(rr) >= gate + min_gain
+                ref = base if (nudges or _tot(base) > _tot(cur)) else cur
+                kept = bool(rp["sections"]) and rp["speed_jump_ok"] and _gain(rr, ref, min_gain)
                 rec("retime", {"sections": len(rp["sections"]), "max_speed_dev": max_speed_dev},
-                    _tot(cur), _tot(rr) if kept else _tot(cur), kept)
+                    _tot(cur), _tot(rr) if kept else _tot(cur), kept, cur, rr)
                 if kept:
                     retime, cur_video, cur, nudges = rp, wv, rr, []
                     if segs is not None and allow_splice and left() > 2.0:
@@ -175,21 +230,21 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
                             base_s = song if tempo_ratio == 1.0 else apply_tempo(song, tempo_ratio)
                             asm = _assemble(base_s, sp["segments"], float(wv["duration"]))
                             ar = S.score_at(asm, wv, 0.0)
-                            if _tot(ar) >= _tot(cur) + min_gain:
+                            if _gain(ar, cur, min_gain):
                                 rec("splice", {"max_cuts": max_cuts, "cuts": sp["cuts"], "after_retime": True},
-                                    _tot(cur), _tot(ar), True)
+                                    _tot(cur), _tot(ar), True, cur, ar)
                                 segs, cur_song, offset, cur = sp["segments"], asm, 0.0, ar
             elif tool == "micro" and not nudges:
                 nv, nl = _nudge(cur_song, cur_video, offset, 1.0 / fps)
                 nr = S.score_at(cur_song, nv, offset)
-                kept = bool(nl) and _tot(nr) >= _tot(cur) + min_gain
+                kept = bool(nl) and _gain(nr, cur, min_gain)
                 rec("micro", {"nudges": len(nl), "max_shift_s": round(1.0 / fps, 4)}, _tot(cur),
-                    _tot(nr) if kept else _tot(cur), kept)
+                    _tot(nr) if kept else _tot(cur), kept, cur, nr)
                 if kept:
                     nudges, cur_video, cur = nl, nv, nr
-        if _tot(cur) >= target - 1e-9 or _tot(cur) < start_total + min_gain:
+        if _done(cur, target) or not _gain(cur, start_cur, min_gain):
             break
-    if left() <= 0 and _tot(cur) < target:
+    if left() <= 0 and not _done(cur, target):
         limits.append("budget")
     if retime and any(abs(s["speed"] - 1) >= max_speed_dev - 0.01 for s in retime["sections"]):
         limits.append("max_speed_dev")
@@ -218,25 +273,32 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
         run = _run(song, video, ORDERS[name], target, max(rem / max(1, len(names) - i), 2.0), max_speed_dev,
                    max_tempo_dev, min_section_s, max_cuts, min_gain, max_passes, allow_splice)
         run["path"] = name
-        if best is None or _tot(run["cur"]) > _tot(best["cur"]) + 1e-9:
+        if best is None or _rank(run["cur"]) > _rank(best["cur"]):
             best = run
-        if _tot(best["cur"]) >= target - 1e-9:
+        if _done(best["cur"], target):
             break
     cur, limits = best["cur"], list(best["limits"])
     if pruned:
         limits.append("budget")
     final = {k: cur[k] for k in ("total_pct", "tempo_pct", "sync_pct", "arc_pct")}
     final["total_pct"] = int(round(_tot(cur)))
+    final["tightness"] = _tight(cur) or None
+    final["tight_pct"] = _tight(cur).get("tight_pct")
+    final["median_err_ms"] = _tight(cur).get("median_err_ms")
     final["out_duration_s"] = round(float(best["out_duration"]), 3)
     final["video_duration_s"] = round(float(video["duration"]), 3)
     final["sync_headline"] = int(round(0.6 * cur["sync_pct"] + 0.4 * cur["tempo_pct"]))
+    first = best["steps"][0] if best["steps"] else {}
+    final["tightness_start"] = first.get("tightness_before")
     return {"steps": best["steps"], "final": final, "plan": best["plan"], "path": best["path"],
             "limits_hit": sorted(set(limits)), "pruned": pruned, "why_not_100": _why(final, target, limits),
             "elapsed_s": round(time.perf_counter() - t0, 2)}
 
 
 def _why(final, target, limits):
-    if final["total_pct"] >= target:
+    tt = final.get("tightness") or {}
+    tight_gap = bool(tt.get("n_events")) and (tt.get("tight_pct") or 0.0) < target - 1e-9
+    if final["total_pct"] >= target and not tight_gap:
         return "Target reached."
     parts = []
     if final["arc_pct"] < 95:
@@ -248,5 +310,9 @@ def _why(final, target, limits):
         parts.append("%.0f%% sync: %s" % (final["sync_pct"], why))
     if final["tempo_pct"] < 95:
         parts.append("tempo is %.0f%%: BPM gap exceeds the allowed stretch" % final["tempo_pct"])
+    if tight_gap and (tt.get("tight_pct") or 0.0) < 95:
+        parts.append("tightness is %.0f%%: only that share of cuts/peaks sit within +-40 ms of the beat "
+                     "(median error %s ms), and the speed, tempo and splice guardrails stop closer alignment"
+                     % (tt.get("tight_pct") or 0.0, tt.get("median_err_ms")))
     return "100 is unreachable because " + "; ".join(parts) + "." if parts else \
         "Remaining gap is under 5% per component (rounding and tolerance)."

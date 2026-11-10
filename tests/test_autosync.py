@@ -70,8 +70,9 @@ def test_real_songS1_videoA():
     r = auto_sync(song, video)
     print("\nelapsed", round(time.time() - t0, 1), "s")
     for s in r["steps"]:
-        print(s["tool"], s.get("score_before"), "->", s.get("score_after"), "kept", s["kept"])
-    print("segments", len(r["plan"]["segments"]), "final", r["final"])
+        print(s["tool"], s.get("score_before"), "->", s.get("score_after"), "kept", s["kept"],
+              "tight", s.get("tightness_before"), "->", s.get("tightness_after"))
+    print("segments", len(r["plan"].get("segments") or []), "final", r["final"])
     first = r["steps"][0]["score_before"] if r["steps"] else 0
     assert r["final"]["total_pct"] >= first        # never worse than the start
 
@@ -225,3 +226,16 @@ def test_budget_prunes_but_stays_valid():
     assert "elapsed_s" in r
     full = auto_sync(song, vid, budget_s=20.0)
     assert full["final"]["total_pct"] >= r["final"]["total_pct"]
+
+
+def test_tightness_reported_and_lexicographic():
+    """Steps and final carry tightness when the scorer emits it; the objective never trades tightness down at equal total."""
+    song, video = make_song(), make_video(slow_section_cuts())
+    if "tightness" not in S.score_at(song, video, 0.0):
+        pytest.skip("scorer has no tightness block yet")
+    r = auto_sync(song, video, min_gain=0.05)
+    assert r["final"].get("tight_pct") is not None
+    for st in r["steps"]:
+        if st["kept"] and st["tightness_before"] and st["tightness_after"]:
+            if abs(st["score_after"] - st["score_before"]) < 1e-9:
+                assert st["tightness_after"]["tight_pct"] >= st["tightness_before"]["tight_pct"]
