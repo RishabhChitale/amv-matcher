@@ -69,7 +69,11 @@ def test_tempo_ratio_and_octave():
     t = plan_tempo(make_song(bpm=60), make_video([], tempo=124.0))       # octave: 60*2 ~ 124
     assert abs(t["ratio"] - 124 / 120) < 1e-3
     t = plan_tempo(make_song(bpm=120), make_video([], tempo=150.0))
-    assert t["ratio"] == 1.08 and t["clamped"]
+    assert t["ratio"] == 1.10 and t["clamped"]                           # default clamp is +-10%
+    t = plan_tempo(make_song(bpm=120), make_video([], tempo=150.0), 0.05)
+    assert t["ratio"] == 1.05 and t["clamped"]                           # explicit tighter limit wins
+    t = plan_tempo(make_song(bpm=120), make_video([], tempo=100.0))
+    assert t["ratio"] == 0.90 and t["clamped"]                           # lower clamp
 
 
 def test_apply_tempo():
