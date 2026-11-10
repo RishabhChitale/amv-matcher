@@ -169,7 +169,7 @@ function pumpAt(st) {
     const a = 0.03 * boom * e.s * (e.d ? 4 : 1) * k; if (a > sc) sc = a;
     if (e.d && k > br) { br = k; di = i; }
   }
-  return {scale: 1 + sc, bright: 1 + 0.35 * (boom / 100) * br, k: br, di};
+  return {scale: 1 + sc, bright: 1 + 0.35 * boom * br, k: br, di};
 }
 function applyPump() {
   if (!S.sel || !S.wf || FX.boom === 0) { vid.style.transform = ''; vid.style.filter = ''; return; }

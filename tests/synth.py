@@ -61,3 +61,28 @@ def make_quiet_loud(path, quiet=5.0, loud=5.0, loud_first=False, seed=0):
     quiet_part = (0.002 * rng.standard_normal(nq)).astype(np.float32)
     y = np.concatenate([loud_part, quiet_part] if loud_first else [quiet_part, loud_part])
     sf.write(str(path), np.clip(y, -1, 1), SR)
+
+
+def make_drop(path, bpm=120, seconds=12.0, drop_at=6.0, seed=0):
+    """Quiet clicks until `drop_at`, then loud clicks plus a 60 Hz thump on every beat (a clear drop)."""
+    rng = np.random.default_rng(seed)
+    y = np.zeros(int(SR * seconds), dtype=np.float32)
+    n = int(0.03 * SR)
+    t = np.arange(n) / SR
+    click = (np.sin(2 * np.pi * 1000 * t) * np.exp(-t * 150)).astype(np.float32)
+    nt = int(0.25 * SR)
+    tt = np.arange(nt) / SR
+    thump = (np.sin(2 * np.pi * 60 * tt) * np.exp(-tt * 8)).astype(np.float32)
+    period = 60.0 / bpm
+    k = 0
+    while k * period < seconds - 0.3:
+        b = k * period
+        i = int(b * SR)
+        if b < drop_at - 1e-6:
+            y[i:i + n] += 0.08 * click
+        else:
+            y[i:i + n] += 0.9 * click
+            y[i:i + nt] += 0.9 * thump[: len(y) - i][:nt]
+        k += 1
+    y += (0.002 * rng.standard_normal(len(y))).astype(np.float32)
+    sf.write(str(path), np.clip(y, -1, 1), SR)

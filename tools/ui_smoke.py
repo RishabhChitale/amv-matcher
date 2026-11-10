@@ -205,19 +205,12 @@ def main():
         check("Drops only / Shake toggles", bool(c.ev("document.getElementById('fx-drops').checked && document.getElementById('fx-shake').checked")))
         c.ev("document.getElementById('fx-drops').click();document.getElementById('fx-shake').click()")
 
-        # ---- screenshot mid-playback
-        c.ev("document.getElementById('b-play').click()") if c.ev("document.getElementById('vid').paused") else None
-        c.pump(1.0)
-        os.makedirs(os.path.dirname(os.path.abspath(a.shot)), exist_ok=True)
-        import base64
-        png = c.call("Page.captureScreenshot", format="png")["data"]
-        open(a.shot, "wb").write(base64.b64decode(png))
-        check("screenshot saved", os.path.getsize(a.shot) > 10000, os.path.abspath(a.shot))
-
         # ---- keyboard
         c.ev("document.getElementById('b-play').click()") if not c.ev("document.getElementById('vid').paused") else None
         c.pump(0.3)
         c.ev("document.activeElement && document.activeElement.blur()")
+        c.ev("seek(2)")
+        c.pump(0.3)
         t0 = c.ev("document.getElementById('vid').currentTime")
         c.key(" ", "Space", vk=32, text=" ")
         c.pump(1.0)
@@ -318,6 +311,57 @@ def main():
               f"{sc_before}->{sc_after}")
         rowtxt = c.ev("document.querySelector('.res.sel .rmeta').innerText") or ""
         check("selected row shows manual trim window", "manual" in rowtxt.lower(), rowtxt)
+
+        # ---- drop flash (drop.wav: quiet, then a loud thump at ~6 s)
+        if os.path.exists(os.path.join(a.music, "drop.wav")):
+            JS_SEL = "(()=>{const r=[...document.querySelectorAll('.res')].find(e=>/drop\\.wav/.test(e.innerText));if(r)r.click();return !!r})()"
+            check("drop.wav is in the results", bool(c.ev(JS_SEL)))
+            ok = wait_for(c, "document.querySelector('.res.sel') && /drop\\.wav/.test(document.querySelector('.res.sel').innerText) && S.wf && S.wf.duration<13 && document.getElementById('vid').readyState>=2", 30)
+            drops = c.ev("S.wf.drops") if ok else []
+            check("backend detected a drop in drop.wav", bool(drops), f"drops={drops}")
+            if drops:
+                drop = drops[0]
+                beats = c.ev("S.wf.beat_times")
+                normal = next((b for b in beats if b > drop + 1.0), None)
+                c.ev("(()=>{const b=document.getElementById('fx-boom');b.value=80;b.dispatchEvent(new Event('input',{bubbles:true}));b.dispatchEvent(new Event('change',{bubbles:true}))})()")
+                c.ev("(()=>{const d=document.getElementById('fx-decay');d.value=180;d.dispatchEvent(new Event('input',{bubbles:true}));d.dispatchEvent(new Event('change',{bubbles:true}))})()")
+                c.ev("document.getElementById('fx-drops').checked=false;document.getElementById('fx-drops').dispatchEvent(new Event('change',{bubbles:true}))")
+                c.ev("""window.__s=[];clearInterval(window.__iv);window.__iv=setInterval(()=>{const v=document.getElementById('vid'),st=getComputedStyle(v);
+                  const m=/matrix\\(([^,]+)/.exec(st.transform),br=/brightness\\(([\\d.]+)/.exec(st.filter);
+                  window.__s.push({st:songTime(),sc:m?parseFloat(m[1]):1,br:br?parseFloat(br[1]):1})},5)""")
+
+                def run_through(drops_only):
+                    c.ev("document.getElementById('b-play').click()") if not c.ev("document.getElementById('vid').paused") else None
+                    c.ev(f"document.getElementById('fx-drops').checked={str(drops_only).lower()};document.getElementById('fx-drops').dispatchEvent(new Event('change',{{bubbles:true}}))")
+                    c.ev(f"window.__s=[];seek(Math.max(0,{drop}-S.offset-0.4))")
+                    c.ev("document.getElementById('b-play').click()")
+                    wait_for(c, f"songTime()>{(normal or drop + 1.5) + 0.3}", 12, 0.1)
+                    c.ev("document.getElementById('b-play').click()")
+                    return c.ev("window.__s")
+
+                smp = run_through(False)
+                win = [x for x in smp if abs(x["st"] - drop) <= 0.1]
+                mb = max([x["br"] for x in win] or [0])
+                dbg_f = c.ev("vid.style.filter+'|'+getComputedStyle(vid).filter")
+                dbg_p = c.ev("JSON.stringify(pumpAt(5.88))")
+                check("Boom 80: brightness > 1.2 within +-100 ms of the drop", mb > 1.2, f"max {mb:.3f} over {len(win)} samples; last={win[-3:]} pa={dbg_p} f={dbg_f}")
+                smp = run_through(True)
+                at_drop = max([x["sc"] for x in smp if abs(x["st"] - drop) <= 0.1] or [1])
+                at_beat = [x["sc"] for x in smp if normal and abs(x["st"] - normal) <= 0.05]
+                check("Drops only: scale > 1 at the drop", at_drop > 1.02, f"max scale {at_drop:.3f}")
+                check("Drops only: scale == 1.0 on a normal beat", bool(at_beat) and max(at_beat) < 1.0005, f"{max(at_beat or [0]):.4f} at beat {normal}; fx={c.ev('JSON.stringify(FX)')} ev={c.ev('JSON.stringify(EV.slice(0,4))')}")
+                c.ev("clearInterval(window.__iv)")
+                c.ev("document.getElementById('fx-drops').checked=false;document.getElementById('fx-drops').dispatchEvent(new Event('change',{bubbles:true}))")
+                # screenshot paused just after the drop
+                c.ev(f"seek({drop}-S.offset+0.03)")
+                c.pump(0.4)
+                os.makedirs(os.path.dirname(os.path.abspath(a.shot)), exist_ok=True)
+                import base64
+                png = c.call("Page.captureScreenshot", format="png")["data"]
+                open(a.shot, "wb").write(base64.b64decode(png))
+                check("screenshot saved (drop.wav at the drop)", os.path.getsize(a.shot) > 10000, os.path.abspath(a.shot))
+        else:
+            print("SKIP  drop checks (no drop.wav in", a.music + ")")
 
         # ---- error path
         if os.path.exists(a.bad_video):

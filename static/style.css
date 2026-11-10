@@ -40,7 +40,7 @@ input[type=range]{accent-color:var(--v)}
 .sidebar{display:flex;flex-direction:column;gap:12px;min-width:0}
 .panel{padding:12px}.panel h3{margin:0 0 8px;font-size:13px;letter-spacing:.4px;display:flex;justify-content:space-between}
 .muted{color:var(--mut);font-weight:400;font-size:11px}.pad{padding:12px 4px}
-.results{display:flex;flex-direction:column;gap:6px;max-height:44vh;overflow:auto}
+.results{display:flex;flex-direction:column;gap:6px;max-height:44vh;overflow:auto;padding-bottom:22px;-webkit-mask-image:linear-gradient(#000 calc(100% - 30px),transparent);mask-image:linear-gradient(#000 calc(100% - 30px),transparent)}
 .res{display:grid;grid-template-columns:52px 1fr;gap:10px;align-items:center;padding:8px;border:1px solid transparent;border-radius:11px;cursor:pointer;transition:var(--ease);background:rgba(255,255,255,.03)}
 .res:hover{background:rgba(255,255,255,.07)}.res.sel{border-color:var(--v);box-shadow:0 0 18px rgba(139,92,246,.25)}
 .ring{width:52px;height:52px;position:relative}.ring svg{transform:rotate(-90deg)}
