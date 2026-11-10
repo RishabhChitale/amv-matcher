@@ -87,6 +87,21 @@ el('g-unlock').onchange = () => { AS.guard.unlock = el('g-unlock').checked; save
 function setRing(p) { el('as-ring').style.background = `conic-gradient(var(--c) ${p * 3.6}deg, rgba(255,255,255,.12) 0)`; el('as-ring').textContent = Math.round(p) + '%'; }
 function stepIdx(stage) { const s = String(stage || '').toLowerCase(); for (let i = STEPS.length - 1; i >= 0; i--) if (s.includes(STEPS[i])) return i; return -1; }
 function liveSteps(j) {
+  const ev = {}; (j.steps_so_far || []).forEach(e => { ev[e.step] = e; });
+  if (Object.keys(ev).length) {
+    let last = -1; STEPS.forEach((n, i) => { if (ev[n]) last = i; });
+    el('as-steps').innerHTML = STEPS.map((n, i) => {
+      const e = ev[n];
+      if (e && e.status === 'end') {
+        const a = Math.round(e.score_before), b = Math.round(e.score_after);
+        return `<li class="${e.kept ? 'ok' : 'skip'}"><b>${STEPNAME[n]}</b><span>${a}% &rarr; ${b}%</span><span class="muted">${e.kept ? 'kept' : 'skipped'}</span></li>`;
+      }
+      if (e) return `<li class="act"><b>${STEPNAME[n]}</b><span class="muted">working... ${Math.round(e.score_before)}%</span></li>`;
+      return `<li class="${i < last ? 'skip' : ''}"><b>${STEPNAME[n]}</b><span class="muted">${i < last ? 'skipped' : 'waiting'}</span></li>`;
+    }).join('');
+    el('as-steps').classList.remove('hidden');
+    return;
+  }
   const cur = stepIdx(j.stage || j.message);
   el('as-steps').innerHTML = STEPS.map((n, i) => `<li class="${i < cur ? 'ok' : i === cur ? 'act' : ''}"><b>${STEPNAME[n]}</b><span class="muted">${i === cur ? 'working...' : i < cur ? 'done' : 'waiting'}</span></li>`).join('');
   el('as-steps').classList.remove('hidden');
@@ -114,15 +129,16 @@ async function runOne(r) {   // returns result or null (cancelled / failed)
   try {
     const rs = await post('/api/auto-sync', body); const j0 = await rs.json();
     const id = j0.job_id; if (!id) throw new Error(j0.detail || 'Auto-sync failed to start');
+    if (AS.running) AS.running.id = id;
     let j = j0, k = 0;
     while (!AS.cancelled) {
       j = await (await fetch('/api/auto-sync/' + id)).json();
       if (j.status !== 'running') break;
-      el('as-stage').textContent = j.message || j.stage || 'Working...';
+      el('as-stage').textContent = j.message || (j.current_step && STEPNAME[j.current_step]) || j.stage || 'Working...';
       const pct = j.total ? 100 * (j.done || 0) / j.total : Math.min(90, ++k * 4); setRing(pct); liveSteps(j);
       await sleep(600);
     }
-    if (AS.cancelled) return null;
+    if (AS.cancelled || j.status === 'cancelled') return null;
     if (j.status === 'error') throw new Error(j.error || 'Auto-sync failed');
     const res = j.result; AS.runs[key] = {result: res, audioUrl: ''};
     r.auto_sync_cached = res.final || null;
@@ -141,7 +157,9 @@ el('as-go').onclick = async () => {
   if (res && res.eligible !== false) { AS.mode = 'synced'; applyAfterSplice(); }
   ui(); window.asAfterResults(); if (was) play();
 };
-el('as-cancel').onclick = () => { AS.cancelled = true; AS.running = null; if (AS.all) AS.all.cancel = true; ui(); };
+el('as-cancel').onclick = () => {
+  const id = AS.running && AS.running.id; if (id) post('/api/auto-sync/' + id + '/cancel').catch(() => {});
+  el('as-stage').textContent = 'Cancelling...'; AS.cancelled = true; AS.running = null; if (AS.all) AS.all.cancel = true; ui(); };
 el('as-mode').querySelectorAll('button').forEach(b => b.onclick = () => {
   AS.mode = b.dataset.m; ui(); const was = !aud.paused; pause(); applyAfterSplice(); if (was) play();
   if (AS.mode === 'orig') vid.playbackRate = S.rate || 1;
@@ -262,13 +280,14 @@ el('rd-rife').onclick = async () => {
 };
 function openLinks(j, out) {
   const name = baseName(j.path), nat = window.pywebview && window.pywebview.api;
-  const reveal = nat && (nat.reveal || nat.show_in_folder), open = nat && nat.open_path;
+  const reveal = nat && (nat.reveal_path || nat.reveal || nat.show_in_folder), open = nat && nat.open_path;
   out.innerHTML = nat && !(reveal || open)
     ? `<button class="dl" id="rd-save">Save ${esc(name)} as…</button>`
-    : `<a class="dl" id="rd-link" href="${esc(j.url)}" download>Open ${esc(name)}</a>` + (reveal ? ' <button id="rd-reveal">Show in folder</button>' : '');
+    : (open ? `<button class="dl" id="rd-open">Open ${esc(name)}</button>` : `<a class="dl" id="rd-link" href="${esc(j.url)}" download>Open ${esc(name)}</a>`) + (reveal ? ' <button id="rd-reveal">Show in folder</button>' : '');
   out.insertAdjacentHTML('beforeend', `<div class="muted">Saved to .exports/${esc(name)}${j.seconds ? ' · took ' + Math.round(j.seconds) + ' s' : ''}</div>`);
   const sv = out.querySelector('#rd-save'); if (sv) sv.onclick = async () => { const d = await nat.save_as(j.path); sv.nextSibling.textContent = d ? 'Saved to ' + d : 'Not saved'; };
-  const rv = out.querySelector('#rd-reveal'); if (rv) rv.onclick = () => (nat.reveal || nat.show_in_folder)(j.path);
+  const rv = out.querySelector('#rd-reveal'); if (rv) rv.onclick = () => (nat.reveal_path || nat.reveal || nat.show_in_folder)(j.path);
+  const op = out.querySelector('#rd-open'); if (op) op.onclick = () => nat.open_path(j.path);
 }
 el('rd-go').onclick = async () => {
   const p = planNow(), r = S.sel; if (!p || AS.rd) return;

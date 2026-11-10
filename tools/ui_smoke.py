@@ -848,6 +848,60 @@ def main():
                 ok = wait_for(c, "!!document.getElementById('rs-link') || /failed/.test(document.getElementById('rd-stage').textContent)", 120)
                 check("Resolve export yields a zip link", bool(c.ev("!!document.getElementById('rs-link')")), str(c.ev("document.getElementById('rd-stage').textContent")))
 
+        # ---- docs screenshot: auto-synced pair with a known slow section + locked original
+        if not ro:
+            sl_dir = os.path.join(prof, "slow")
+            try:
+                sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+                from tests.synth import make_click_track, make_video_jumps, slow_section_jump_times
+                os.makedirs("/tmp/amvfx/slow", exist_ok=True)
+                os.makedirs(sl_dir, exist_ok=True)
+                if not os.path.exists("/tmp/amvfx/slow/slow.mp4"):
+                    make_video_jumps("/tmp/amvfx/slow/slow.mp4", slow_section_jump_times(20.0), seconds=20.0)
+                if not os.path.exists(sl_dir + "/click120.wav"):
+                    make_click_track(sl_dir + "/click120.wav", 120, 40, 0.0)
+            except Exception as e:
+                print("SKIP  slow-section fixtures:", e)
+            if os.path.exists(sl_dir + "/click120.wav") and os.path.exists("/tmp/amvfx/slow/slow.mp4"):
+                keep = a.music
+                a.music = sl_dir
+                scan("/tmp/amvfx/slow/slow.mp4")
+                wait_for(c, "document.querySelectorAll('.res').length>0 && !document.getElementById('scan').disabled", 90)
+                a.music = keep
+                c.ev("(()=>{const g=document.getElementById('g-dev');g.value=20;g.dispatchEvent(new Event('input'));const t=document.getElementById('g-cuts');t.value=2;t.dispatchEvent(new Event('input'))})()")
+                c.ev("(()=>{const r=S.results.find(r=>r.source!=='original'&&!r.dropped);S.sel=r;selectSong(r);useAudio(r)})()"); c.pump(1.0)
+                c.ev("document.getElementById('as-go').click()")
+                ok = wait_for(c, "!document.getElementById('as-done').classList.contains('hidden')", 180)
+                check("slow-section pair auto-syncs", ok)
+                has = c.ev("(AS.runs[S.videoPath+'|'+S.sel.path]&&AS.runs[S.videoPath+'|'+S.sel.path].result.plan.retime||{sections:[]}).sections.length") or 0
+                c.pump(0.8)
+                check("slow section gives V1 retime bands + step list + headline",
+                      has > 0 and (c.ev("AS.bands") or 0) > 0 and (c.ev("document.querySelectorAll('#as-steps li').length") or 0) >= 5
+                      and "Sync" in (c.ev("document.getElementById('as-head').textContent") or ""),
+                      f"sections={has} bands={c.ev('AS.bands')}")
+                c.ev("document.getElementById('as-done').scrollIntoView({block:'center'})"); c.pump(0.4)
+                shotas = os.path.join(os.path.dirname(os.path.abspath(a.shot)), "ui.png")
+                open(shotas, "wb").write(base64.b64decode(c.call("Page.captureScreenshot", format="png")["data"]))
+                check("screenshot saved (auto-synced, bands + steps + headline)", os.path.getsize(shotas) > 10000, shotas)
+            # locked original
+            if os.path.exists("/tmp/amvfx/orig.mp4"):
+                scan("/tmp/amvfx/orig.mp4")
+                wait_for(c, "document.querySelectorAll('.res').length>0 && !document.getElementById('scan').disabled", 90)
+                c.ev("document.getElementById('g-unlock').checked=false;document.getElementById('g-unlock').dispatchEvent(new Event('change'))")
+                c.ev("document.querySelector('.res.orig button.use').click()")
+                wait_for(c, "/Original audio/.test(document.getElementById('a1-lbl').textContent)", 20)
+                c.pump(0.5)
+                check("locked original: Auto-sync disabled + 'Locked to video' shown",
+                      c.ev("document.getElementById('as-go').disabled") is True and "Locked to video" in (c.ev("document.getElementById('as-lock').textContent") or ""))
+                check("locked original: offset stays 0", c.ev("S.offset") == 0, str(c.ev("S.offset")))
+                c.ev("AS.lastReq=null;document.getElementById('g-unlock').checked=true;document.getElementById('g-unlock').dispatchEvent(new Event('change'))"); c.pump(0.4)
+                check("Unlock original enables Auto-sync", c.ev("document.getElementById('as-go').disabled") is False)
+                c.ev("document.getElementById('as-go').click()")
+                wait_for(c, "!!AS.lastReq", 10)
+                check("unlocked: request sends unlock_original=true", c.ev("AS.lastReq&&AS.lastReq.unlock_original===true") is True, str(c.ev("JSON.stringify(AS.lastReq)")))
+                wait_for(c, "!AS.running", 120)
+                c.ev("document.getElementById('g-unlock').checked=false;document.getElementById('g-unlock').dispatchEvent(new Event('change'))")
+
         # ---- error path
         if os.path.exists(a.bad_video):
             scan(a.bad_video)

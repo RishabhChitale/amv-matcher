@@ -164,3 +164,29 @@ def make_loud_windows(path, bpm=120, seconds=60.0, loud=((40.0, 48.0),), seed=0)
         k += 1
     y += (0.002 * rng.standard_normal(len(y))).astype(np.float32)
     sf.write(str(path), np.clip(y, -1, 1), SR)
+
+
+def make_video_jumps(path, jump_times, seconds=20.0, fps=30, size=(320, 240)):
+    """Square jumps at the given times (s); between them it holds still."""
+    w, h = size
+    vw = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"MJPG"), fps, size)
+    assert vw.isOpened(), "OpenCV could not open a VideoWriter"
+    positions = [(40, 40), (240, 160), (200, 40), (60, 150)]
+    times = sorted(jump_times)
+    for f in range(int(seconds * fps)):
+        t = f / fps + 1e-6
+        seg = sum(1 for j in times if j <= t)
+        x, y = positions[seg % len(positions)]
+        img = np.zeros((h, w, 3), np.uint8)
+        cv2.rectangle(img, (x, y), (x + 40, y + 40), (255, 255, 255), -1)
+        vw.write(img)
+    vw.release()
+
+
+def slow_section_jump_times(seconds=20.0):
+    """0.5 s between jumps, 0.625 s between 5 and 15 s (a known slow section)."""
+    out, t = [], 0.0
+    while t < seconds:
+        out.append(round(t, 4))
+        t += 0.625 if 5.0 <= t < 15.0 else 0.5
+    return out
