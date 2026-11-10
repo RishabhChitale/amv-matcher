@@ -254,3 +254,13 @@ Module `amv_matcher/project.py`, routes in `project_api.py` (Origin-guarded). A 
 - `GET /api/project/recent` -> `{recent:[{path,name,opened,missing}]}` (max 10, newest first).
 - `POST /api/project/relink` `{entry, roots?}` -> `{candidates:[path]}`: same name + size found under `roots` (default: the entry's old folder); hidden dirs skipped, 2000 files per root.
 - `POST /api/project/autosave` `{data}` writes `autosave/<name>.amvproj` under the app data dir.
+
+## Media library (in place)
+
+Roots persist in `media_roots.json` (defaults: Movies/Videos, Music, Downloads, Desktop). Files are never copied.
+
+- `GET /api/media/roots` -> `{roots:[{path,name,exists}]}`; `POST` / `DELETE /api/media/roots {path}` add/remove (POST needs an existing dir).
+- `GET /api/fs/list?path=` -> `{path,parent,folders,files:[{name,path,size,mtime,kind,ext}]}`; 403 outside the roots (symlinks resolved), hidden entries skipped.
+- `GET /api/media/probe?path=` -> `{duration,width,height,fps,vcodec,acodec,has_audio,download}` (cached by path|size|mtime; `download` = download_source or null).
+- `POST /api/media/link {path}` -> `{path,name,size,kind}`; allows the file via `server.allow_path`.
+- `GET /api/thumb?path=&t=&w=` -> image/jpeg (cached); `GET /api/filmstrip?path=&n=12&w=160` -> `{frames:[{t,url}]}`.

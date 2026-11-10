@@ -1108,3 +1108,4 @@ def auto_sync_status(job_id: str):
         raise HTTPException(404, "Unknown job")
     return JSONResponse(job)
 from .project_api import router as project_router; app.include_router(project_router, dependencies=[Depends(_origin_guard)])
+from .medialib_api import router as medialib_router; app.include_router(medialib_router, dependencies=[Depends(_origin_guard)])
