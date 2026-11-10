@@ -229,10 +229,24 @@ def _screens():
         return None
 
 
+# Menu action -> shortcut (key, shift). Must mirror the keydown handler in static/shell.js (tests/test_menu.py checks it).
+MENU_ACCEL = {"new": ("N", False), "open": ("O", False), "save": ("S", False), "save_as": ("S", True),
+              "undo": ("Z", False), "redo": ("Z", True)}
+
+
+def menu_label(label, accel=None):
+    """Append the platform shortcut hint (tab-separated): mac '⇧⌘S', win/linux 'Ctrl+Shift+S'. accel = (key, shift)."""
+    if not accel:
+        return label
+    key, shift = accel
+    hint = ("⇧" if shift else "") + "⌘" + key if sys.platform == "darwin" else "Ctrl+" + ("Shift+" if shift else "") + key
+    return label + "\t" + hint
+
+
 def build_menu(fire):
     """Native menu bar. Every item calls fire('<action>'), which reaches the page as nativeMenu(action)."""
     from webview.menu import Menu, MenuAction, MenuSeparator
-    A = lambda label, act: MenuAction(label, lambda: fire(act))
+    A = lambda label, act: MenuAction(menu_label(label, MENU_ACCEL.get(act)), lambda: fire(act))
     return [
         Menu("File", [A("New Project", "new"), A("Open Project…", "open"), A("Save", "save"), A("Save As…", "save_as"),
                       MenuSeparator(), A("Add Media Folder…", "add_folder"), A("Export…", "export")]),
