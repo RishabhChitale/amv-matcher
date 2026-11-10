@@ -1,0 +1,12 @@
+/* U5: change highlights + Changes list */
+#as-changes{margin-top:8px;font-size:12px}
+#as-changes h4{margin:0 0 4px;font-size:12px;letter-spacing:.4px;text-transform:uppercase;color:var(--mut,#9aa)}
+#as-changes .chg-legend{display:flex;flex-wrap:wrap;gap:4px 10px;margin-bottom:6px;color:var(--mut,#9aa);font-size:11px}
+#as-changes .chg-legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;vertical-align:-1px}
+#as-changes ul{list-style:none;margin:0;padding:0;max-height:180px;overflow:auto}
+#as-changes li{display:flex;gap:6px;align-items:center;padding:2px 4px;border-radius:4px;cursor:pointer}
+#as-changes li:hover{background:rgba(255,255,255,.08)}
+#as-changes li i{flex:0 0 9px;height:9px;border-radius:2px}
+#as-changes li .t{margin-left:auto;font-variant-numeric:tabular-nums;color:var(--mut,#9aa)}
+#as-changes .chg-none{color:var(--mut,#9aa)}
+#as-changes .chg-mode{color:var(--mut,#9aa);font-size:11px;margin-bottom:4px}
