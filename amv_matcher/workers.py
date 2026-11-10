@@ -42,6 +42,7 @@ from multiprocessing.connection import wait as _mp_wait
 QUEUED, RUNNING, DONE, ERROR, CANCELLED = "queued", "running", "done", "error", "cancelled"
 PRIORITIES = (0, 1, 2)
 DEFAULT_TIMEOUT = 1800.0
+DEFAULT_SPAWN_TIMEOUT = 120.0
 
 # ---------------------------------------------------------------- registry
 _KINDS = {}      # name -> fn(path, **params)
@@ -252,6 +253,7 @@ def _worker_main(conn, kind_modules):
         jid, kind, path, params = msg
         cur["id"], cur["last"] = jid, -1
         try:
+            send(("started", jid, None))  # handshake: the job timeout clock starts here
             fn = _KINDS[kind]
             res = fn(path, **params)
             send(("done", jid, res))
@@ -301,20 +303,22 @@ def on_battery():
 
 # ------------------------------------------------------------------- pool
 class _Slot:
-    __slots__ = ("proc", "conn", "job", "t0")
+    __slots__ = ("proc", "conn", "job", "t0", "started")
 
     def __init__(self):
         self.proc = self.conn = self.job = None
-        self.t0 = 0.0
+        self.t0 = 0.0       # dispatch time
+        self.started = None  # worker's 'started' handshake time (None until then)
 
 
 class WorkerPool:
     def __init__(self, workers=None, timeout=DEFAULT_TIMEOUT, kind_modules=(),
-                 battery_detector=on_battery, battery_poll=15.0, max_events=5000):
+                 spawn_timeout=DEFAULT_SPAWN_TIMEOUT, battery_detector=on_battery, battery_poll=15.0, max_events=5000):
         n = workers if workers else max(1, (os.cpu_count() or 2) - 1)
         self._ctx = mp.get_context("spawn")
         self._kind_modules = list(kind_modules)
-        self._timeout = timeout
+        self._timeout = timeout  # counts from the worker's 'started' handshake only
+        self._spawn_timeout = spawn_timeout  # dispatch -> handshake (cold worker start)
         self._detector = battery_detector
         self._battery_poll = battery_poll
         self._battery = (False, 0.0)
@@ -567,7 +571,7 @@ class WorkerPool:
                 self._kill(s)
                 j["attempts"] -= 1
                 continue
-            s.job, s.t0 = j["id"], time.time()
+            s.job, s.t0, s.started = j["id"], time.time(), None
             j["state"], j["started"] = RUNNING, time.time()
             self._emit(j)
 
@@ -610,7 +614,10 @@ class WorkerPool:
                     if s.job is not None:
                         if s.proc is not None and not s.proc.is_alive() and not (s.conn and s.conn.poll()):
                             self._crashed(s, "worker crashed")
-                        elif self._timeout and time.time() - s.t0 > self._timeout:
+                        elif s.started is None:
+                            if self._spawn_timeout and time.time() - s.t0 > self._spawn_timeout:
+                                self._crashed(s, "worker failed to start")
+                        elif self._timeout and time.time() - s.started > self._timeout:
                             self._crashed(s, f"timeout after {self._timeout:g}s")
                 if self._closing:
                     return
@@ -620,7 +627,10 @@ class WorkerPool:
         j = self._jobs.get(jid)
         if j is None or s.job != jid:
             return
-        if tag == "progress":
+        if tag == "started":
+            s.started = time.time()
+            j["started"] = s.started
+        elif tag == "progress":
             if val != j["progress"]:
                 j["progress"] = val
                 self._emit(j)

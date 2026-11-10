@@ -91,6 +91,42 @@ def test_timeout(mkpool):
     assert p.status(k)["state"] == "done"
 
 
+def test_timeout_starts_at_handshake(mkpool, monkeypatch):
+    # worker start (module import) takes 1.5 s, longer than timeout=0.5: the job
+    # must not be timed out for that; only its own run time counts.
+    monkeypatch.setenv("AMV_TEST_SLOW_START", "1.5")
+    p = WorkerPool(workers=1, kind_modules=MODS + ["tests._slow_start"], timeout=0.5)
+    try:
+        a = p.submit("echo", "", value=1)
+        wait_for(p, a)
+        assert p.status(a)["state"] == "done", p.status(a)
+        b = p.submit("sleep", "", secs=30)
+        t = time.time()
+        wait_for(p, b)
+        assert "timeout after 0.5s" in p.status(b)["error"]
+        assert time.time() - t < 10
+        c = p.submit("echo", "", value=2)  # respawned slow worker again
+        wait_for(p, c)
+        assert p.status(c)["state"] == "done"
+    finally:
+        p.shutdown()
+    assert mp.active_children() == []
+
+
+def test_spawn_timeout(mkpool, monkeypatch):
+    monkeypatch.setenv("AMV_TEST_SLOW_START", "5")
+    p = WorkerPool(workers=1, kind_modules=MODS + ["tests._slow_start"], timeout=30,
+                   spawn_timeout=0.5)
+    try:
+        a = p.submit("echo", "", value=1)
+        wait_for(p, a)
+        assert p.status(a)["state"] == "error"
+        assert "worker failed to start" in p.status(a)["error"]
+    finally:
+        p.shutdown()
+    assert mp.active_children() == []
+
+
 def test_dedupe(mkpool, tmp_path):
     p = mkpool(1)
     f = tmp_path / "in.bin"
@@ -179,7 +215,7 @@ def test_progress_events(mkpool):
 
 def test_responsiveness_under_cpu_load(mkpool):
     p = mkpool(2)
-    ids = [p.submit("burn", "", secs=3.0, tag=i) for i in range(2)]
+    ids = [p.submit("burn", "", secs=5.0, tag=i) for i in range(2)]
 
     async def window():
         worst, last, end = 0.0, time.perf_counter(), time.perf_counter() + 0.7
@@ -190,8 +226,10 @@ def test_responsiveness_under_cpu_load(mkpool):
             last = now
         return worst
 
-    async def probe():  # best of 3 windows: ambient machine load can spike one
-        return min([await window() for _ in range(3)])
+    async def probe():
+        # NOTE: load-sensitive. Under heavy ambient load (load avg 50+) a single
+        # window can spike (233 ms seen), so take the best of 5 windows.
+        return min([await window() for _ in range(5)])
     time.sleep(0.5)
     assert all(p.status(i)["state"] == "running" for i in ids)
     worst = asyncio.run(probe())
