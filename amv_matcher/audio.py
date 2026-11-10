@@ -8,6 +8,7 @@ from pathlib import Path
 
 import librosa
 import numpy as np
+from scipy.ndimage import gaussian_filter1d
 
 from . import curves
 from .cache import get_cache
@@ -18,7 +19,81 @@ AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".flac", ".ogg", ".aac"}
 CACHE_PATH = Path(__file__).resolve().parent.parent / ".cache" / "songs.json"
 WF_DIR = CACHE_PATH.parent / "wf"
 WF_POINTS = 4000
-CACHE_VERSION = "v3"
+CACHE_VERSION = "v4"
+GRID_MAX_FIT_MS = 70.0     # use the constant-tempo grid when the robust beat residual is below this
+GRID_MAX_DRIFT_MS = 100.0   # ...and no 16-beat window drifts further than this from the line
+GRID_MIN_BEATS = 8
+GRID_SMOOTH_S = 0.015
+BEATS_PER_BAR = 4
+
+
+def _comb(env, fps, per, ph):
+    g = np.arange(ph, (len(env) - 1) / fps, per)
+    return float(np.interp(g, np.arange(len(env)) / fps, env).mean()) if len(g) else 0.0
+
+
+def fit_grid(env, fps, beat_times, bpm_hint,
+             max_fit_ms: float = GRID_MAX_FIT_MS, max_drift_ms: float = GRID_MAX_DRIFT_MS):
+    """Constant-tempo beat grid: comb fit (period + phase) to the onset envelope, then a
+    robust check of the tracker's beats against it.
+
+    (The tracker's own beats wander +-100 ms in places even on a constant-tempo song, so a
+    line through them is a poor grid; the comb over the whole envelope is much sharper.)
+    Returns beat_grid, grid_bpm, grid_fit_ms (1.4826 * median |tracked beat - nearest grid
+    beat|, ms), grid_drift_ms (largest phase shift of a quarter of the song vs the whole),
+    grid_used (small residual and no drift: consumers may use the grid instead of raw beats).
+    """
+    bt = np.asarray(beat_times, dtype=float)
+    env = np.asarray(env, dtype=float)
+    empty = {"beat_grid": [], "grid_bpm": 0.0, "grid_fit_ms": 0.0, "grid_drift_ms": 0.0,
+             "grid_used": False, "grid_t0": 0.0, "grid_period": 0.0}
+    if len(bt) < GRID_MIN_BEATS or bpm_hint <= 0 or len(env) < 8:
+        return empty
+    e = gaussian_filter1d(env / (np.percentile(env, 95) + 1e-9), GRID_SMOOTH_S * fps)
+    p0 = 60.0 / bpm_hint
+    best = (-1.0, p0, 0.0)
+    for per in np.arange(p0 * 0.97, p0 * 1.03, 0.0002):
+        for ph in np.arange(0.0, per, 0.005):
+            v = _comb(e, fps, per, ph)
+            if v > best[0]:
+                best = (v, float(per), float(ph))
+    _, per, ph = best
+    for step_p, step_t in ((0.00005, 0.002), (0.00001, 0.0005)):
+        cand = [(_comb(e, fps, per + dp, ph + dt), per + dp, ph + dt)
+                for dp in np.arange(-4, 5) * step_p for dt in np.arange(-4, 5) * step_t]
+        _, per, ph = max(cand)
+    n_pre = int(np.floor(ph / per))
+    ph -= n_pre * per
+    dur = (len(env) - 1) / fps
+    grid = np.arange(ph, dur, per)
+    # tracked beats vs the grid (robust: median of the nearest-beat distances)
+    near = np.abs(bt[:, None] - grid[None, :]).min(axis=1)
+    fit_ms = 1000.0 * 1.4826 * float(np.median(near))
+    # drift: re-fit the phase on each quarter of the song with the period fixed
+    drift = 0.0
+    q = len(env) // 4
+    for k in range(4):
+        sub = e[k * q:(k + 1) * q]
+        if len(sub) < 8 * fps:
+            continue
+        t0 = k * q / fps
+        sc = [(_comb(sub, fps, per, (ph - t0) % per + dt), dt) for dt in np.arange(-0.1, 0.1001, 0.004)]
+        drift = max(drift, abs(max(sc)[1]) * 1000.0)
+    return {"beat_grid": [round(float(t), 4) for t in grid],
+            "grid_bpm": round(60.0 / per, 3), "grid_fit_ms": round(fit_ms, 1),
+            "grid_drift_ms": round(drift, 1),
+            "grid_used": bool(fit_ms <= max_fit_ms and drift <= max_drift_ms),
+            "grid_t0": round(ph, 4), "grid_period": round(per, 5)}
+
+
+def bar_phase(grid, strength_t, strength_v, per_bar: int = BEATS_PER_BAR) -> int:
+    """Which grid beat (index mod per_bar) is the downbeat: the one with most onset+bass energy."""
+    grid = np.asarray(grid, dtype=float)
+    if len(grid) < per_bar * 2:
+        return 0
+    v = np.interp(grid, strength_t, strength_v)
+    sums = [float(v[k::per_bar].sum()) for k in range(per_bar)]
+    return int(np.argmax(sums))
 
 
 def _key(path: str) -> str:
@@ -79,7 +154,15 @@ def _compute(path: str):
     n10 = int(np.ceil(duration * curves.HZ))
     energy = curves.normalize01(curves.smooth(curves.bin_mean(raw, sr / HOP, n10), 3))
 
+    grid = fit_grid(env, sr / HOP, beat_times, bpm)
+    ft = np.arange(m) * HOP / sr
+    strength = _p95_norm(env[:m]) + _p95_norm(low[:m])
+    phase = bar_phase(grid["beat_grid"], ft, strength) if grid["beat_grid"] else 0
+
     result = {
+        **grid,
+        "bar_phase": phase,
+        "beats_per_bar": BEATS_PER_BAR,
         "bpm": round(bpm, 2),
         "beat_times": [round(float(t), 4) for t in beat_times],
         "beat_strengths": [round(float(v), 3) for v in

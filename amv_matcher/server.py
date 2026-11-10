@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from .audio import AUDIO_EXTS, analyze_song, song_waveform
 from . import media
 from .pump import pump_keyframes
-from .score import score, score_at
+from .score import MIN_OFFSET_S, score, score_at
 from .splice import plan_splice
 from .video import VIDEO_EXTS, analyze_video
 
@@ -106,7 +106,7 @@ def _score_songs(job: dict, video: dict, songs: list):
             if song["duration"] >= float(video["duration"]) - ORIGINAL_SLACK_S:
                 sc = score_at(song, video, 0.0)
             else:
-                sc = score(song, video)       # clearly shorter than the video: too_short
+                sc = score(song, video, allow_negative=True)       # clearly shorter than the video: too_short
             results.append({"path": orig["path"], "name": orig["name"], "source": "original",
                             "bpm": song["bpm"], "duration": song["duration"], **sc})
         except Exception as e:
@@ -116,18 +116,24 @@ def _score_songs(job: dict, video: dict, songs: list):
         job.update(done=i - 1, message=f"Analyzing song {i}/{len(songs)}: {p.name}")
         try:
             song = analyze_song(str(p))
-            sc = score(song, video)
+            sc = score(song, video, allow_negative=True)
             results.append({"path": str(p), "name": p.name, "source": "song", "bpm": song["bpm"],
                             "duration": song["duration"], **sc})
         except Exception as e:  # reported, never silently skipped
             skipped.append({"path": str(p), "name": p.name, "reason": f"{type(e).__name__}: {e}"})
     ok = [r for r in results if r["eligible"]]
+    ref = next((r for r in ok if r.get("source") == "original"), None)
+    reference = {"original_total": ref["total_pct"], "original_sync": ref["sync_pct"]} if ref else None
+    if reference:       # how each song compares with the video's own soundtrack
+        for r in ok:
+            r["vs_original"] = {"total": r["total_pct"] - reference["original_total"],
+                                "sync": round(r["sync_pct"] - reference["original_sync"], 1)}
     short = [r for r in results if not r["eligible"]]
     ok.sort(key=lambda r: (r["total_pct"], r["sync_pct"]), reverse=True)
     for rank, r in enumerate(ok, 1):
         r["rank"] = rank
     short.sort(key=lambda r: r["duration"], reverse=True)
-    job.update(done=len(songs), results=ok, too_short=short, skipped=skipped, status="done",
+    job.update(done=len(songs), reference=reference, results=ok, too_short=short, skipped=skipped, status="done",
                message=f"Done: {len(ok)} ranked, {len(skipped)} skipped")
 
 
@@ -174,7 +180,7 @@ def scan(req: ScanRequest):
     with _jobs_lock:
         JOBS[job_id] = {"id": job_id, "status": "running", "stage": "starting", "done": 0,
                         "total": 0, "message": "Starting", "video": None,
-                        "results": None, "too_short": [], "skipped": [], "error": None}
+                        "results": None, "reference": None, "too_short": [], "skipped": [], "error": None}
         ALLOWED_DIRS.add(str(md.resolve()))
         ALLOWED_VIDEOS.add(str(vp.resolve()))
     _pool.submit(_run_job, job_id, req)
@@ -242,7 +248,7 @@ def score_offset(req: ScoreRequest):
     if video is None:
         raise HTTPException(404, "Video not scanned yet")
     song = analyze_song(str(_safe_song(req.song_path)))
-    off = max(0.0, min(req.offset, max(0.0, song["duration"] - video["duration"])))
+    off = max(MIN_OFFSET_S, min(req.offset, max(0.0, song["duration"] - video["duration"])))
     return score_at(song, video, off)
 
 
@@ -389,7 +395,7 @@ def score_songs(req: ScoreSongsRequest):
     with _jobs_lock:
         JOBS[job_id] = {"id": job_id, "status": "running", "stage": "starting", "done": 0,
                         "total": 0, "message": "Starting", "video": None,
-                        "results": None, "too_short": [], "skipped": [], "error": None}
+                        "results": None, "reference": None, "too_short": [], "skipped": [], "error": None}
     if len(songs) <= 1:      # synchronous (0 songs = video analysis only): finished job inline
         _run_score_songs(job_id, vp, songs)
         return JSONResponse({"job_id": job_id, **JOBS[job_id]})
