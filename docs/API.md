@@ -187,3 +187,16 @@ Body `{"paths": [...]}` (Origin-guarded). Native drops/picks: files are allowed 
 Videos a `<video>` tag cannot decode (mkv, MJPG avi, ...) get `preview_proxy: true` in the video info and are served by `GET /api/video` from a cached 540p H.264 mp4 (`proxy.py`, built in the background). Scoring/export always use the original file. `GET /api/uploads` also reports `proxy_count`, `proxy_bytes`, `frozen`.
 
 Env (dev aids): `AMV_DATA_DIR` data folder; `AMV_SNAPSHOT=<png>`, `AMV_TEST_DROP=<paths>`, `AMV_EXIT_AFTER_SNAPSHOT=1`. `python app_main.py --selftest` runs a headless end-to-end check.
+
+## Section arrangement (Python API, `amv_matcher/arrange.py`)
+
+`plan_arrangement(song, video, max_moves=3, lead_s=None)` rearranges whole song sections so the
+energy shape follows the video's calm/build/peak structure. Returns `segments`
+(`[{src_start, src_end, dst_start}]`, same shape as `splice.plan_splice`), `sections_used`,
+`section_order`, `moves`, `arc_before/after`, `total_before/after`, `improvement_pct`.
+Cuts are only at section boundaries (bar aligned); only the last section is trimmed, so the output
+length equals the video duration. No more than 2 consecutive sections of one repeat group; starting
+on intro/chorus/drop is preferred. The plain single trim is the baseline and is returned (empty
+`segments` order, `moves` 0) unless an arrangement scores higher on the same objective as splice
+(combined score + drop-on-peak / lull-on-calm bonus, minus a small penalty per move), so
+`total_after >= total_before`.
