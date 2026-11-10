@@ -16,7 +16,7 @@ jobs:
       matrix:
         include:
           - {os: macos-15-intel, label: macos-intel}
-          - {os: macos-14, label: macos-arm}
+          - {os: macos-15, label: macos-arm}
           - {os: windows-latest, label: windows}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
