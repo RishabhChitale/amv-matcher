@@ -43,7 +43,7 @@ jobs:
         timeout-minutes: 15
         run: |
           "dist/AMV Matcher.app/Contents/MacOS/AMV Matcher" --selftest --selftest-log selftest.log
-          test "$(grep -c '^selftest ok' selftest.log)" -eq 7
+          test "$(grep -c '^selftest ok' selftest.log)" -eq 8
       - name: Selftest (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -53,7 +53,7 @@ jobs:
           if (Test-Path selftest.log) { Get-Content selftest.log }
           if ($p.ExitCode -ne 0) { throw "selftest exit code $($p.ExitCode)" }
           $n = (Select-String -Path selftest.log -Pattern '^selftest ok').Count
-          if ($n -ne 7) { throw "expected 7 selftest ok lines, got $n" }
+          if ($n -ne 8) { throw "expected 8 selftest ok lines, got $n" }
       - name: Package encrypted (macOS/Windows)
         shell: bash
         env:

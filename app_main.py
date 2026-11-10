@@ -371,6 +371,34 @@ def run_window() -> int:
     return 0
 
 
+def check_native_hooks(url: str, timeout: float = 45.0) -> dict:
+    """Load url in a hidden pywebview window and return typeof window.nativeDrop / window.nativeMenu
+    (polled until both are functions or timeout). Blocks on webview.start: call from the main thread."""
+    import webview
+    out: dict = {}
+    win = webview.create_window("selftest", url + "/", hidden=True)
+
+    def probe():
+        t0 = time.time()
+        try:
+            while time.time() - t0 < timeout:
+                try:
+                    r = win.evaluate_js("JSON.stringify({nativeDrop: typeof window.nativeDrop, nativeMenu: typeof window.nativeMenu})")
+                    out.update(json.loads(r or "{}"))
+                except Exception:  # noqa: BLE001  page not ready yet
+                    pass
+                if out.get("nativeDrop") == "function" and out.get("nativeMenu") == "function":
+                    break
+                time.sleep(0.5)
+        finally:
+            try:
+                win.destroy()
+            except Exception:  # noqa: BLE001
+                pass
+    webview.start(probe)
+    return out
+
+
 def selftest(log_path: str = "") -> int:
     """Server up, GET /, one synthetic scan (tiny generated media), exit 0/1. No window."""
     import tempfile
@@ -490,6 +518,10 @@ def selftest(log_path: str = "") -> int:
         finally:
             wp.shutdown()
         print("selftest ok: worker pool job (probe) -> done in", round(time.time() - t2, 1), "s")
+        # the loaded page must expose the native hooks (a broken native.js/shell.js ships a dead drop/menu)
+        found = check_native_hooks(s.url)
+        assert found == {"nativeDrop": "function", "nativeMenu": "function"}, f"native hooks missing in the page: {found}"
+        print("selftest ok: page hooks window.nativeDrop + window.nativeMenu present")
         s.stop()
         return 0
     except Exception as e:  # noqa: BLE001
