@@ -23,3 +23,9 @@ docs/real-suite-latest.md
 docs/diagnosis-*.md
 docs/leftovers-verify-latest.md
 docs/DISK-REPORT.md
+
+# symlinks to the StashData drive (no trailing slash so the links are ignored too)
+.cache
+.uploads
+dist
+/cache/
