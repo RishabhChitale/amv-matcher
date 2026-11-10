@@ -340,13 +340,15 @@ def plan_splice(song: dict, video: dict, max_cuts: int, min_segment_s: float = 2
     L = float(np.median(np.diff(bars)))
     R = max(1, int(math.ceil(min_segment_s / L - 1e-9)))
 
-    # candidate free first trims: baseline offset + each drop aligned to the strongest peak
+    # candidate free first trims: baseline offset + each drop aligned to the strongest peak.
+    # The first segment only has to fit (>= min_segment_s), NOT the whole video: later cuts jump back
+    # (repeat the drop), so o + video duration may exceed the song length.
     cands = [off]
     pk = _strongest_peak(video)
     if pk is not None:
         for d in song.get("drops", []):
             o = round(round((d - pk) / 0.05) * 0.05, 2)
-            if 0 <= o <= sd - vd and all(abs(o - c) > 1e-6 for c in cands):
+            if 0 <= o <= sd - min_segment_s and all(abs(o - c) > 1e-6 for c in cands):
                 cands.append(o)
     for o in cands:
         k0 = int(np.searchsorted(bars, o - 1e-6))

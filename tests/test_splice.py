@@ -114,3 +114,42 @@ def test_runtime_bound():
     dt = time.time() - t0
     print("splice runtime", round(dt, 2), "s; improvement", r["improvement_pct"])
     assert dt < 3.0
+
+
+def _intro_song(duration, drops, loud_len=8.0, intro=30.0):
+    song = make_song(duration, 120.0, drops=drops, loud_len=loud_len)
+    en = np.asarray(song["energy_curve"])
+    k = int(intro * HZ)
+    en[:k] = np.where(en[:k] > 0.5, en[:k], 0.05)
+    song["energy_curve"] = en.tolist()
+    return song
+
+
+def _check_peaks(song, video, r, strongest=10.0, others=(25.0,), drop=40.0):
+    en = np.asarray(song["energy_curve"])
+    assert r["cuts"], r
+
+    def src_at(t):
+        seg = next(s for s in r["segments"] if s["dst_start"] <= t < s["dst_start"] + s["src_end"] - s["src_start"] - 1e-9)
+        return seg["src_start"] + (t - seg["dst_start"])
+
+    assert min(abs(src_at(strongest) - d) for d in song["drops"]) <= 0.25, r["segments"]
+    for p in others:
+        assert en[int(src_at(p + 0.5) * HZ)] > 0.5, (p, r["segments"])
+    assert r["improvement_pct"] > 5, r
+
+
+def test_short_song_splices():
+    # 60 s song, quiet intro + ONE drop at 40 s; 30 s video, peaks 10 s and 25 s. Video lengths that
+    # are not round numbers used to push the drop-aligned trim out of the candidate set (o + vd > song).
+    song = _intro_song(60.0, (40.0,))
+    for vd in (30.0, 30.03, 29.97):
+        video = make_video(vd)
+        _check_peaks(song, video, plan_splice(song, video, 2))
+
+
+def test_tv_size_song_two_drops():
+    song = _intro_song(90.0, (30.0, 70.0), loud_len=12.0, intro=0.0)
+    video = make_video(30.03)
+    r = plan_splice(song, video, 2)
+    assert r["cuts"] and r["improvement_pct"] > 3, r
