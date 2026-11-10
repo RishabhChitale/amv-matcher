@@ -21,17 +21,18 @@ Honest-leftovers tracker: the goal is to perfect the app until none remain open.
 | L15 | Tests | full pytest and ui_smoke must be green together on a clean tree | all | pytest 105 passed, 4 skipped, 0 failed at c172c80; ui_smoke pending (L25) | CI green |
 | L16 | Scorer | the original-audio source got a non-zero best offset (-1.91) although it's intrinsically aligned | krokorok | fixed in 052f7de (own audio scored at offset 0 only) | own audio always offset 0 |
 | L17 | Export | render/export/splice with negative offsets not verified | krokorok + gligar | open | export test at offset -0.63 |
-| L18 | Tests | runtime bounds (splice < 3 s, 3-min auto-sync < 10 s) unverified on a quiet machine | commander | open | re-run when the load avg < 4 |
+| L18 | Tests | runtime bounds (splice < 3 s, 3-min auto-sync < 10 s) unverified on a quiet machine | commander | pending the quiet window | re-run when the load avg < 4 |
 | L19 | Stems | test_stems::test_quiet_detail_and_vocal_phrase_starts failing (work in progress) | beedrill | fixed in 1d7b9dd (test_stems green); real Demucs on songS1 passed: 4 stems within 0.05 s | test_stems green |
 | L20 | Stems | the packaged app excludes torch/Demucs; stems need an optional pack installed into `STEMS_PACK` (design only, no installer yet) | app shell | open | an in-app 'install stems pack' flow that creates the venv and passes test_stems |
 | L21 | Scorer | the perceptual lead (60 ms, from the 2 ground truths) is applied consistently to sync/phrase/tightness | krokorok | fixed in 7a865bb | the ground-truth table own 84/97, cross <= 43 |
 | L22 | UI | no 'Cut lead' setting and no Auto-sync button/visuals in the UI yet | beedrill | open | ui_smoke covers the auto-sync flow |
 | L23 | Audio | a corrupt audio packet was skipped, shifting later audio by up to 21 ms | krokorok | fixed in 54f291d | test_media_audio click timing within 1 ms |
 | L24 | Platform | the app is unsigned (Gatekeeper warning on first launch on Mac; SmartScreen on Windows) | commander | open | decide signing/notarization with the user |
-| L25 | UI | the Boom-at-drop brightness smoke check is intermittent (max 1.000 in some runs) | beedrill | in progress | 115/115 three runs in a row |
-| L26 | Stems | Demucs takes 755 s for a 233 s song on this Intel Mac CPU (~3.2x realtime) | beedrill | open | a faster config measured, or the wait shown clearly in the UI with progress + cancel |
+| L25 | UI | the Boom-at-drop brightness smoke check is intermittent (max 1.000 in some runs) | beedrill | root cause found (the harness seek/rAF stall under load; the app code is correct), the harness fixed + a stems sync bug fixed; 116/116 once, 3-in-a-row pending the quiet window | 115/115 three runs in a row |
+| L26 | Stems | Demucs takes 755 s for a 233 s song on this Intel Mac CPU (~3.2x realtime) | beedrill | pending the quiet window | a faster config measured, or the wait shown clearly in the UI with progress + cancel |
 | L27 | Frame gen | RIFE at 1080p is slow on this Intel Mac (~1 h for a 60 s clip with many slowed frames); blend is the fast default | gligar | open | a faster RIFE path (720p interpolation upscaled, or interpolating only the frames shown) measured, or accepted with a clear estimate + cancel in the UI |
 | L28 | UI | no render/Auto-sync/RIFE controls in the UI yet (Auto-sync button, Cut lead, quality choice with the estimate, a 'measuring...' state, cancel) | beedrill | open | ui_smoke covers the full auto-sync -> render flow |
 | L29 | Auto-sync | an ineligible (too-short) song became 83 after auto-sync (length-rule violation) | gligar | in progress | an ineligible pair stays 0 unless allow_loop |
 | L30 | Auto-sync | heavy retiming makes cross pairs reach 92 (no effort penalty in the ranking) | gligar | in progress | own/songS1 pairs rank above cross pairs after auto-sync with effort |
 | L31 | Render | the 5 s render excerpt for A-own took 511 s (others 7-42 s) | gligar | in progress | an excerpt under 60 s on every real case |
+| L32 | Tests | heavy parallel pawn work (load avg 6-26) makes timing/playback checks unreliable | commander | open | one quiet window: run the runtime bounds, ui_smoke x3 and the Demucs config with no other heavy jobs |
