@@ -53,3 +53,16 @@
   v.addEventListener('pause', () => { shown = 0; render(); });
   apply();
 })();
+
+// Keep the timeline/overlay canvases in sync when the rail's grid transition changes their size
+// (no window 'resize' event fires for that).
+(() => {
+  if (!window.ResizeObserver) return;
+  const cv = document.getElementById('tl');
+  if (!cv) return;
+  let raf = 0;
+  new ResizeObserver(() => {
+    cancelAnimationFrame(raf);
+    raf = requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
+  }).observe(cv);
+})();
