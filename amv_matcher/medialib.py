@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import paths
+from .winsafe import is_relative_to_ci, norm_case_path, replace_retry
 
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
 AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".flac", ".ogg", ".aac"}
@@ -70,7 +71,7 @@ def _save_roots(roots: list) -> None:
     f.parent.mkdir(parents=True, exist_ok=True)
     tmp = f.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(roots, indent=2))
-    os.replace(tmp, f)
+    replace_retry(tmp, f)
 
 
 def roots_info() -> list:
@@ -83,7 +84,7 @@ def add_root(path: str) -> str:
         raise NotADirectoryError(str(p))
     with _lock:
         roots = load_roots()
-        if str(p) not in roots:
+        if norm_case_path(p) not in {norm_case_path(r) for r in roots}:
             roots.append(str(p))
         _save_roots(roots)
     return str(p)
@@ -97,7 +98,8 @@ def remove_root(path: str) -> bool:
         key2 = key
     with _lock:
         roots = load_roots()
-        new = [r for r in roots if r not in (key, key2)]
+        drop = {norm_case_path(key), norm_case_path(key2)}
+        new = [r for r in roots if norm_case_path(r) not in drop]
         if len(new) == len(roots):
             return False
         _save_roots(new)
@@ -118,7 +120,7 @@ def _resolved_roots() -> list:
 
 def under_root(p: Path) -> bool:
     """p must already be resolved."""
-    return any(p == r or p.is_relative_to(r) for r in _resolved_roots())
+    return any(is_relative_to_ci(p, r) for r in _resolved_roots())
 
 
 def safe_path(path: str) -> Path:
@@ -164,7 +166,7 @@ def list_dir(path: str) -> dict:
 # ---------------------------------------------------------------- probe
 def _key(p: Path, *extra) -> str:
     st = p.stat()
-    return "|".join([str(p), str(st.st_size), str(int(st.st_mtime)), *[str(x) for x in extra]])
+    return "|".join([norm_case_path(p), str(st.st_size), str(int(st.st_mtime)), *[str(x) for x in extra]])
 
 
 def _do_probe(p: Path) -> dict:
@@ -214,7 +216,7 @@ def probe(path: str) -> dict:
         cf.parent.mkdir(parents=True, exist_ok=True)
         tmp = cf.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(cache))
-        os.replace(tmp, cf)
+        replace_retry(tmp, cf)
     return res
 
 
@@ -253,5 +255,5 @@ def thumb(path: str, t: Optional[float] = None, w: int = 240) -> Path:
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(".tmp")
     tmp.write_bytes(buf.tobytes())
-    os.replace(tmp, out)
+    replace_retry(tmp, out)
     return out

@@ -141,3 +141,33 @@ def test_probe_includes_download_source(env, monkeypatch):
     import amv_matcher.mediameta as mm
     monkeypatch.setattr(mm, "download_source", lambda p: {"domain": "example.com"})
     assert c.get("/api/media/probe", params={"path": str(v)}).json()["download"] == {"domain": "example.com"}
+
+
+def test_windows_default_roots(tmp_path, monkeypatch):
+    for n in ("Videos", "Music", "Downloads"):
+        (tmp_path / n).mkdir()
+    monkeypatch.setattr(media_lib.sys, "platform", "win32")
+    monkeypatch.setattr(media_lib.Path, "home", classmethod(lambda cls: tmp_path))
+    r = media_lib.default_roots()
+    assert r == [str(tmp_path / n) for n in ("Videos", "Music", "Downloads")]  # Desktop missing -> skipped
+    monkeypatch.setattr(media_lib.sys, "platform", "darwin")
+    assert media_lib.default_roots() == [str(tmp_path / n) for n in ("Music", "Downloads")]  # no Movies/Desktop
+
+
+def test_windows_case_insensitive_containment(tmp_path, monkeypatch):
+    import ntpath
+    from amv_matcher import winsafe
+    monkeypatch.setattr(winsafe.os, "name", "nt")
+    monkeypatch.setattr(winsafe.os.path, "normcase", lambda p: p.lower())
+    monkeypatch.setattr(winsafe.os, "sep", "/")
+    root = tmp_path / "Root"
+    assert media_lib.is_relative_to_ci(tmp_path / "ROOT" / "a.mp4", root)
+    assert not media_lib.is_relative_to_ci(tmp_path / "RootX" / "a.mp4", root)
+
+
+def test_uses_replace_retry(env, monkeypatch):
+    calls = []
+    real = media_lib.replace_retry
+    monkeypatch.setattr(media_lib, "replace_retry", lambda a, b: (calls.append(1), real(a, b))[1])
+    media_lib.add_root(str(env[2]))
+    assert calls
