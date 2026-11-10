@@ -54,6 +54,7 @@ import hashlib
 import json
 import math
 import os
+import queue
 import re
 import shutil
 import subprocess
@@ -673,6 +674,52 @@ def estimate_render(plan: dict, interp: str, video, measure: bool = False,
 
 # --------------------------------------------------------------------------- frame plan
 
+PIPE_DEPTH = 12                                   # frames buffered between the producer and the encoder
+
+
+def _blend(a: np.ndarray, b: np.ndarray, f: float) -> np.ndarray:
+    """(1-f)*a + f*b, rounded, uint8 (cv2.addWeighted: one pass, no float32 temporaries)."""
+    import cv2
+    return cv2.addWeighted(a, 1.0 - f, b, f, 0.0)
+
+
+_ENC_CACHE: dict = {}
+
+
+def _pick_encoder(width: int, height: int, rate) -> str:
+    """Hardware H.264 (VideoToolbox on macOS) when it opens and is not a stub, else libx264. AMV_ENCODER
+    forces a codec name (libx264 / h264_videotoolbox) for benchmarking."""
+    forced = os.environ.get("AMV_ENCODER")
+    if forced:
+        return forced
+    if sys.platform != "darwin":
+        return "libx264"
+    key = (width, height)
+    if key not in _ENC_CACHE:
+        ok = False
+        try:
+            ctx = av.codec.Codec("h264_videotoolbox", "w").create()
+            ctx.width, ctx.height, ctx.pix_fmt = width, height, "yuv420p"
+            ctx.time_base = Fraction(1, 60)
+            ctx.bit_rate = 8_000_000
+            ctx.open()
+            ok = True
+        except Exception:
+            ok = False
+        _ENC_CACHE[key] = ok
+    return "h264_videotoolbox" if _ENC_CACHE[key] else "libx264"
+
+
+def _set_encoder_options(vs) -> None:
+    name = vs.codec_context.name
+    if name == "h264_videotoolbox":
+        px = (vs.width or 1920) * (vs.height or 1080)
+        vs.bit_rate = int(min(40e6, max(6e6, px * 60 * 0.09)))      # ~ crf-20 class quality at 60 fps
+        vs.options = {"allow_sw": "1", "realtime": "0"}
+    else:
+        vs.options = {"preset": "veryfast", "crf": "20", "threads": "0"}
+
+
 def frame_plan(warp, out_duration: float, fps: float, src_frames: int):
     """Per output frame: (i, f, slowed). Source position = i + f in source-frame units."""
     n = int(round(out_duration * fps))
@@ -837,18 +884,27 @@ def pump_track(pump: Optional[dict], plan: dict, out_duration: float, fps: float
 
 def apply_pump(arr: np.ndarray, scale: float, bright: float, dx: float = 0.0, dy: float = 0.0) -> np.ndarray:
     """Scale about the centre (frame size kept), shift by dx,dy px, multiply brightness.
-    Returns `arr` itself when all are neutral."""
+    Returns `arr` itself when all are neutral. Zoom-in (scale >= 1) whose window stays inside the frame is a
+    crop + cv2.resize (much faster than warpAffine); zoom-out / out-of-frame shifts keep warpAffine."""
     if scale == 1.0 and bright == 1.0 and not dx and not dy:
         return arr
+    import cv2
     out = arr
     if scale != 1.0 or dx or dy:
         h, w = arr.shape[:2]
-        M = np.float32([[scale, 0, (1 - scale) * w / 2.0 + dx], [0, scale, (1 - scale) * h / 2.0 + dy]])
-        import cv2
-        out = cv2.warpAffine(np.ascontiguousarray(arr), M, (w, h), flags=cv2.INTER_LINEAR,
-                             borderMode=cv2.BORDER_REPLICATE)
+        cw, ch = w / scale, h / scale
+        x0, y0 = (w - cw) / 2.0 - dx / scale, (h - ch) / 2.0 - dy / scale
+        x0r, y0r, cwr, chr_ = int(round(x0)), int(round(y0)), int(round(cw)), int(round(ch))
+        if scale >= 1.0 and x0r >= 0 and y0r >= 0 and x0r + cwr <= w and y0r + chr_ <= h and cwr > 1 and chr_ > 1:
+            crop = arr[y0r:y0r + chr_, x0r:x0r + cwr]
+            out = cv2.resize(crop, (w, h), interpolation=cv2.INTER_LINEAR) if (cwr, chr_) != (w, h) \
+                else np.ascontiguousarray(crop)
+        else:
+            M = np.float32([[scale, 0, (1 - scale) * w / 2.0 + dx], [0, scale, (1 - scale) * h / 2.0 + dy]])
+            out = cv2.warpAffine(np.ascontiguousarray(arr), M, (w, h), flags=cv2.INTER_LINEAR,
+                                 borderMode=cv2.BORDER_REPLICATE)
     if bright != 1.0:
-        out = np.clip(out.astype(np.float32) * bright + 0.5, 0, 255).astype(np.uint8)
+        out = cv2.convertScaleAbs(np.ascontiguousarray(out), alpha=bright, beta=0.0)
     return out
 
 
@@ -861,6 +917,10 @@ class _Frames:
         self.c = av.open(str(path))
         self.st = self.c.streams.video[0]
         self.fps = fps
+        try:
+            self.st.thread_type = "AUTO"                 # frame+slice threaded decode
+        except Exception:
+            pass
         self.it = self.c.decode(self.st)
         self.cache = {}
         self.last = -1
@@ -953,9 +1013,11 @@ def render_plan(video_path, plan: dict, audio_wav, out_path, interp: str = "auto
 
         tmp = out_path.with_name(out_path.stem + ".tmp.mp4")
         out = av.open(str(tmp), "w", format="mp4")
-        vs = out.add_stream("libx264", rate=rate)
+        vs = out.add_stream(_pick_encoder(width, height, rate), rate=rate)
         vs.width, vs.height, vs.pix_fmt = width, height, "yuv420p"
-        vs.options = {"preset": "veryfast", "crf": "20"}
+        _set_encoder_options(vs)
+        if info_cb:
+            info_cb({"encoder": vs.codec_context.name})
         ast = out.add_stream("aac", rate=a_sr)
         ast.layout, ast.bit_rate = "stereo", 192000
         apk = []
@@ -983,47 +1045,88 @@ def render_plan(video_path, plan: dict, audio_wav, out_path, interp: str = "auto
         reader = _Frames(video_path, fps)
         pool = ThreadPoolExecutor(RIFE_WORKERS) if mode == "rife" else None
         n_interp = 0
+        stop = threading.Event()
+        q: "queue.Queue" = queue.Queue(maxsize=PIPE_DEPTH)
+
+        def put(item):
+            while not stop.is_set():
+                try:
+                    q.put(item, timeout=0.2)
+                    return True
+                except queue.Full:
+                    pass
+            return False
+
+        def produce():
+            """decode -> interpolate/blend -> Boom -> rgb->yuv conversion, in a thread so the encoder
+            (which releases the GIL) runs concurrently."""
+            nonlocal n_interp
+            try:
+                BATCH = 24
+                for b0 in range(0, n_out, BATCH):
+                    if stop.is_set() or (cancel is not None and cancel.is_set()):
+                        raise RenderCancelled("cancelled")
+                    idx = range(b0, min(n_out, b0 + BATCH))
+                    frames, jobs = {}, {}
+                    for k in idx:
+                        i, f = int(i_arr[k]), float(f_arr[k])
+                        interp_here = mode != "dup" and bool(
+                            _interp_mask(np.array([f]), np.array([bool(slow[k])]))[0])
+                        if not interp_here:
+                            frames[k] = reader.get(i + (1 if f >= 0.5 else 0))
+                            continue
+                        a, b = reader.get(i), reader.get(i + 1)
+                        n_interp += 1
+                        if mode == "rife":
+                            jobs[k] = pool.submit(runner.pair, a, b, round(f, 3))
+                        else:
+                            frames[k] = _blend(a, b, f)
+                    for k, j in jobs.items():
+                        frames[k] = j.result()
+                    if cancel is not None and cancel.is_set():
+                        raise RenderCancelled("cancelled")
+                    for k in idx:
+                        arr = frames[k][:height, :width]
+                        if track is not None:
+                            arr = apply_pump(arr, *track[min(k, len(track) - 1)])
+                        vf = av.VideoFrame.from_ndarray(np.ascontiguousarray(arr), format="rgb24")
+                        vf = vf.reformat(format="yuv420p")
+                        vf.pts = k
+                        vf.time_base = Fraction(1) / rate
+                        if not put((k, vf)):
+                            return
+                    reader.prune(int(i_arr[idx[-1]]) - 1)
+                put(None)
+            except BaseException as e:               # handed to the encoder thread
+                put(e)
+
+        th = threading.Thread(target=produce, name="render-produce", daemon=True)
+        th.start()
         try:
-            BATCH = 24
-            for b0 in range(0, n_out, BATCH):
-                if cancel is not None and cancel.is_set():
-                    raise RenderCancelled("cancelled")
-                idx = range(b0, min(n_out, b0 + BATCH))
-                frames, jobs = {}, {}
-                for k in idx:
-                    i, f = int(i_arr[k]), float(f_arr[k])
-                    interp_here = mode != "dup" and bool(_interp_mask(np.array([f]), np.array([bool(slow[k])]))[0])
-                    if not interp_here:
-                        frames[k] = reader.get(i + (1 if f >= 0.5 else 0))
-                        continue
-                    a, b = reader.get(i), reader.get(i + 1)
-                    n_interp += 1
-                    if mode == "rife":
-                        jobs[k] = pool.submit(runner.pair, a, b, round(f, 3))
-                    else:
-                        frames[k] = ((1 - f) * a.astype(np.float32) + f * b.astype(np.float32) + 0.5).astype(np.uint8)
-                for k, j in jobs.items():
-                    frames[k] = j.result()
-                if cancel is not None and cancel.is_set():
-                    raise RenderCancelled("cancelled")
-                for k in idx:
-                    arr = frames[k][:height, :width]
-                    if track is not None:
-                        arr = apply_pump(arr, *track[min(k, len(track) - 1)])
-                    vf = av.VideoFrame.from_ndarray(np.ascontiguousarray(arr), format="rgb24")
-                    vf.pts = k
-                    vf.time_base = Fraction(1) / rate
-                    for p in vs.encode(vf):
-                        send(p)
-                reader.prune(int(i_arr[idx[-1]]) - 1)
+            while True:
+                item = q.get()
+                if item is None:
+                    break
+                if isinstance(item, BaseException):
+                    raise item
+                k, vf = item
+                for p in vs.encode(vf):
+                    send(p)
                 if progress_cb:
-                    progress_cb(min(0.99, (idx[-1] + 1) / n_out))
+                    progress_cb(min(0.99, (k + 1) / n_out))
             for p in vs.encode(None):
                 send(p)
             while ai < len(apk):
                 out.mux(apk[ai])
                 ai += 1
         finally:
+            stop.set()
+            try:                                     # unblock a producer waiting on a full queue
+                while True:
+                    q.get_nowait()
+            except queue.Empty:
+                pass
+            th.join(timeout=30)
             if runner and cancel is not None and cancel.is_set():
                 runner.kill_all()
             reader.close()
