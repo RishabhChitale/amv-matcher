@@ -15,7 +15,7 @@ Honest-leftovers tracker: the goal is to perfect the app until none remain open.
 | L9 | UI | .mkv and other formats can't preview in the browser | app shell | fixed in 9dde0f5 (an automatic H.264 preview proxy for mkv/avi/mov) | tests/test_app_shell.py::test_proxy_for_non_web_codec |
 | L10 | Platform | runs as a local server in a browser, not an app; Windows not supported | app shell | partly fixed: the macOS app (pywebview + PyInstaller, 479 MB) builds and opens its window (54f291d); Windows/CI need the private GitHub repo (waiting on user approval) | the .app and .exe from CI launch and pass `--selftest` |
 | L11 | Frame gen | slowed sections have no generated frames (no RIFE/blend render yet) | open | open | an exported retimed mp4 uses RIFE frames |
-| L12 | Resolve | the export prototype isn't merged into the app; untested in Resolve | open | open | the user's Windows Resolve 20/21 checklist passes |
+| L12 | Resolve | the export prototype isn't merged into the app; untested in Resolve | open | built in 10cc003 (Export to Resolve: FCPXML 1.9 with retime clips via timeMap, audio splice clips, beat/DROP/CUT markers, baked AMV_Pump .setting + .drfx, HOW-TO-IMPORT); NOT tested in Resolve: timeMap-as-clip-speed, fades and lanes unverified; waiting on the user's Windows Resolve 20/21 test | the user's Windows Resolve 20/21 checklist passes |
 | L13 | Stems | no stem separation / stem player | beedrill | in progress | Demucs 4 stems + stem player smoke |
 | L14 | Real media | only 1 real AMV + 1 song tested; 'any and all examples' needs a broader real set | user + commander | open | a real-media suite across several AMVs/songs passes |
 | L15 | Tests | full pytest and ui_smoke must be green together on a clean tree | all | open | CI green |
