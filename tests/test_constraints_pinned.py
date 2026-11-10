@@ -1,4 +1,5 @@
 import re
+import sys
 from importlib import metadata
 from pathlib import Path
 
@@ -22,6 +23,8 @@ def test_all_pinned(name):
         assert re.match(r"^[A-Za-z0-9._-]+(\[[^\]]+\])?==[^=\s]+$", l), l
 
 
+@pytest.mark.skipif(sys.platform != "darwin",
+                    reason="constraints-macos.txt is generated on macOS; other OSes install unconstrained")
 def test_installed_matches_main_pins():
     for l in _lines("constraints-macos.txt"):
         pkg, ver = l.split("==")
