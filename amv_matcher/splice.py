@@ -344,7 +344,8 @@ def _valid(segs, vd, min_seg, sd):
         ln = sg["src_end"] - sg["src_start"]
         if ln < min_seg - 1e-6 and len(segs) > 1:
             return False
-        if sg["src_end"] > sd + 1e-6 or sg["src_start"] < -1e-9:
+        # only the FIRST segment may start before 0 (lead silence, allow_negative plans, down to -3 s)
+        if sg["src_end"] > sd + 1e-6 or sg["src_start"] < (-3.0 - 1e-6 if i == 0 else -1e-9):
             return False
     last = segs[-1]
     return abs(last["dst_start"] + last["src_end"] - last["src_start"] - vd) < 1e-5

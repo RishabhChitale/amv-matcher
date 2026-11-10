@@ -255,3 +255,13 @@ def test_assemble_trim_real_songS1_videoA():
         a = S.score_at(asm, video, 0.0)["total_pct"]
         print("offset", o, "direct", d, "assembled", a)
         assert abs(d - a) <= 0.5
+
+
+def test_valid_allows_negative_first_segment_only():
+    from amv_matcher.splice import _valid
+    ok = [{"src_start": -2.0, "src_end": 10.0, "dst_start": 0.0}, {"src_start": 20.0, "src_end": 28.0, "dst_start": 12.0}]
+    assert _valid(ok, 20.0, 2.0, 100.0)
+    bad = [{"src_start": 0.0, "src_end": 10.0, "dst_start": 0.0}, {"src_start": -2.0, "src_end": 6.0, "dst_start": 10.0}]
+    assert not _valid(bad, 18.0, 2.0, 100.0)
+    far = [{"src_start": -4.0, "src_end": 10.0, "dst_start": 0.0}, {"src_start": 20.0, "src_end": 26.0, "dst_start": 14.0}]
+    assert not _valid(far, 20.0, 2.0, 100.0)
