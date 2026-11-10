@@ -200,3 +200,15 @@ on intro/chorus/drop is preferred. The plain single trim is the baseline and is 
 `segments` order, `moves` 0) unless an arrangement scores higher on the same objective as splice
 (combined score + drop-on-peak / lull-on-calm bonus, minus a small penalty per move), so
 `total_after >= total_before`.
+
+## Auto-sync
+
+`POST /api/auto-sync` (Origin-guarded; video/song paths must be allowed) starts a job running `autosync.auto_sync`.
+
+Body: `{video_path, song_path, lead_s?, allow_loop? (false), guardrails?: {max_speed_dev, max_tempo_pct, max_cuts}, budget_s?}`.
+Options are clamped to the engine limits: `lead_s` 0-0.12, `max_speed_dev` 0-0.25, `max_tempo_pct` 0-8, `max_cuts` 0-3, `budget_s` 1-60 (default 20).
+
+Returns `{job_id, status: "running", options}` (the clamped options). A second request for the same (video, song) pair while one runs returns `409 {detail, job_id}`.
+Poll `GET /api/auto-sync/{job_id}`; when `status` is `done`, `result` is the auto_sync result verbatim (`steps`, `final` incl. `effort`, `fit_after_effort`, `tightness`, `plan`, `why_not_100`).
+
+Each finished run caches its `final` on disk (`.cache/autosync.json`, keyed by a hash of video, song and options, plus a per-pair "latest" entry). `/api/scan` and `/api/score-songs` results carry `auto_sync_cached` per song: the latest `final` for that pair, or `null`, so a UI can rank by `fit_after_effort`.

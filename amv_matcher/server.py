@@ -23,6 +23,8 @@ from .score import MIN_OFFSET_S, score, score_at
 from .splice import plan_splice
 from .video import VIDEO_EXTS, analyze_video
 from . import paths, proxy
+from . import autosync as _autosync
+from .cache import get_cache
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC = paths.resource_root() / "static"
@@ -109,6 +111,13 @@ def _video_info(video: dict) -> dict:
     return info
 
 
+def _cached_for(video_path, song_path):
+    try:
+        return _autosync_cached(Path(video_path), Path(song_path))
+    except Exception:
+        return None
+
+
 def _score_songs(job: dict, video: dict, songs: list):
     """Analyze + score songs into job (results/too_short/skipped); shared by scan and score-songs."""
     job.update(stage="songs", total=len(songs), done=0)
@@ -123,7 +132,8 @@ def _score_songs(job: dict, video: dict, songs: list):
             else:
                 sc = score(song, video, allow_negative=True)       # clearly shorter than the video: too_short
             results.append({"path": orig["path"], "name": orig["name"], "source": "original",
-                            "bpm": song["bpm"], "duration": song["duration"], **sc})
+                            "bpm": song["bpm"], "duration": song["duration"], **sc,
+                            "auto_sync_cached": _cached_for(job.get("video_path"), orig["path"])})
         except Exception as e:
             skipped.append({"path": orig["path"], "name": orig["name"], "source": "original",
                             "reason": f"{type(e).__name__}: {e}"})
@@ -133,7 +143,8 @@ def _score_songs(job: dict, video: dict, songs: list):
             song = analyze_song(str(p))
             sc = score(song, video, allow_negative=True)
             results.append({"path": str(p), "name": p.name, "source": "song", "bpm": song["bpm"],
-                            "duration": song["duration"], **sc})
+                            "duration": song["duration"], **sc,
+                            "auto_sync_cached": _cached_for(job.get("video_path"), p)})
         except Exception as e:  # reported, never silently skipped
             skipped.append({"path": str(p), "name": p.name, "reason": f"{type(e).__name__}: {e}"})
     ok = [r for r in results if r["eligible"]]
@@ -714,3 +725,119 @@ def render_estimate(req: RenderEstimateRequest):
 
 if _render.router is not None:
     app.include_router(_render.router, dependencies=[Depends(_origin_guard)])
+
+
+# ---- auto-sync (autosync.py): guarded, paths validated, clamped options, one job per pair
+AUTOSYNC_LIMITS = {"max_speed_dev": 0.25, "max_tempo_pct": 8.0, "max_cuts": 3, "budget_s": 60.0, "lead_s": 0.12}
+_AUTOSYNC_RUNNING: dict = {}      # (video, song) -> job id
+_autosync_cache_file = None       # tests may point this at a tmp file
+
+
+def _as_cache():
+    return get_cache(_autosync_cache_file or (paths.CACHE / "autosync.json"))
+
+
+def _fingerprint(p: Path) -> str:
+    st = p.stat()
+    return f"{p.resolve()}|{st.st_size}|{int(st.st_mtime)}"
+
+
+def _pair_key(vp: Path, sp: Path) -> str:
+    return "pair:" + hashlib.sha1((_fingerprint(vp) + "||" + _fingerprint(sp)).encode()).hexdigest()
+
+
+def _opts_key(vp: Path, sp: Path, opts: dict) -> str:
+    raw = _fingerprint(vp) + "||" + _fingerprint(sp) + "||" + repr(sorted(opts.items()))
+    return "run:" + hashlib.sha1(raw.encode()).hexdigest()
+
+
+def _autosync_cached(vp: Path, sp: Path):
+    """Last auto-sync `final` for this pair (any options), or None."""
+    if not (vp.is_file() and sp.is_file()):
+        return None
+    hit = _as_cache().get(_pair_key(vp, sp))
+    return hit.get("final") if hit else None
+
+
+class AutoSyncGuardrails(BaseModel):
+    max_speed_dev: Optional[float] = None
+    max_tempo_pct: Optional[float] = None
+    max_cuts: Optional[int] = None
+
+
+class AutoSyncRequest(BaseModel):
+    video_path: str
+    song_path: str
+    lead_s: Optional[float] = None
+    allow_loop: bool = False
+    guardrails: Optional[AutoSyncGuardrails] = None
+    budget_s: Optional[float] = None
+
+
+def _clamp(v, lo, hi, default):
+    if v is None:
+        return default
+    return min(hi, max(lo, float(v)))
+
+
+def _autosync_options(req: AutoSyncRequest) -> dict:
+    g = req.guardrails or AutoSyncGuardrails()
+    L = AUTOSYNC_LIMITS
+    lead = None if req.lead_s is None else _clamp(req.lead_s, 0.0, L["lead_s"], None)
+    return {"lead_s": lead, "allow_loop": bool(req.allow_loop),
+            "max_speed_dev": _clamp(g.max_speed_dev, 0.0, L["max_speed_dev"], L["max_speed_dev"]),
+            "max_tempo_pct": _clamp(g.max_tempo_pct, 0.0, L["max_tempo_pct"], L["max_tempo_pct"]),
+            "max_cuts": int(_clamp(g.max_cuts, 0, L["max_cuts"], L["max_cuts"])),
+            "budget_s": _clamp(req.budget_s, 1.0, L["budget_s"], 20.0)}
+
+
+def _run_autosync(job_id: str, vp: Path, sp: Path, opts: dict, pair):
+    job = JOBS[job_id]
+    try:
+        job.update(stage="analyze", message="Analyzing")
+        song = analyze_song(str(sp))
+        video = _full_video(vp)
+        job.update(stage="auto-sync", message="Auto-syncing")
+        res = _autosync.auto_sync(song, video, budget_s=opts["budget_s"], max_speed_dev=opts["max_speed_dev"],
+                                  max_tempo_dev=opts["max_tempo_pct"] / 100.0, max_cuts=opts["max_cuts"],
+                                  lead_s=opts["lead_s"], allow_loop=opts["allow_loop"])
+        try:
+            c = _as_cache()
+            entry = {"final": res.get("final"), "options": opts}
+            c.set(_opts_key(vp, sp, opts), entry, flush=False)
+            c.set(_pair_key(vp, sp), entry)
+        except Exception:
+            pass      # the cache is a convenience; never fail the job over it
+        job.update(status="done", result=res, message="Done")
+    except Exception as e:
+        job.update(status="error", error=f"{type(e).__name__}: {e}", message=str(e))
+    finally:
+        with _jobs_lock:
+            if _AUTOSYNC_RUNNING.get(pair) == job_id:
+                del _AUTOSYNC_RUNNING[pair]
+
+
+@app.post("/api/auto-sync", dependencies=[Depends(_origin_guard)])
+def auto_sync_endpoint(req: AutoSyncRequest):
+    vp, sp = _safe_video(req.video_path), _safe_song(req.song_path)
+    opts = _autosync_options(req)
+    pair = (str(vp), str(sp))
+    with _jobs_lock:
+        running = _AUTOSYNC_RUNNING.get(pair)
+        if running and JOBS.get(running, {}).get("status") == "running":
+            return JSONResponse({"detail": "An auto-sync job for this pair is already running", "job_id": running},
+                                status_code=409)
+        job_id = uuid.uuid4().hex[:12]
+        JOBS[job_id] = {"id": job_id, "status": "running", "stage": "starting", "done": 0, "total": 1,
+                        "message": "Starting", "options": opts, "result": None, "error": None}
+        _AUTOSYNC_RUNNING[pair] = job_id
+    _pool.submit(_run_autosync, job_id, vp, sp, opts, pair)
+    return {"job_id": job_id, "status": "running", "options": opts}
+
+
+@app.get("/api/auto-sync/{job_id}")
+def auto_sync_status(job_id: str):
+    job = JOBS.get(job_id)
+    if not job or "options" not in job:
+        raise HTTPException(404, "Unknown job")
+    return JSONResponse(job)
