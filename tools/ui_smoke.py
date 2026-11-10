@@ -176,6 +176,26 @@ def main():
             print("FAIL  page did not load (cannot reach", a.url + ")")
             return 2
         check("page loads", True)
+        # Regression guard: every script (native.js, shell.js...) must load without an uncaught ReferenceError/TypeError,
+        # both in a plain browser and with a fake window.pywebview shell. (CDP Runtime.exceptionThrown covers
+        # uncaught exceptions and unhandled promise rejections.)
+        bad = lambda: [e for e in c.errors if "ReferenceError" in e or "TypeError" in e or e.startswith("exception")]
+        c.pump(0.5)
+        check("no uncaught errors at load (plain browser)", not bad(), "; ".join(bad()[:3]))
+        stub = c.call("Page.addScriptToEvaluateOnNewDocument", source="window.pywebview={api:{log(){},open_path(){return Promise.resolve()},reveal_path(){return Promise.resolve()},pick_files(){return Promise.resolve([])},save_file(){return Promise.resolve(null)}}};")
+        c.errors.clear()
+        c.call("Page.navigate", url=a.url)
+        wait_for(c, "document.readyState==='complete' && !!document.getElementById('scan')", 15)
+        c.pump(0.5)
+        check("no uncaught errors at load (pywebview stub)", not bad(), "; ".join(bad()[:3]))
+        check("nativeDrop is defined under the stub", c.ev("typeof window.nativeDrop") == "function")
+        c.call("Page.removeScriptToEvaluateOnNewDocument", identifier=stub.get("identifier"))
+        c.errors.clear()
+        c.call("Page.navigate", url=a.url)
+        if not wait_for(c, "document.readyState==='complete' && !!document.getElementById('scan')", 15):
+            print("FAIL  page did not reload"); return 2
+        if os.environ.get("AMV_SMOKE_GUARD_ONLY"):   # quick run of just the load-error guard
+            return 0 if all(results) else 1
 
         def scan(video):
             c.ev(f"document.getElementById('video-path').value={json.dumps(video)};"
