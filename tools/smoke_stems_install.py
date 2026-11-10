@@ -41,6 +41,9 @@ class H(BaseHTTPRequestHandler):
         p = self.path.split("?")[0]
         if p == "/api/stems/install":
             M["idle_polls"] += 1
+            if M["mode"] in ("flat_idle", "flat_running"):  # real backend shape: FLAT job dict + installed + pack
+                base = job() if M["mode"] == "flat_running" else {"status": "idle"}
+                return self.send(200, dict(base, installed=M["installed"], pack=pack()))
             return self.send(200, {"job": job() if M["stage_i"] or M["cancelled"] else None, "installed": M["installed"], "pack": pack()})
         if p == "/api/stems/install/j1":
             M["job_polls"] += 1
@@ -98,7 +101,7 @@ def main():
         vis = lambda sel: bool(c.ev(f"(()=>{{const e=document.querySelector({json.dumps(sel)});return !!e&&!e.classList.contains('hidden')&&e.offsetParent!==null}})()"))
 
         def load(mode):
-            M.update(mode=mode, job_polls=0, idle_polls=0, installed=False, cancelled=False, stage_i=0)
+            M.update(mode=mode, job_polls=0, idle_polls=0, installed=False, cancelled=False, stage_i=1 if mode == "flat_running" else 0)
             c.call("Page.navigate", url=f"http://127.0.0.1:{SRV}/")
             wf(c, "document.readyState==='complete' && !!window.__stemsInstall", 15)
             c.ev("document.getElementById('stems-toggle').click()")
@@ -140,6 +143,13 @@ def main():
         chk("cancel: back to Install button, no error", wf(c, "!document.getElementById('si-go').classList.contains('hidden')", 6) and not txt(".si-err"))
         n = M["job_polls"]; c.pump(3.0)
         chk("cancel: polling stops", M["job_polls"] == n)
+        # real GET /api/stems/install shape: flat job dict (no {job:...} wrapper)
+        load("flat_idle"); c.pump(3.0)
+        chk("flat idle (status 'idle', no id): Install shown, no running bar, no polling",
+            vis("#si-go") and not vis("#si-cancel") and M["job_polls"] == 0, f"polls={M['job_polls']}")
+        load("flat_running"); c.pump(2.5)
+        chk("flat running job: Cancel shown, Install hidden, polls job id",
+            vis("#si-cancel") and not vis("#si-go") and M["job_polls"] >= 1, f"polls={M['job_polls']}")
     finally:
         proc.kill(); srv.shutdown()
     bad = len([r for r in U.results if not r])
