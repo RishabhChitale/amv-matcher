@@ -183,10 +183,10 @@ def make_video_jumps(path, jump_times, seconds=20.0, fps=30, size=(320, 240)):
     vw.release()
 
 
-def slow_section_jump_times(seconds=20.0):
-    """0.5 s between jumps, 0.625 s between 5 and 15 s (a known slow section)."""
+def slow_section_jump_times(seconds=24.0):
+    """0.5 s between jumps, 0.625 s between 3 and 9 s (a known slow section)."""
     out, t = [], 0.0
     while t < seconds:
         out.append(round(t, 4))
-        t += 0.625 if 5.0 <= t < 15.0 else 0.5
+        t += 0.625 if 3.0 <= t < 9.0 else 0.5
     return out

@@ -857,7 +857,7 @@ def main():
                 os.makedirs("/tmp/amvfx/slow", exist_ok=True)
                 os.makedirs(sl_dir, exist_ok=True)
                 if not os.path.exists("/tmp/amvfx/slow/slow.mp4"):
-                    make_video_jumps("/tmp/amvfx/slow/slow.mp4", slow_section_jump_times(20.0), seconds=20.0)
+                    make_video_jumps("/tmp/amvfx/slow/slow.mp4", slow_section_jump_times(24.0), seconds=24.0)
                 if not os.path.exists(sl_dir + "/click120.wav"):
                     make_click_track(sl_dir + "/click120.wav", 120, 40, 0.0)
             except Exception as e:
