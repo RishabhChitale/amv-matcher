@@ -802,6 +802,52 @@ def main():
         check("pause stops the stems mix", ok)
         check("quiet-detail data loaded", c.ev("Array.isArray(__stems.feats && __stems.feats.quiet_detail)") is True)
 
+        # ---- auto-sync UI
+        if ro:
+            print("SKIP  auto-sync UI checks (read-only server)")
+        else:
+            c.ev("(()=>{const r=S.results.find(r=>r.source!=='original'&&!r.dropped);S.sel=r;selectSong(r);useAudio(r)})()"); c.pump(1.0)
+            check("Auto-sync button enabled for a real source", c.ev("!!document.getElementById('as-go') && !document.getElementById('as-go').disabled") is True)
+            c.ev("(()=>{const g=document.getElementById('g-dev');g.value=10;g.dispatchEvent(new Event('input'));const t=document.getElementById('g-cuts');t.value=1;t.dispatchEvent(new Event('input'))})()")
+            c.ev("document.getElementById('as-go').click()")
+            ok = wait_for(c, "!document.getElementById('as-done').classList.contains('hidden')", 120)
+            check("auto-sync finishes, headline + total shown", ok and "Sync" in (c.ev("document.getElementById('as-head').textContent") or "") or (ok and "Not eligible" in (c.ev("document.getElementById('as-head').textContent") or "")), str(c.ev("document.getElementById('as-head').textContent")))
+            check("step list rendered", (c.ev("document.querySelectorAll('#as-steps li').length") or 0) >= 5)
+            check("guardrail sliders reach the API", c.ev("AS.lastReq.guardrails.max_speed_dev===0.1 && AS.lastReq.guardrails.max_cuts===1") is True, str(c.ev("JSON.stringify(AS.lastReq&&AS.lastReq.guardrails)")))
+            check("no 'objective' wording in panel", "objective" not in (c.ev("document.getElementById('fit').innerText") or "").lower())
+            c.pump(0.8)
+            el_ok = c.ev("!!AS.runs[S.videoPath+'|'+S.sel.path]") is True
+            check("run stored for the pair", el_ok)
+            if el_ok and c.ev("(AS.runs[S.videoPath+'|'+S.sel.path].result.plan.retime||{sections:[]}).sections.length") > 0:
+                check("V1 retime bands drawn", (c.ev("AS.bands") or 0) > 0, str(c.ev("AS.bands")))
+                c.ev("document.querySelector('#as-mode [data-m=orig]').click()"); c.pump(0.4)
+                check("Original toggle hides bands", c.ev("AS.mode==='orig' && AS.bands===0") is True)
+                c.ev("document.querySelector('#as-mode [data-m=synced]').click()"); c.pump(0.4)
+                check("Auto-synced toggle restores bands", (c.ev("AS.bands") or 0) > 0)
+            else:
+                print("SKIP  band checks (no retime sections for this pair)")
+            c.ev("document.querySelector('#as-sort [data-s=after]').click()"); c.pump(0.4)
+            check("sort by fit after auto-sync works, cached row annotated", c.ev("AS.sort==='after' && !!document.querySelector('.rafter')") is True)
+            c.ev("document.querySelector('#as-sort [data-s=now]').click()")
+            ok = wait_for(c, "AS.rife!==null || true", 5)
+            plan_ok = c.ev("!document.getElementById('rd-go').disabled") is True
+            check("render button enabled once a plan exists", plan_ok)
+            c.ev("document.querySelector('#rd-q [data-q=blend]').click()")
+            wait_for(c, "/Estimated|unavailable/.test(document.getElementById('rd-est').textContent)", 90)
+            check("render estimate shown", "Estimated" in (c.ev("document.getElementById('rd-est').textContent") or ""), str(c.ev("document.getElementById('rd-est').textContent")))
+            if plan_ok:
+                c.ev("document.getElementById('rd-go').click()")
+                c.pump(0.8)
+                c.ev("document.getElementById('rd-cancel').click()")
+                ok = wait_for(c, "/Cancel|Done|failed/.test(document.getElementById('rd-stage').textContent) && !AS.rd", 90)
+                check("render can be cancelled (or finishes)", ok, str(c.ev("document.getElementById('rd-stage').textContent")))
+                c.ev("document.getElementById('rd-go').click()")
+                ok = wait_for(c, "/^Done/.test(document.getElementById('rd-stage').textContent)", 300, 1.0)
+                check("render completes and download link appears", ok and bool(c.ev("!!document.getElementById('rd-link')")), str(c.ev("document.getElementById('rd-stage').textContent")))
+                c.ev("document.getElementById('rs-go').click()")
+                ok = wait_for(c, "!!document.getElementById('rs-link') || /failed/.test(document.getElementById('rd-stage').textContent)", 120)
+                check("Resolve export yields a zip link", bool(c.ev("!!document.getElementById('rs-link')")), str(c.ev("document.getElementById('rd-stage').textContent")))
+
         # ---- error path
         if os.path.exists(a.bad_video):
             scan(a.bad_video)

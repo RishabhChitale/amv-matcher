@@ -78,18 +78,53 @@
   <aside class="sidebar">
     <div class="glass panel" id="results-panel">
       <h3>Audio sources <span id="vinfo" class="muted"></span></h3>
+      <div class="seg as-sort hidden" id="as-sort"><span class="muted">Sort</span><button data-s="now" class="on">Fit now</button><button data-s="after">Fit after auto-sync</button><button id="as-all" title="Auto-sync the top 5 sources one after another">Auto-sync all</button></div>
+      <div id="as-allmsg" class="muted hidden"></div>
       <div id="results" class="results"><div class="muted pad">No scan yet.</div></div>
       <details id="short-wrap" class="short hidden"><summary>Too short (<span id="short-n">0</span>)</summary><div id="short"></div></details>
       <details id="skipped-wrap" class="short hidden"><summary>Skipped (<span id="skip-n">0</span>)</summary><div id="skipped"></div></details>
     </div>
     <div class="glass panel" id="fit">
-      <h3>Fit <span id="fit-src" class="muted"></span></h3>
-      <div class="row sp-row"><label class="sw" id="sp-sw"><input type="checkbox" id="sp-on" disabled><i></i><span>Smart splice</span></label>
-        <div class="seg" id="sp-max"><span class="muted">Max cuts</span><button data-n="0">0</button><button data-n="1">1</button><button data-n="2" class="on">2</button><button data-n="3">3</button></div></div>
-      <div id="fit-msg" class="fit-msg">Press "Use this audio" on a source to fit and export it.</div>
+      <h3>Auto-sync <span id="fit-src" class="muted"></span></h3>
+      <button id="as-go" class="as-go" disabled><span>Auto-sync to 100%</span></button>
+      <div id="as-lock" class="muted" style="font-size:12px;margin-top:6px"></div>
+      <div id="as-run" class="as-run hidden">
+        <div class="as-top"><div id="as-ring" class="as-ring"></div><div id="as-stage" class="as-stage">Starting...</div><button id="as-cancel">Cancel</button></div>
+      </div>
+      <ol id="as-steps" class="as-steps hidden"></ol>
+      <div id="as-done" class="as-done hidden">
+        <div id="as-head" class="as-head"></div><div id="as-total" class="as-total"></div><div id="as-why" class="fit-msg"></div>
+        <div class="seg as-mode" id="as-mode"><button data-m="orig">Original</button><button data-m="synced" class="on">Auto-synced</button></div>
+        <div id="as-pvnote" class="muted as-pv"></div>
+      </div>
+      <details id="as-guard" class="adv"><summary>Guardrails</summary>
+        <label class="row">Cut lead <input type="range" id="g-lead" min="0" max="120" step="5" value="60"><b id="g-lead-v">60 ms</b></label>
+        <label class="row">Max speed change <input type="range" id="g-dev" min="0" max="25" step="1" value="15"><b id="g-dev-v">&plusmn;15%</b></label>
+        <label class="row">Max tempo stretch <input type="range" id="g-tempo" min="0" max="8" step="0.5" value="4"><b id="g-tempo-v">4%</b></label>
+        <label class="row">Max cuts <input type="range" id="g-cuts" min="0" max="3" step="1" value="2"><b id="g-cuts-v">2</b></label>
+        <label class="row tog"><input type="checkbox" id="g-loop"> Allow loop (repeat a short song)</label>
+        <label class="row tog"><input type="checkbox" id="g-unlock"> Unlock original (let auto-sync retime/rearrange the video's own audio)</label>
+      </details>
+      <details class="adv"><summary>Smart splice (advanced)</summary>
+        <div class="row sp-row"><label class="sw" id="sp-sw"><input type="checkbox" id="sp-on" disabled><i></i><span>Smart splice</span></label>
+          <div class="seg" id="sp-max"><span class="muted">Max cuts</span><button data-n="0">0</button><button data-n="1">1</button><button data-n="2" class="on">2</button><button data-n="3">3</button></div></div>
+        <div id="fit-msg" class="fit-msg">Press "Use this audio" on a source to fit and export it.</div>
+      </details>
+    </div>
+    <div class="glass panel" id="export">
+      <h3>Export</h3>
       <div class="ex-btns"><button id="ex-wav" disabled>Export audio (.wav)</button><button id="ex-mp4" disabled>Export video with this audio (.mp4)</button></div>
       <div id="ex-prog" class="ex-prog hidden"><i id="ex-bar"></i></div>
       <div id="ex-out" class="ex-out"></div>
+      <div class="rd-box" id="rd-box">
+        <div class="row rd-q"><span class="muted">Render video</span><div class="seg" id="rd-q"><button data-q="blend" class="on">Fast (blend)</button><button data-q="rife">High quality (RIFE)</button></div></div>
+        <div id="rd-est" class="muted">Run Auto-sync first, then render the retimed video.</div>
+        <button id="rd-rife" class="hidden">Install RIFE</button>
+        <div class="ex-btns"><button id="rd-go" disabled>Render video</button><button id="rd-cancel" class="hidden">Cancel</button><button id="rs-go" disabled>Export to DaVinci Resolve</button></div>
+        <div id="rd-prog" class="ex-prog hidden"><i id="rd-bar"></i></div>
+        <div id="rd-stage" class="muted"></div>
+        <div id="rd-out" class="ex-out"></div>
+      </div>
     </div>
     <div class="glass panel" id="fx">
       <h3>Effects</h3>
@@ -104,6 +139,7 @@
 <script src="/static/app.js"></script>
 <script src="/static/drop.js"></script>
 <script src="/static/stems.js"></script>
+<script src="/static/autosync.js"></script>
 <script src="/static/native.js"></script>
 </body>
 </html>

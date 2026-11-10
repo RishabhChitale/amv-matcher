@@ -99,8 +99,12 @@ async function pollJob() {
   let s; try { s = await (await fetch('/api/stems/status?song_path=' + q(p))).json(); } catch (e) { return; }
   if (st.path !== p) return;
   st.status = s; const j = s.running || s.last;
-  if (s.state === 'running' && j) { el('stems-prog').classList.remove('hidden'); el('stems-bar').style.width = ((j.progress || 0) * 100) + '%'; msg(j.message || 'Separating...'); render(); st.poll = setTimeout(pollJob, 500); return; }
-  el('stems-prog').classList.add('hidden'); st.job = null;
+  if (s.state === 'running' && j) { el('stems-prog').classList.remove('hidden'); el('stems-bar').style.width = ((j.progress || 0) * 100) + '%'; if (!st.t0 || st.t0p !== p) { st.t0 = Date.now(); st.t0p = p; }
+    const el_s = (Date.now() - st.t0) / 1000, pr = j.progress || 0, dem = (el('stems-prov').value === 'demucs');
+    const left = pr > 0.08 ? el_s * (1 - pr) / pr : (dem ? 720 - el_s : 20);
+    const eta = left > 90 ? 'about ' + Math.max(1, Math.round(left / 60)) + ' min left' : 'under 2 min left';
+    msg((j.message || 'Separating...') + ' · ' + (pr > 0.08 || !dem ? eta : 'about 12 min on this Mac')); render(); st.poll = setTimeout(pollJob, 500); return; }
+  el('stems-prog').classList.add('hidden'); st.job = null; st.t0 = 0;
   if (s.state === 'ready') { msg(''); await loadStems(s.provider, s.stems, p); }
   else msg(j && j.status === 'error' ? 'Separation failed: ' + j.error : j && j.status === 'cancelled' ? 'Cancelled.' : '');
   render();

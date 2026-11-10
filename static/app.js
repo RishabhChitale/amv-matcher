@@ -22,7 +22,7 @@ function seek(t) {
 function spliceActive() {  // spliced audio (rendered wav) is playing in place of the single trim
   const p = S.sp.plan; return !!(S.sp.on && p && p.segments && p.cuts && p.cuts.length && p.improvement_pct >= 1 && S.sp.url && S.sel && S.sel === S.inUse && S.sp.path === S.sel.path);
 }
-function songTime() { return spliceActive() ? vid.currentTime : vid.currentTime + S.offset; }  // song clock = video clock + offset (spliced wav starts at video time 0)
+function songTime() { const a = window.asSongT && window.asSongT(); if (a != null) return a; return spliceActive() ? vid.currentTime : vid.currentTime + S.offset; }  // song clock = video clock + offset (spliced wav starts at video time 0)
 function syncAudio(force) {
   if (!S.sel) return;
   const st = songTime();
@@ -147,6 +147,7 @@ function renderResults(j) {
   $('skipped').innerHTML = sk.map(r => `<div>${esc(r.name || r.path || r)} <span class="muted">${esc(r.reason || '')}</span></div>`).join('');
   if (!S.video && S.results.length) noVideoUI();
   updateFit();
+  if (window.asAfterResults) window.asAfterResults();
 }
 function markRows() {
   document.querySelectorAll('.res').forEach(e => {
@@ -171,7 +172,7 @@ function useAudio(r) {
 }
 function applyAudioSrc() {
   if (!S.sel) return;
-  const t = spliceActive() ? S.sp.url : '/api/audio?path=' + encodeURIComponent(S.sel.path);
+  const t = (window.asAudioUrl && window.asAudioUrl()) || (spliceActive() ? S.sp.url : '/api/audio?path=' + encodeURIComponent(S.sel.path));
   if (aud.dataset.cur !== t) { aud.dataset.cur = t; aud.src = t; }
 }
 
@@ -324,7 +325,7 @@ function update() {
 function frame(now) {
   if (S.playing) {
     if (!S.vidOk || S.rate < 0) { vid.currentTime = Math.min(S.dur, vid.currentTime + (now - lastWall) / 1000 * S.rate); }
-    lastWall = now; syncAudio(false);
+    lastWall = now; if (window.asFrame) window.asFrame(); syncAudio(false);
     if (vid.currentTime >= S.dur - 0.02 && S.dur) { if (S.loop) { seek(0); } else pause(); }
     update();
   }
@@ -367,6 +368,7 @@ function draw() {
     ctx.strokeStyle = 'rgba(255,255,255,.5)'; (v.cut_times || []).forEach(t => { const x = t2x(t); ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y0 + 10); ctx.stroke(); });
   }
   else emptyBand(y0, V1H, 'Drop video here');
+  if (v && window.asDrawV1) window.asDrawV1(ctx, y0, V1H, t2x);
   // A1
   const a0 = RULER + V1H + 4, mid = a0 + (A1H - 8) / 2, w = S.wf;
   if (!w) emptyBand(a0, A1H - 8, 'Drop songs here, or click Use this audio');
@@ -409,6 +411,7 @@ function draw() {
       const h = ph * Math.min(1, (0.03 * FX.boom / 100 * e.s * (e.d ? 4 : 1)) / maxA);
       ctx.fillStyle = e.d ? '#22d3ee' : '#8b5cf6'; ctx.fillRect(x - 1, p0 + ph - h, 2, h); });
   }
+  if (window.asDrawA1) window.asDrawA1(ctx, a0, A1H, t2x, W);
   if (S.selClip) {  // selection outline
     ctx.save(); ctx.shadowColor = '#22d3ee'; ctx.shadowBlur = 14; ctx.strokeStyle = '#67e8f9'; ctx.lineWidth = 2;
     if (S.selClip !== 'a') ctx.strokeRect(1, RULER + 1, W - 2, V1H - 2);
