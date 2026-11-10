@@ -27,7 +27,12 @@ def mkpool():
     assert mp.active_children() == [], "orphan worker processes after shutdown"
 
 
-def wait_for(pool, ids, timeout=30):
+_WIN = os.name == "nt"
+SPAWN_WAIT = 90 if _WIN else 30   # cold spawn start is much slower on Windows (no fork)
+
+
+def wait_for(pool, ids, timeout=None):
+    timeout = timeout or SPAWN_WAIT
     ids = [ids] if isinstance(ids, str) else ids
     end = time.time() + timeout
     while time.time() < end:
@@ -48,10 +53,21 @@ def test_ordering_single_worker(mkpool, tmp_path):
     assert open(log).read().split() == ["p0a", "p0b", "p1a", "p1b", "p2a", "p2b"]
 
 
+def wait_started(pool, jid, timeout=None):
+    """Wait for the worker's 'started' handshake (cold spawn can take many seconds on Windows)."""
+    end = time.time() + (timeout or SPAWN_WAIT)
+    while time.time() < end:
+        s = pool.status(jid)
+        if s["state"] != "queued" and s["started"] and pool._slots[0].started is not None:
+            return
+        time.sleep(0.02)
+    raise AssertionError("no started handshake: %s" % pool.status(jid))
+
+
 def test_cancel_queued_and_running(mkpool, tmp_path):
     p = mkpool(1)
     run = p.submit("sleep", "", secs=30, tag="long")
-    time.sleep(0.4)
+    wait_started(p, run)
     queued = p.submit("sleep", "", secs=30, tag="queued")
     after = p.submit("echo", "", value=7)
     assert p.cancel(queued) and p.status(queued)["state"] == "cancelled"
@@ -60,7 +76,7 @@ def test_cancel_queued_and_running(mkpool, tmp_path):
     assert p.cancel(run)
     assert p.status(run)["state"] == "cancelled"
     wait_for(p, after)
-    assert time.time() - t < 10
+    assert time.time() - t < (SPAWN_WAIT if _WIN else 10)
     assert p.status(after)["result"] == {"value": 7}
     assert not p.cancel(after)
 
@@ -271,3 +287,55 @@ def test_real_kinds_smoke(mkpool, tmp_path):
     v2 = q.submit("video_analysis", str(vid), cache_dir=str(vc))
     assert q.status(v2)["state"] == "done" and q.status(v2)["cached"]
     assert q.stats()["busy"] == 0
+
+
+def test_cancel_before_worker_started(mkpool):
+    # cancel a job whose worker has not sent its handshake yet (cold/slow spawn)
+    p = mkpool(1, spawn_timeout=60)
+    j = p.submit("sleep", "", secs=30)
+    assert p.cancel(j) and p.status(j)["state"] == "cancelled"
+    later = p.submit("echo", "", value=5)
+    wait_for(p, later)
+    assert p.status(later)["result"] == {"value": 5}
+
+
+def test_init_failure_reports_error(mkpool):
+    # a kind module that cannot be imported in the child must give a clear error, not stay queued
+    p = WorkerPool(workers=1, kind_modules=MODS + ["tests._no_such_module_xyz"], spawn_timeout=60)
+    try:
+        j = p.submit("echo", "", value=1)
+        wait_for(p, j)
+        s = p.status(j)
+        assert s["state"] == "error" and "worker failed to start" in s["error"], s
+        assert "exit code" in s["error"] and "_no_such_module_xyz" in s["error"]
+    finally:
+        p.shutdown()
+
+
+def test_spawn_failure_marks_error_not_queued(monkeypatch):
+    # Windows-only exception in the spawn path must not leave the job queued forever
+    p = WorkerPool(workers=1, kind_modules=MODS, spawn_timeout=60)
+    monkeypatch.setattr(p, "_ensure", lambda s: (_ for _ in ()).throw(OSError("WinError 5 access denied")))
+    try:
+        j = p.submit("echo", "", value=1)
+        wait_for(p, j, timeout=10)
+        s = p.status(j)
+        assert s["state"] == "error" and "worker failed to start" in s["error"] and "WinError 5" in s["error"]
+    finally:
+        p.shutdown()
+
+
+def test_windows_paths_simulated(mkpool, monkeypatch):
+    # parent-side Windows code paths (kill_tree via taskkill is faked) still cancel + respawn
+    from amv_matcher import winsafe
+    monkeypatch.setattr(winsafe, "_is_win", lambda: True)
+    calls = []
+    real = winsafe.kill_tree
+    monkeypatch.setattr(winsafe, "kill_tree", lambda proc, *a, **k: (calls.append(proc.pid), real(proc, *a, **k))[1])
+    p = mkpool(1)
+    run = p.submit("sleep", "", secs=30)
+    wait_started(p, run)
+    assert p.cancel(run) and p.status(run)["state"] == "cancelled" and calls
+    nxt = p.submit("echo", "", value=9)
+    wait_for(p, nxt)
+    assert p.status(nxt)["result"] == {"value": 9}

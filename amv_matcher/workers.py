@@ -265,8 +265,16 @@ def _worker_main(conn, kind_modules):
     import importlib
     _lower_priority()
     _own_process_group()
-    for m in kind_modules or ():
-        importlib.import_module(m)
+    try:
+        for m in kind_modules or ():
+            importlib.import_module(m)
+    except BaseException:  # noqa: BLE001 - tell the parent why we cannot serve jobs
+        import traceback
+        try:
+            conn.send(("initfail", None, traceback.format_exc()[-1500:]))
+        except Exception:
+            pass
+        return
     send_lock = threading.Lock()
 
     def send(msg):
@@ -342,12 +350,13 @@ def on_battery():
 
 # ------------------------------------------------------------------- pool
 class _Slot:
-    __slots__ = ("proc", "conn", "job", "t0", "started")
+    __slots__ = ("proc", "conn", "job", "t0", "started", "init_err")
 
     def __init__(self):
         self.proc = self.conn = self.job = None
         self.t0 = 0.0       # dispatch time
         self.started = None  # worker's 'started' handshake time (None until then)
+        self.init_err = None  # traceback tail reported by a child that failed to start
 
 
 class WorkerPool:
@@ -552,6 +561,7 @@ class WorkerPool:
     def _kill(self, s):
         p, c = s.proc, s.conn
         s.proc = s.conn = s.job = None
+        s.init_err = None
         if c is not None:
             try:
                 c.close()
@@ -611,9 +621,12 @@ class WorkerPool:
                 self._ensure(s)
                 j["attempts"] += 1
                 s.conn.send((j["id"], j["kind"], j["path"], j["params"]))
-            except Exception:
+            except Exception as e:  # noqa: BLE001 - e.g. a Windows-only spawn/pipe failure
                 self._kill(s)
                 j["attempts"] -= 1
+                j["_startfails"] = j.get("_startfails", 0) + 1
+                if j["_startfails"] >= 3:
+                    self._finish(j, ERROR, error=f"worker failed to start: {type(e).__name__}: {e}"[:500])
                 continue
             s.job, s.t0, s.started = j["id"], time.time(), None
             j["state"], j["started"] = RUNNING, time.time()
@@ -621,6 +634,17 @@ class WorkerPool:
 
     def _crashed(self, s, why):
         jid = s.job
+        if s.init_err and why == "worker crashed":
+            why = "worker failed to start"
+        if why == "worker failed to start":
+            code = None
+            try:
+                code = s.proc.exitcode if s.proc is not None else None
+            except Exception:
+                pass
+            why = f"{why} (exit code {code})"
+            if s.init_err:
+                why += ": " + s.init_err.strip().splitlines()[-1][:300]
         self._kill(s)
         j = self._jobs.get(jid)
         if j and j["state"] == RUNNING:
@@ -668,6 +692,9 @@ class WorkerPool:
 
     def _handle(self, s, msg):
         tag, jid, val = msg
+        if tag == "initfail":
+            s.init_err = val
+            return
         j = self._jobs.get(jid)
         if j is None or s.job != jid:
             return
