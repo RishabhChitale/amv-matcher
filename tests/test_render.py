@@ -198,6 +198,13 @@ def test_gpu_pick_heuristic(monkeypatch):
     assert [render.device_class(d["name"]) for d in render.parse_vulkan_devices(txt)] == [0, 1]
 
 
+@pytest.fixture(autouse=True)
+def _isolated_tools_dir(tmp_path_factory, monkeypatch):
+    """Never read or write the user's real calibrated cost cache (RIFE install stays visible)."""
+    f = tmp_path_factory.mktemp("costs") / "render_cost.json"
+    monkeypatch.setattr(render, "_cost_file", lambda: f)
+
+
 def test_estimate_shape(clip, tmp_path, monkeypatch):
     monkeypatch.setattr(render, "tools_dir", lambda: tmp_path)
     e = render.estimate_render(plan_of(SLOW), "blend", clip)

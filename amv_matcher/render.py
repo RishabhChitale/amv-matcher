@@ -606,7 +606,7 @@ def estimate_render(plan: dict, interp: str, video, measure: bool = False,
     if n_int == 0:
         m_extra = True
     out = {"frames": n_out, "interpolated": n_int, "interp": mode, "gpu": gname,
-           "est_seconds": round(n_out * base + n_int * extra, 3),
+           "est_seconds": math.ceil((n_out * base + n_int * extra) * 1000) / 1000,   # round UP, never undersell
            "per_frame_s": round(base + (n_int / max(n_out, 1)) * extra, 4),
            "estimated": not (m_base and m_extra)}
     if t_cal:
