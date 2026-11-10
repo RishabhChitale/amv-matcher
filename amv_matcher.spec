@@ -22,7 +22,7 @@ a = Analysis(["app_main.py"], pathex=["."], binaries=binaries, datas=datas, hidd
              excludes=["torch", "torchaudio", "demucs", "tkinter", "matplotlib", "IPython", "pytest"],
              noarchive=False)
 pyz = PYZ(a.pure)
-icon = "assets/icon.icns" if sys.platform == "darwin" else "assets/icon.png"
+icon = "assets/icon.icns" if sys.platform == "darwin" else "assets/icon.ico"
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name=NAME, console=False, icon=icon)
 coll = COLLECT(exe, a.binaries, a.datas, name=NAME)
 if sys.platform == "darwin":

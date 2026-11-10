@@ -80,10 +80,9 @@ def test_allowlist_compare_is_case_insensitive_on_windows():
     assert a in {b}  # what server.py does today
 
 
-@pytest.mark.xfail(reason="W-02: frozen build needs assets/icon.ico on Windows", strict=False)
 def test_windows_icon_is_ico():
     spec = (Path(__file__).resolve().parents[1] / "amv_matcher.spec").read_text()
-    assert "icon.ico" in spec
+    assert "icon.ico" in spec and "icon.png" not in spec
 
 
 @pytest.mark.xfail(reason="W-12: app data should be local (roaming=False) on Windows", strict=False)
