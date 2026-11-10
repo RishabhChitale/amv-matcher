@@ -10,6 +10,7 @@ import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -689,6 +690,26 @@ def render_mp4(req: RenderMp4Request):
         EXPORTS.mkdir(parents=True, exist_ok=True)
         _render._pool.submit(_render._run_render, job, str(vp), str(sp), req.plan, req.interp, out)
     return {"job_id": job["id"]}
+
+
+class RenderEstimateRequest(BaseModel):
+    video_path: str
+    plan: dict
+    interp: str = "auto"
+    measure: bool = False
+    gpu_id: Optional[int] = None
+
+
+@app.post("/api/render-estimate", dependencies=[Depends(_origin_guard)])
+def render_estimate(req: RenderEstimateRequest):
+    """Shadows render.py's route of the same path: video_path must be a known, allowed video."""
+    if req.interp not in ("auto", "rife", "blend", "dup"):
+        raise HTTPException(400, "interp must be auto, rife, blend or dup")
+    vp = _safe_video(req.video_path)
+    try:
+        return _render.estimate_render(req.plan, req.interp, str(vp), req.measure, req.gpu_id)
+    except _render.RenderError as e:
+        raise HTTPException(400, str(e))
 
 
 if _render.router is not None:

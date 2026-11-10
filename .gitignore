@@ -18,3 +18,5 @@ build/
 dist/
 *.avi
 *.log
+real_cases.json
+docs/real-suite-latest.md

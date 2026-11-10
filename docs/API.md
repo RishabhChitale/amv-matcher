@@ -166,7 +166,7 @@ Body `{"video_path", "song_path", "segments": [{src_start, src_end, dst_start}, 
 `POST /api/render-mp4` body `{"video_path", "song_path", "plan": {auto-sync plan}, "interp": "auto"|"rife"|"blend"|"dup"}`. Origin-guarded (403); paths go through the usual allowlist (403 / 400 for an unparsable path); bad `interp` is 400. Only one render at a time: while one runs a second POST returns **409** `{"detail", "job_id"}` with the running job's id. Returns `{"job_id"}`. Output goes to `.exports/<video>__<song>__<jobid>.mp4`.
 `GET /api/render-mp4/{job_id}` -> `{id, status: running|done|error, stage, done: 0-100, interp, path, url, size, seconds, error}` (`url` works with `/api/export-file`).
 `GET /api/render-tools` -> `{"rife": {available, installed, tag, size_mb}}`; `POST /api/render-tools/rife` (origin-guarded) downloads + verifies RIFE, returns `{"job_id"}`, polled with the render GET.
-Reserved for the render owner (router-level origin guard already applies): `POST /api/render-mp4/{id}/cancel`, `GET /api/render-estimate`.
+`POST /api/render-mp4/{job_id}/cancel` -> `{job_id, status}` (404 unknown job). `POST /api/render-estimate` body `{video_path, plan, interp, measure, gpu_id}` -> `{frames, interpolated, est_seconds, estimated, interp, per_frame_s, gpu}`; `video_path` is checked with the allowlist (403), bad `interp` is 400. Both are Origin-guarded (403).
 
 ### GET /api/export-file?path=
 Serves a file from `.exports/` only (403 for anything else) as a download (`Content-Disposition: attachment`).

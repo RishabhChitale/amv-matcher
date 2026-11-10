@@ -66,3 +66,22 @@ def test_dup_render_end_to_end(tmp_path, monkeypatch):
     assert j["status"] == "done", j
     assert j["path"].startswith(str((tmp_path / "exports").resolve()))
     assert c.get(j["url"]).status_code == 200
+
+
+def test_cancel_is_origin_guarded(tmp_path, monkeypatch):
+    _setup(tmp_path, monkeypatch)
+    c = TestClient(server.app)
+    assert c.post("/api/render-mp4/abc/cancel", headers={"Origin": "http://evil.example"}).status_code == 403
+    assert c.post("/api/render-mp4/abc/cancel").status_code == 404      # same-site: reaches the router
+
+
+def test_estimate_guard_and_path_check(tmp_path, monkeypatch):
+    v, s = _setup(tmp_path, monkeypatch)
+    c = TestClient(server.app)
+    body = {"video_path": str(v), "plan": plan_of([[0, 0], [2, 2]]), "interp": "dup"}
+    assert c.post("/api/render-estimate", json=body,
+                  headers={"Origin": "http://evil.example"}).status_code == 403
+    assert c.post("/api/render-estimate", json={**body, "video_path": "/etc/passwd"}).status_code == 403
+    assert c.post("/api/render-estimate", json={**body, "interp": "magic"}).status_code == 400
+    r = c.post("/api/render-estimate", json=body)
+    assert r.status_code == 200 and "est_seconds" in r.json()
