@@ -287,10 +287,8 @@ def run_window() -> int:
         except Exception:
             LOG.exception("save geometry")
 
-    def on_closing():
-        save_geom()
-        js("window.nativeBeforeQuit && window.nativeBeforeQuit()")   # autosave hook; the page has no time to await
-        time.sleep(0.3)
+    on_closing = ns.CloseGuard(
+        save_geom, lambda: js("window.nativeBeforeQuit && window.nativeBeforeQuit()"), lambda: win.destroy())
 
     win.events.resized += lambda *a: save_geom()
     win.events.moved += lambda *a: save_geom()

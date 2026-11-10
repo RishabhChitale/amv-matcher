@@ -203,3 +203,47 @@ def run(cmd) -> bool:
         return True
     except OSError:
         return False
+
+
+class CloseGuard:
+    """Non-blocking window-close handler.
+
+    pywebview's Cocoa backend runs `closing` handlers on the main thread; evaluate_js from there
+    waits on the main thread itself and deadlocks (Cmd-Q / AppleScript quit never finish). So the first
+    close request is cancelled (returns False), the autosave hook runs on a worker thread with a
+    timeout, then the window is destroyed (which does not re-enter the closing handler)."""
+
+    def __init__(self, save_geom, run_js, destroy, grace=0.3, js_timeout=1.5):
+        import threading
+        self._threading = threading
+        self.save_geom, self.run_js, self.destroy = save_geom, run_js, destroy
+        self.grace, self.js_timeout = grace, js_timeout
+        self.started = False
+        self.done = False
+        self.finished = threading.Event()
+
+    def __call__(self):
+        if self.done:
+            return None
+        if self.started:
+            return False
+        self.started = True
+        self.save_geom()
+        self._threading.Thread(target=self._finish, daemon=True, name="close-guard").start()
+        return False
+
+    def _finish(self):
+        try:
+            t = self._threading.Thread(target=self.run_js, daemon=True)
+            t.start()
+            t.join(self.js_timeout)
+            time.sleep(self.grace)
+        except Exception:
+            log.exception("close guard")
+        finally:
+            self.done = True
+            try:
+                self.destroy()
+            except Exception:
+                log.exception("close guard destroy")
+            self.finished.set()

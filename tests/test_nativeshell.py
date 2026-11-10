@@ -41,3 +41,18 @@ def test_project_name():
     assert ns.project_name("my/proj:1") == "myproj1.amvproj"
     assert ns.project_name("") == "Untitled.amvproj"
     assert ns.project_name("a.amvproj") == "a.amvproj"
+
+
+def test_close_guard_never_blocks_and_destroys_once():
+    import threading
+    calls, main = [], threading.get_ident()
+    ran_on, gate = [], threading.Event()
+    g = ns.CloseGuard(lambda: calls.append("geom"),
+                      lambda: (gate.wait(2), calls.append("js"), ran_on.append(threading.get_ident())),
+                      lambda: calls.append("destroy"), grace=0, js_timeout=2)
+    assert g() is False and calls == ["geom"]        # cancels the close, JS not run inline
+    assert g() is False                              # second request while pending: still cancelled, no double fire
+    gate.set()
+    assert g.finished.wait(3)
+    assert calls == ["geom", "js", "destroy"] and ran_on[0] != main
+    assert g() is None                               # after destroy the close is allowed
