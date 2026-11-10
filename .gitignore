@@ -1,0 +1,13 @@
+.venv/
+.cache/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.mp3
+*.wav
+*.m4a
+*.flac
+*.mp4
+*.mov
+*.mkv
+*.webm

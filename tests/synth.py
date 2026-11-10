@@ -1,0 +1,63 @@
+"""Synthetic fixtures generated in code (no copyrighted media)."""
+import cv2
+import numpy as np
+import soundfile as sf
+
+SR = 22050
+
+
+def make_click_track(path, bpm, seconds=30.0, offset=0.0):
+    y = np.zeros(int(SR * seconds), dtype=np.float32)
+    n = int(0.03 * SR)
+    t = np.arange(n) / SR
+    click = (np.sin(2 * np.pi * 1000 * t) * np.exp(-t * 150)).astype(np.float32)
+    period = 60.0 / bpm
+    k = 0
+    while offset + k * period < seconds - 0.05:
+        i = int((offset + k * period) * SR)
+        y[i:i + n] += click[: len(y) - i][:n]
+        k += 1
+    sf.write(str(path), y * 0.9, SR)
+
+
+def make_video(path, seconds=10.0, fps=30, jump_every=0.5, size=(320, 240)):
+    w, h = size
+    vw = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"MJPG"), fps, size)
+    assert vw.isOpened(), "OpenCV could not open a VideoWriter"
+    positions = [(40, 40), (240, 160), (200, 40), (60, 150)]
+    for f in range(int(seconds * fps)):
+        seg = int((f / fps) / jump_every + 1e-6)
+        x, y = positions[seg % len(positions)]
+        img = np.zeros((h, w, 3), np.uint8)
+        cv2.rectangle(img, (x, y), (x + 40, y + 40), (255, 255, 255), -1)
+        vw.write(img)
+    vw.release()
+
+
+def make_burst_video(path, calm=5.0, burst=5.0, fps=30, size=(320, 240)):
+    """Static for `calm` s, then a rapidly jumping square for `burst` s."""
+    w, h = size
+    vw = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"MJPG"), fps, size)
+    assert vw.isOpened(), "OpenCV could not open a VideoWriter"
+    pos = [(40, 40), (240, 160), (200, 40), (60, 150)]
+    for f in range(int((calm + burst) * fps)):
+        t = f / fps
+        img = np.zeros((h, w, 3), np.uint8)
+        if t < calm:
+            cv2.rectangle(img, (40, 40), (80, 80), (255, 255, 255), -1)
+        else:
+            x, y = pos[int((t - calm) / 0.2) % 4]
+            cv2.rectangle(img, (x, y), (x + 40, y + 40), (255, 255, 255), -1)
+        vw.write(img)
+    vw.release()
+
+
+def make_quiet_loud(path, quiet=5.0, loud=5.0, loud_first=False, seed=0):
+    """Near-silent for `quiet` s and a loud bass + noise burst for `loud` s (order selectable)."""
+    rng = np.random.default_rng(seed)
+    nq, nl = int(quiet * SR), int(loud * SR)
+    tl = np.arange(nl) / SR
+    loud_part = (0.6 * np.sin(2 * np.pi * 70 * tl) + 0.3 * rng.standard_normal(nl)).astype(np.float32)
+    quiet_part = (0.002 * rng.standard_normal(nq)).astype(np.float32)
+    y = np.concatenate([loud_part, quiet_part] if loud_first else [quiet_part, loud_part])
+    sf.write(str(path), np.clip(y, -1, 1), SR)

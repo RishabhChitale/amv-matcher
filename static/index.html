@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AMV Matcher</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar glass">
+  <div class="brand"><span class="logo"></span>AMV Matcher</div>
+  <input id="video-path" placeholder="Video file path (.mp4 .mov .mkv .webm .avi)" spellcheck="false">
+  <input id="music-dir" placeholder="Music folder path" spellcheck="false">
+  <label class="chk"><input type="checkbox" id="recursive"> subfolders</label>
+  <button id="scan" class="primary">Scan</button>
+  <span id="status" class="status"></span>
+</header>
+<div id="progress" class="progress hidden"><div id="progress-bar"></div></div>
+
+<main class="layout">
+  <section class="editor">
+    <div class="stage glass" id="stage">
+      <video id="vid" muted playsinline preload="auto"></video>
+      <div id="vid-msg" class="vid-msg hidden">This format can't preview in the browser; scores still work.</div>
+      <div id="empty" class="vid-msg">Scan a video and a music folder to begin.</div>
+    </div>
+    <div class="scrub" id="scrub"><div class="scrub-fill" id="scrub-fill"></div><div class="playhead-dot" id="scrub-head"></div></div>
+    <div class="transport glass">
+      <div class="tc" id="tc">00:00:00:00</div>
+      <div class="btns">
+        <button id="b-start" title="Go to start">&#x23EE;</button>
+        <button id="b-back" title="Frame back (Left)">&#x23F4;</button>
+        <button id="b-play" class="play" title="Play / pause (Space)">&#x25B6;</button>
+        <button id="b-stop" title="Stop">&#x23F9;</button>
+        <button id="b-fwd" title="Frame forward (Right)">&#x23F5;</button>
+        <button id="b-end" title="Go to end">&#x23ED;</button>
+        <button id="b-loop" title="Loop" class="toggle">&#x21BB;</button>
+      </div>
+      <div class="vol"><span>VOL</span><input type="range" id="vol" min="0" max="100" value="80"></div>
+    </div>
+    <div class="timeline glass" id="tl-wrap">
+      <div class="tl-labels"><div style="height:26px"></div><div class="lbl v1">V1</div><div class="lbl a1">A1</div></div>
+      <canvas id="tl"></canvas>
+    </div>
+    <div class="hint" id="tl-hint">Drag the song clip on A1 to set a manual offset. Keys: Space play/pause, &larr;/&rarr; frame, Shift+arrows 1 s, J/K/L shuttle.</div>
+  </section>
+
+  <aside class="sidebar">
+    <div class="glass panel" id="results-panel">
+      <h3>Results <span id="vinfo" class="muted"></span></h3>
+      <div id="results" class="results"><div class="muted pad">No scan yet.</div></div>
+      <details id="short-wrap" class="short hidden"><summary>Too short (<span id="short-n">0</span>)</summary><div id="short"></div></details>
+      <details id="skipped-wrap" class="short hidden"><summary>Skipped (<span id="skip-n">0</span>)</summary><div id="skipped"></div></details>
+    </div>
+    <div class="glass panel" id="fx">
+      <h3>Effects</h3>
+      <label class="row">Boom <input type="range" id="fx-boom" min="0" max="100" value="40"><b id="fx-boom-v">40</b></label>
+      <label class="row">Decay <input type="range" id="fx-decay" min="50" max="400" value="180"><b id="fx-decay-v">180 ms</b></label>
+      <label class="row tog"><input type="checkbox" id="fx-drops"> Drops only</label>
+      <label class="row tog"><input type="checkbox" id="fx-shake"> Shake</label>
+    </div>
+  </aside>
+</main>
+<audio id="aud" preload="auto"></audio>
+<script src="/static/app.js"></script>
+</body>
+</html>
