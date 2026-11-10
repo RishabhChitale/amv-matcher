@@ -72,10 +72,44 @@ import av
 import numpy as np
 import soundfile as sf
 
-from . import paths
+from . import paths, winsafe
 from .media import SR, ExportError, render_audio
 
 MIN_FREE_BYTES = 3 * 1024 ** 3
+LEAKED_TEMP: list = []     # temp paths that could not be removed (locked on Windows); reported, not hidden
+
+
+def _unsafe_zip_member(m: str) -> bool:
+    """True for archive entries that could escape the extraction folder, on any OS (W-10)."""
+    from pathlib import PurePosixPath, PureWindowsPath
+    if not m or m.startswith(("/", "\\")):
+        return True
+    w = PureWindowsPath(m)
+    if w.anchor or w.drive or ".." in w.parts or ".." in PurePosixPath(m).parts:
+        return True
+    return False
+
+
+def _cleanup_dir(d, root=None) -> bool:
+    """Remove a temp dir with retries; if files stay locked, record and warn instead of leaking silently (W-09)."""
+    d = Path(d)
+    root = root or d.parent
+    ok = winsafe.safe_rmtree(d, root)
+    if not ok and d.exists():
+        LEAKED_TEMP.append(str(d))
+        import logging
+        logging.getLogger(__name__).warning("could not remove temp dir (in use?): %s", d)
+    return ok
+
+
+def _cleanup_file(p, root=None) -> bool:
+    p = Path(p)
+    ok = winsafe.safe_unlink(p, root or p.parent)
+    if not ok and p.exists():
+        LEAKED_TEMP.append(str(p))
+        import logging
+        logging.getLogger(__name__).warning("could not remove temp file (in use?): %s", p)
+    return ok
 SLOW_EPS = 0.002          # local speed below 1 - eps counts as slowed
 RIFE_WORKERS = 3
 RIFE_J = "1:2:2"          # -j load:proc:save per RIFE process (tuned on the discrete GPU, see report)
@@ -170,7 +204,7 @@ def prune_rife() -> int:
     for p in list(root.iterdir()):
         if p.name in (exe.name, RIFE_MODEL, "LICENSE", _MARKER):
             continue
-        shutil.rmtree(p, ignore_errors=True) if p.is_dir() else p.unlink(missing_ok=True)
+        _cleanup_dir(p, root) if p.is_dir() else _cleanup_file(p, root)
     return before - installed_size_bytes()
 
 
@@ -207,7 +241,7 @@ def install_rife(progress_cb: Optional[Callable[[float], None]] = None) -> Path:
         shutil.rmtree(dest, ignore_errors=True)
         with zipfile.ZipFile(tmp) as z:
             for m in z.namelist():                         # no path escapes
-                if m.startswith("/") or ".." in Path(m).parts:
+                if _unsafe_zip_member(m):
                     raise RenderError("Unsafe path in RIFE archive")
             for m in z.namelist():
                 if _wanted_member(m, a["exe"]):
@@ -215,14 +249,14 @@ def install_rife(progress_cb: Optional[Callable[[float], None]] = None) -> Path:
         (dest / _MARKER).write_text(json.dumps({"tag": RIFE_TAG, "name": a["name"], "sha256": a["sha256"],
                                                 "size": a["size"], "verified": True}))
     finally:
-        tmp.unlink(missing_ok=True)                        # the zip is not kept
+        _cleanup_file(tmp)                                 # the zip is not kept
     exe = rife_exe()
     if not exe:
         raise RenderError("RIFE archive did not contain the expected files")
     if not sys.platform.startswith("win"):
         exe.chmod(0o755)
     if sys.platform == "darwin":
-        subprocess.run(["xattr", "-dr", "com.apple.quarantine", str(dest)], capture_output=True)
+        winsafe.run(["xattr", "-dr", "com.apple.quarantine", str(dest)], capture_output=True)
     if progress_cb:
         progress_cb(1.0)
     return exe
@@ -278,14 +312,14 @@ def list_vulkan_devices(exe: Optional[Path] = None) -> list:
         try:
             _write_png(np.zeros((32, 32, 3), np.uint8), d / "a.png")
             _write_png(np.full((32, 32, 3), 255, np.uint8), d / "b.png")
-            r = subprocess.run([str(exe), "-v", "-0", str(d / "a.png"), "-1", str(d / "b.png"), "-o",
+            r = winsafe.run([str(exe), "-v", "-0", str(d / "a.png"), "-1", str(d / "b.png"), "-o",
                                 str(d / "o.png"), "-m", str(exe.parent / RIFE_MODEL)],
                                capture_output=True, text=True, timeout=120)
             _DEVICES[key] = parse_vulkan_devices((r.stderr or "") + (r.stdout or ""))
         except Exception:                                  # noqa: BLE001
             _DEVICES[key] = []
         finally:
-            shutil.rmtree(d, ignore_errors=True)
+            _cleanup_dir(d, tempfile.gettempdir())
     return _DEVICES[key]
 
 
@@ -342,7 +376,7 @@ class RifeRunner:
             procs = list(self.procs)
         for p in procs:
             try:
-                p.kill()
+                winsafe.kill_tree(p)
             except Exception:                                          # noqa: BLE001
                 pass
 
@@ -352,14 +386,15 @@ class RifeRunner:
         if gid is not None:
             cmd += ["-g", str(gid)]
         (d / "o.png").unlink(missing_ok=True)
-        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        kw = {} if winsafe._is_win() else {"start_new_session": True}   # POSIX: own group so the tree can be killed
+        p = winsafe.popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **kw)
         with self.lock:
             self.procs.add(p)
         try:
             try:
                 _, err = p.communicate(timeout=300)
             except subprocess.TimeoutExpired:
-                p.kill()
+                winsafe.kill_tree(p)
                 p.communicate()
                 raise RenderError("RIFE timed out")
         finally:
@@ -396,7 +431,7 @@ class RifeRunner:
                 raise RenderError("RIFE returned a frame of the wrong size")
             return out
         finally:
-            shutil.rmtree(d, ignore_errors=True)
+            _cleanup_dir(d, tempfile.gettempdir())
 
 
 def rife_works(exe: Optional[Path] = None, gpu_id: Optional[int] = None) -> bool:
@@ -506,7 +541,7 @@ def calibrate_blend_cost(w: int, h: int, n: int = 6) -> dict:
                 out.mux(pk)
         base = (time.time() - t0) / n
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        _cleanup_dir(tmp, tempfile.gettempdir())
     _save_cost("blend", f"{w}x{h}", blend)
     _save_cost("base", f"{w}x{h}", base)
     return {"base": base, "blend": blend}
@@ -975,10 +1010,10 @@ def render_plan(video_path, plan: dict, audio_wav, out_path, interp: str = "auto
             if pool:
                 pool.shutdown(wait=True, cancel_futures=True)
             out.close()
-        os.replace(tmp, out_path)
+        winsafe.replace_retry(tmp, out_path)
     finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-        out_path.with_name(out_path.stem + ".tmp.mp4").unlink(missing_ok=True)
+        _cleanup_dir(tmp_dir, out_path.parent)
+        _cleanup_file(out_path.with_name(out_path.stem + ".tmp.mp4"))
     if progress_cb:
         progress_cb(1.0)
     secs = time.time() - t_start

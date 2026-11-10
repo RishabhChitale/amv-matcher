@@ -39,6 +39,8 @@ import time
 from collections import deque
 from multiprocessing.connection import wait as _mp_wait
 
+from . import winsafe
+
 QUEUED, RUNNING, DONE, ERROR, CANCELLED = "queued", "running", "done", "error", "cancelled"
 PRIORITIES = (0, 1, 2)
 DEFAULT_TIMEOUT = 1800.0
@@ -105,7 +107,7 @@ def _song_analysis(path, cache_path=None, **_):
 def _video_cache_file(path, cache_dir=None):
     from . import paths
     st = os.stat(path)
-    key = f"v1|{os.path.abspath(path)}|{int(st.st_mtime)}|{st.st_size}"
+    key = f"v1|{winsafe.norm_case_path(path)}|{int(st.st_mtime)}|{st.st_size}"
     d = cache_dir or (paths.CACHE / "videos")
     return os.path.join(str(d), hashlib.sha1(key.encode()).hexdigest() + ".json")
 
@@ -127,7 +129,7 @@ def _video_analysis(path, cache_dir=None, **_):
     tmp = f"{f}.{os.getpid()}.tmp"
     with open(tmp, "w") as fh:
         json.dump(r, fh, default=lambda o: o.tolist() if hasattr(o, "tolist") else str(o))
-    os.replace(tmp, f)
+    winsafe.replace_retry(tmp, f)
     report_progress(100)
     return r
 
@@ -152,7 +154,7 @@ def _probe(path, **_):
 def _thumb_dir(path, n, width, cache_dir=None):
     from . import paths
     st = os.stat(path)
-    key = f"t1|{os.path.abspath(path)}|{int(st.st_mtime)}|{st.st_size}|{n}|{width}"
+    key = f"t1|{winsafe.norm_case_path(path)}|{int(st.st_mtime)}|{st.st_size}|{n}|{width}"
     root = cache_dir or (paths.CACHE / "thumbs")
     return os.path.join(str(root), hashlib.sha1(key.encode()).hexdigest())
 
@@ -219,14 +221,50 @@ register_kind("proxy", _proxy)
 
 
 # ------------------------------------------------------------ worker process
+def _lower_priority():
+    """Keep the UI/server responsive under CPU load. POSIX: os.nice(5); Windows (no os.nice):
+    BELOW_NORMAL_PRIORITY_CLASS via ctypes. Never raises."""
+    try:
+        if hasattr(os, "nice") and not winsafe._is_win():
+            os.nice(5)
+        elif winsafe._is_win():
+            import ctypes
+            k = ctypes.windll.kernel32
+            k.GetCurrentProcess.restype = ctypes.c_void_p
+            k.SetPriorityClass(ctypes.c_void_p(k.GetCurrentProcess()), 0x00004000)
+    except Exception:
+        pass
+
+
+def _own_process_group():
+    """POSIX: make the worker a process-group leader so kill_tree can reach its children
+    (rife, ffmpeg). No-op on Windows (taskkill /T walks the tree)."""
+    try:
+        if not winsafe._is_win() and hasattr(os, "setpgrp"):
+            os.setpgrp()
+    except Exception:
+        pass
+
+
+class _ProcAdapter:
+    """Popen-like view of a multiprocessing.Process for winsafe.kill_tree."""
+
+    def __init__(self, p):
+        self._p, self.pid = p, p.pid
+
+    def poll(self):
+        return None if self._p.is_alive() else 0
+
+    def kill(self):
+        self._p.kill()
+
+
 def _worker_main(conn, kind_modules):
     """Child entry point (top-level, picklable under spawn)."""
     global _progress_hook
     import importlib
-    try:
-        os.nice(5)  # keep the UI/server responsive under CPU load (posix)
-    except Exception:
-        pass
+    _lower_priority()
+    _own_process_group()
     for m in kind_modules or ():
         importlib.import_module(m)
     send_lock = threading.Lock()
@@ -285,11 +323,12 @@ def on_battery():
                 return False
         elif sys.platform.startswith("win"):
             import ctypes
+            from ctypes import wintypes
 
             class SPS(ctypes.Structure):
-                _fields_ = [("ACLineStatus", ctypes.c_ubyte), ("BatteryFlag", ctypes.c_ubyte),
-                            ("BatteryLifePercent", ctypes.c_ubyte), ("SystemStatusFlag", ctypes.c_ubyte),
-                            ("BatteryLifeTime", ctypes.c_ulong), ("BatteryFullLifeTime", ctypes.c_ulong)]
+                _fields_ = [("ACLineStatus", wintypes.BYTE), ("BatteryFlag", wintypes.BYTE),
+                            ("BatteryLifePercent", wintypes.BYTE), ("SystemStatusFlag", wintypes.BYTE),
+                            ("BatteryLifeTime", wintypes.DWORD), ("BatteryFullLifeTime", wintypes.DWORD)]
             s = SPS()
             if ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(s)):
                 if s.ACLineStatus == 0:
@@ -346,7 +385,11 @@ class WorkerPool:
         except (OSError, TypeError, ValueError):
             sig = (None, None)
         ph = hashlib.sha1(json.dumps(params, sort_keys=True, default=str).encode()).hexdigest()
-        return (kind, str(path), sig, ph)
+        try:
+            kp = winsafe.norm_case_path(path)
+        except (TypeError, ValueError):
+            kp = str(path)
+        return (kind, kp, sig, ph)
 
     def _emit(self, job, error=None):
         self._seq += 1
@@ -517,6 +560,7 @@ class WorkerPool:
         if p is not None:
             try:
                 if p.is_alive():
+                    winsafe.kill_tree(_ProcAdapter(p))   # worker + grandchildren (rife, ffmpeg) (W-08)
                     p.terminate()
                     p.join(2)
                     if p.is_alive():
