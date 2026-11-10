@@ -125,3 +125,5 @@ body.dragging .dz.bad::after{content:'\2715\00a0\00a0' attr(data-bad);background
 body.dragging #fit,body.dragging .ovwrap{opacity:.5;transition:opacity var(--ease)}
 
 .vc-start b{font-size:18px}.vc-start .chip{margin:2px 0 0;align-self:flex-start}.rsub{display:block;font-weight:400;font-size:11px;color:var(--mut);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.ov-zoom{position:absolute;right:12px;top:8px;background:rgba(10,12,20,.78);border-radius:6px;font-size:10px;padding:1px 6px;z-index:2}

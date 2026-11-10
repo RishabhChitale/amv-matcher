@@ -157,7 +157,7 @@ async function selectSong(r) {
   buildPump(); readout(); seek(0); draw(); drawOv(); updateFit();
 }
 function useAudio(r) {
-  S.inUse = r; S.sp.plan = null; S.sp.url = ''; markRows();
+  S.inUse = r; S.sp.plan = null; S.sp.url = ''; markRows(); staleExport();
   const go = () => { updateFit(); if (S.sp.on && r.source !== 'original') runSplice(); };
   if (S.sel !== r) selectSong(r).then(go); else go();
 }
@@ -176,7 +176,7 @@ async function renderAudio(path, segs) {
   return S.sp.cache[key] = j;
 }
 async function runSplice() {
-  const u = S.inUse, my = ++S.sp.seq; S.sp.plan = null; S.sp.url = '';
+  const u = S.inUse, my = ++S.sp.seq; S.sp.plan = null; S.sp.url = ''; staleExport();
   if (!S.sp.on || !u || u.source === 'original' || !S.videoPath) { applyAfterSplice(); return; }
   S.sp.busy = true; updateFit(); $('fit-msg').textContent = 'Finding the best cuts...';
   try {
@@ -202,7 +202,7 @@ function updateFit() {
   const tip = orig ? 'Original audio is already aligned, nothing to splice' : (!u ? 'Press "Use this audio" on a source first' : '');
   $('sp-sw').title = tip; $('sp-max').title = tip;
   document.querySelectorAll('#sp-max button').forEach(b => { b.disabled = off || !S.sp.on; b.classList.toggle('on', +b.dataset.n === S.sp.max); });
-  $('ex-wav').disabled = $('ex-mp4').disabled = !u || S.exporting;
+  $('ex-wav').disabled = $('ex-mp4').disabled = !u || S.exporting; staleExport();
   const m = $('fit-msg'), p = S.sp.plan; let t;
   if (!u) t = 'Press "Use this audio" on a source to fit and export it.';
   else if (orig) t = 'Original audio is already aligned: no shift or splice needed.';
@@ -222,11 +222,20 @@ function exportSegs() {
 const baseName = p => String(p).split('/').pop();
 function exLink(j, what) {
   $('ex-out').innerHTML = `<a class="dl" id="ex-link" href="${esc(j.url)}" download>Download ${esc(baseName(j.path))}</a><div class="muted">Saved to .exports/${esc(baseName(j.path))}</div>`;
-  $('ex-out').dataset.kind = what;
+  $('ex-out').dataset.kind = what; $('ex-out').dataset.sig = EXSIG;
+}
+function exSig() {
+  const u = S.inUse; if (!u) return '';
+  return [S.videoPath, u.path, JSON.stringify(spliceActive() ? S.sp.plan.segments : [S.offset, S.dur])].join('|');
+}
+let EXSIG = '';
+function staleExport() {
+  const o = $('ex-out'); if (!o.dataset.sig || S.exporting) return;
+  if (o.dataset.sig !== exSig()) { o.textContent = ''; delete o.dataset.sig; delete o.dataset.kind; }
 }
 async function doExport(kind) {
   const u = S.inUse; if (!u || S.exporting) return;
-  S.exporting = true; updateFit(); $('ex-out').textContent = ''; $('ex-prog').classList.remove('hidden'); $('ex-bar').style.width = '8%';
+  EXSIG = exSig(); S.exporting = true; updateFit(); $('ex-out').textContent = ''; $('ex-prog').classList.remove('hidden'); $('ex-bar').style.width = '8%';
   try {
     const rd = await renderAudio(u.path, exportSegs());
     if (kind === 'wav') { $('ex-bar').style.width = '100%'; exLink(rd, 'wav'); }
@@ -395,7 +404,7 @@ let drag = null, scoreTimer = null;
 const locked = () => !S.sel || S.sel.source === 'original' || spliceActive();
 function setOffset(o) {
   S.offset = clampOff(o); S.manual = Math.abs(S.offset - (S.sel.best_offset_s || 0)) > 0.005;
-  syncAudio(true); readout(); draw(); drawOv();
+  syncAudio(true); readout(); draw(); drawOv(); staleExport();
   clearTimeout(scoreTimer); scoreTimer = setTimeout(rescore, 120);
 }
 cv.addEventListener('pointerdown', e => {
@@ -411,18 +420,22 @@ cv.addEventListener('pointermove', e => {
 });
 cv.addEventListener('pointerup', () => { drag = null; });
 function clampOff(o) { const mx = S.wf ? Math.max(0, S.wf.duration - S.dur) : 0; return Math.min(mx, Math.max(0, o)); }
+function partsText(segs) {
+  const f = segs.map(g => fmtMS(g.src_start) + '-' + fmtMS(g.src_end));
+  return 'Song parts: ' + f.slice(0, 2).join(', ') + (f.length > 2 ? ', +' + (f.length - 2) : '');
+}
 function readout() {
   const r = S.sel, orig = r && r.source === 'original';
   $('vc-off').textContent = !r ? '--' : orig ? 'Original audio, no shift' : spliceActive() ? 'Spliced from ' + (S.sp.plan.cuts.length + 1) + ' clips' : 'Starts at ' + fmtMS(S.offset);
   $('vc-chip').textContent = !r || orig || spliceActive() ? '' : S.manual ? 'manual' : 'auto-picked';
   $('vc-chip').classList.toggle('hidden', !$('vc-chip').textContent);
   $('vc-reset').classList.toggle('hidden', !r || orig || !S.manual);
-  $('vc-trim').textContent = !r ? '--' : orig ? 'Whole track' : 'Use ' + fmtMS(S.offset) + ' to ' + fmtMS(S.offset + S.dur);
+  $('vc-trim').textContent = !r ? '--' : orig ? 'Whole track' : spliceActive() ? partsText(S.sp.plan.segments) : 'Use ' + fmtMS(S.offset) + ' to ' + fmtMS(S.offset + S.dur);
   let l = ''; if (r) l = orig ? 'Original audio (from video)' : spliceActive() ? 'Spliced song, ' + (S.sp.plan.cuts.length + 1) + ' clips' : `Song ${fmtMS(S.offset)} to ${fmtMS(S.offset + S.dur)} (${S.manual ? 'manual' : 'auto'} start)`;
   $('a1-lbl').textContent = l; $('a1-lbl').classList.toggle('hidden', !l);
   $('tl-hint').textContent = orig ? 'Original audio is already aligned, so there is no offset to drag.' : spliceActive() ? 'Smart splice is on: turn it off in Fit to drag the start.' : 'Drag the song clip on A1 (or the bracket in Song overview) to set a manual start. Keys: Space play/pause, \u2190/\u2192 frame, Shift+arrows 1 s, J/K/L shuttle.';
 }
-$('vc-reset').onclick = () => { if (!S.sel) return; S.manual = false; S.offset = S.sel.best_offset_s || 0; syncAudio(true); readout(); draw(); drawOv(); rescore(); };
+$('vc-reset').onclick = () => { if (!S.sel) return; S.manual = false; S.offset = S.sel.best_offset_s || 0; syncAudio(true); readout(); draw(); drawOv(); staleExport(); rescore(); };
 async function rescore() {
   if (!S.sel || !S.videoPath) return;
   const r0 = S.sel;
@@ -436,30 +449,48 @@ async function rescore() {
 }
 
 // ---------- song overview lane ----------
-const ov = $('ov'), octx = ov.getContext('2d'); let OW = 0, OH = 0, odrag = null;
+const ov = $('ov'), octx = ov.getContext('2d'); let OW = 0, OH = 0, odrag = null, ovShowAll = false;
 function resizeOv() { const r = ov.getBoundingClientRect(), dpr = window.devicePixelRatio || 1; OW = r.width; OH = r.height; ov.width = OW * dpr; ov.height = OH * dpr; octx.setTransform(dpr, 0, 0, dpr, 0, 0); drawOv(); }
 window.addEventListener('resize', resizeOv);
+function ovView() {
+  const T = S.wf.duration; if (!spliceActive() || ovShowAll) return [0, T, false];
+  const g = S.sp.plan.segments, lo = Math.min(...g.map(x => x.src_start)), hi = Math.max(...g.map(x => x.src_end)), pad = (hi - lo) * 0.1;
+  const v0 = Math.max(0, lo - pad), v1 = Math.min(T, hi + pad);
+  return (v1 - v0) < T * 0.98 ? [v0, v1, true] : [0, T, false];
+}
 function drawOv() {
+  const zb = $('ov-zoom'); zb.classList.add('hidden');
   if (!OW) return; octx.clearRect(0, 0, OW, OH); const w = S.wf; if (!w || !S.dur) return;
-  const T = w.duration, tx = t => t / T * OW, mid = OH / 2, amp = OH / 2 - 4, pk = w.peaks, n = pk.length / 2;
+  const T = w.duration, [v0, v1, zoomed] = ovView(), V = v1 - v0, tx = t => (t - v0) / V * OW, mid = OH / 2, amp = OH / 2 - 4, pk = w.peaks, n = pk.length / 2;
   const sp = spliceActive(), segs = sp ? S.sp.plan.segments : [{src_start: S.offset, src_end: S.offset + S.dur}];
-  const inWin = x => { const t = x / OW * T; return segs.some(g => t >= g.src_start && t <= g.src_end); };
+  if (sp) { zb.classList.remove('hidden'); zb.textContent = zoomed ? `Zoomed: ${fmtMS(v0)}-${fmtMS(v1)} · show all` : 'Showing all · zoom to parts'; zb.dataset.zoomed = zoomed ? '1' : ''; }
+  const inWin = x => { const t = v0 + x / OW * V; return segs.some(g => t >= g.src_start && t <= g.src_end); };
   for (let px = 0; px < OW; px++) {
-    const i0 = Math.floor(px / OW * n), i1 = Math.max(i0 + 1, Math.floor((px + 1) / OW * n));
+    const i0 = Math.floor((v0 + px / OW * V) / T * n), i1 = Math.max(i0 + 1, Math.floor((v0 + (px + 1) / OW * V) / T * n));
     let mn = 1, mx = -1; for (let i = i0; i < i1 && i < n; i++) { mn = Math.min(mn, pk[2 * i]); mx = Math.max(mx, pk[2 * i + 1]); }
     if (mx < mn) continue; octx.fillStyle = inWin(px) ? '#34d399' : 'rgba(150,160,180,.28)';
     octx.fillRect(px, mid - mx * amp, 1, Math.max(1, (mx - mn) * amp));
   }
-  octx.fillStyle = '#e0faff'; (w.drops || []).forEach(d => { const x = tx(d); octx.beginPath(); octx.moveTo(x, 2); octx.lineTo(x + 4, 6); octx.lineTo(x, 10); octx.lineTo(x - 4, 6); octx.fill(); });
+  octx.fillStyle = '#e0faff'; (w.drops || []).forEach(d => { if (d < v0 || d > v1) return; const x = tx(d); octx.beginPath(); octx.moveTo(x, 2); octx.lineTo(x + 4, 6); octx.lineTo(x, 10); octx.lineTo(x - 4, 6); octx.fill(); });
+  const labels = [], rowEnd = [];
+  octx.font = 'bold 10px sans-serif';
   segs.forEach((g, k) => {
     const xa = tx(g.src_start), xb = tx(g.src_end);
     octx.fillStyle = 'rgba(34,211,238,.10)'; octx.fillRect(xa, 0, xb - xa, OH);
     octx.strokeStyle = sp ? (k % 2 ? '#8b5cf6' : '#22d3ee') : '#22d3ee'; octx.lineWidth = 2;
     octx.beginPath(); octx.moveTo(xa + 4, 1); octx.lineTo(xa + 1, 1); octx.lineTo(xa + 1, OH - 1); octx.lineTo(xa + 4, OH - 1); octx.moveTo(xb - 4, 1); octx.lineTo(xb - 1, 1); octx.lineTo(xb - 1, OH - 1); octx.lineTo(xb - 4, OH - 1); octx.stroke(); octx.lineWidth = 1;
-    if (sp) { octx.fillStyle = '#fff'; octx.font = 'bold 10px sans-serif'; octx.fillText(String(k + 1), xa + 5, 12); }
+    if (sp) {
+      const txt = String(k + 1), lw = octx.measureText(txt).width + 4, lx = xa + 5; let row = 0;
+      while (rowEnd[row] !== undefined && lx < rowEnd[row] + 2) row++;
+      rowEnd[row] = lx + lw; const ly = 2 + row * 12;
+      octx.fillStyle = 'rgba(10,12,20,.8)'; octx.fillRect(lx - 2, ly, lw, 11);
+      octx.fillStyle = '#fff'; octx.fillText(txt, lx, ly + 9);
+      labels.push({n: k + 1, x: lx - 2, y: ly, w: lw, h: 11});
+    }
   });
-  window.OVX = {brackets: sp ? segs.length : 0};
+  window.OVX = {brackets: sp ? segs.length : 0, labels, zoomed, view: [v0, v1]};
 }
+$('ov-zoom').onclick = () => { ovShowAll = !ovShowAll; drawOv(); };
 const ovX = e => e.clientX - ov.getBoundingClientRect().left;
 ov.addEventListener('pointerdown', e => {
   if (!S.wf || locked()) return; const T = S.wf.duration, t = ovX(e) / OW * T;
