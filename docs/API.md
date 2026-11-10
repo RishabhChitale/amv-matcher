@@ -61,8 +61,8 @@ Same, for a song (Range supported, 206).
 ```json
 {"peaks": [-0.12, 0.13, -0.4, 0.38],
  "duration": 30.0, "bpm": 120.04,
- "beat_times": [0.5, 1.0], "beat_strengths": [0.9, 0.4],
- "drops": [12.4], "lulls": [[4.0, 6.5]],
+ "beat_times": [0.5, 1.0, 20.5, 21.0, 24.4], "beat_strengths": [0.9, 0.4, 0.8, 0.5, 1.0],
+ "drops": [24.4], "lulls": [[4.0, 6.5]],
  "energy_curve": [0.1, 0.2], "energy_hz": 10}
 ```
 `peaks` is a flat list `[min0, max0, min1, max1, ...]`, 4000 pairs (8000 numbers) spanning the whole song, values -1..1. No raw audio is ever returned. `beat_strengths[i]` (0-1) belongs to `beat_times[i]`. `beat_times`, `drops` (the drop times) and `lulls` are absolute song time in seconds.
