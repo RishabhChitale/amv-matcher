@@ -256,6 +256,26 @@ def video_file(path: str):
     return FileResponse(vp)  # Starlette FileResponse honours Range -> 206
 
 
+def _sections_with_stems(path, song: dict) -> list:
+    """Song sections; refined with drums/vocals activity when stems are ALREADY cached (never separates)."""
+    secs = [dict(s) for s in song.get("sections", [])]
+    if not secs:
+        return secs
+    try:
+        from . import stems as _st
+        from .structure import _stem_refine, stems_activity
+        for prov in ("demucs", "hpss"):
+            hit = _st.cached(str(path), prov)
+            if hit:
+                act = stems_activity(hit["stems"])
+                if act:
+                    _stem_refine(secs, act)
+                break
+    except Exception:
+        pass
+    return secs
+
+
 @app.get("/api/waveform")
 def waveform(path: str):
     p = _safe_song(path)
@@ -264,7 +284,7 @@ def waveform(path: str):
             "beat_times": song["beat_times"], "drops": song["drops"], "lulls": song["lulls"],
             "beat_strengths": song.get("beat_strengths", []),
             "energy_curve": song["energy_curve"], "energy_hz": song["energy_hz"],
-            "sections": song.get("sections", [])}
+            "sections": _sections_with_stems(p, song)}
 
 
 class ScoreRequest(BaseModel):

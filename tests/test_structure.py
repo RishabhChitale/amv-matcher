@@ -110,3 +110,19 @@ def test_real_songS1_sections():
     for s in song["sections"]:
         print(f'{s["start"]:7.2f}-{s["end"]:7.2f} {s["label"]:9s} grp {s["repeat_group"]} energy {s["energy"]}')
     assert len(song["sections"]) >= 3
+
+
+def test_split_long_and_outro_labels():
+    from amv_matcher.structure import label_sections, split_long
+    nov = np.zeros(40)
+    nov[8] = 1.0
+    nov[24] = 0.9      # internal peak inside the 32-bar tail
+    assert split_long(nov, [8], 40) == [8, 24]
+    nov[24] = 0.1      # too weak (< 40% of reference)
+    assert split_long(nov, [8], 40) == [8]
+    secs = [{"start": 0, "end": 8, "energy": 0.7, "repeat_group": "A", "label": ""},
+            {"start": 8, "end": 16, "energy": 0.5, "repeat_group": "B", "label": ""},
+            {"start": 16, "end": 24, "energy": 0.8, "repeat_group": "A", "label": ""},
+            {"start": 24, "end": 32, "energy": 0.5, "repeat_group": "C", "label": ""}]
+    label_sections(secs)
+    assert secs[0]["label"] == "intro (hook)" and secs[-1]["label"] == "outro"

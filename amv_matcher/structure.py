@@ -16,7 +16,7 @@ HOP = 512
 KERNEL_BARS = 4          # half-width of the checkerboard kernel
 MIN_SECTION_BARS = 4
 CLUSTER_DIST = 0.9       # average-linkage cut on z-scored section features (see _cluster)
-LABELS = ("intro", "verse", "pre", "chorus", "bridge", "breakdown", "drop", "outro")
+LABELS = ("intro (hook)", "intro", "verse", "pre", "chorus", "bridge", "breakdown", "drop", "outro")
 
 
 def _z(x):
@@ -94,6 +94,31 @@ def boundaries(nov: np.ndarray, min_bars: int = MIN_SECTION_BARS) -> list:
     return pk
 
 
+MAX_BARS = 16
+SPLIT_FRAC = 0.4
+
+
+def split_long(nov: np.ndarray, cuts: list, n_bars: int) -> list:
+    """Recursively split sections longer than MAX_BARS at their strongest internal novelty peak,
+    when that peak is >= SPLIT_FRAC of the median boundary peak."""
+    sm = gaussian_filter1d(nov, 0.7)
+    ref = float(np.median([sm[c] for c in cuts])) if cuts else 0.5 * float(sm.max())
+    cuts = sorted(cuts)
+    todo = list(zip([0] + cuts, cuts + [n_bars]))
+    while todo:
+        a, b = todo.pop()
+        if b - a <= MAX_BARS:
+            continue
+        lo, hi = a + MIN_SECTION_BARS, b - MIN_SECTION_BARS
+        if hi < lo:
+            continue
+        c = lo + int(np.argmax(sm[lo:hi + 1]))
+        if sm[c] >= SPLIT_FRAC * ref:
+            cuts.append(c)
+            todo += [(a, c), (c, b)]
+    return sorted(cuts)
+
+
 def _cluster(F: np.ndarray, spans: list) -> list:
     """Repeat groups: average-linkage clustering on section-mean features (+ length similarity)."""
     if len(spans) == 1:
@@ -155,9 +180,8 @@ def label_sections(secs: list):
         e = s["energy"]
         nxt = secs[i + 1]["energy"] if i + 1 < n else None
         prv = secs[i - 1]["energy"] if i > 0 else None
-        if i == 0 and n > 2 and g == chorus_g and len(groups[g]) >= 2 \
-                and e < max(en[j] for j in groups[g]) - 0.03:
-            lab = "intro"          # a quieter first occurrence of the chorus material is the intro
+        if i == 0 and n > 2 and g == chorus_g and len(groups[g]) >= 2:
+            lab = "intro (hook)"   # opens with chorus material
         elif g == chorus_g and (n == 1 or e >= med - 0.05 or len(groups[g]) >= 2):
             lab = "chorus"
         elif i == 0 and (chorus_g != g):
@@ -181,8 +205,13 @@ def label_sections(secs: list):
         if secs[i]["label"] == "chorus" and secs[i - 1]["label"] == "breakdown" \
                 and secs[i]["energy"] - secs[i - 1]["energy"] >= 0.3:
             secs[i]["label"] = "drop"
-    if n >= 3 and secs[-1]["label"] == "chorus" and secs[-1]["energy"] < 0.6 * max(en):
-        secs[-1]["label"] = "outro"
+    if n >= 3:
+        last = secs[-1]
+        later = [j for j in range(n - 1) if secs[j]["repeat_group"] == chorus_g]
+        after_last_chorus = chorus_g is not None and last["repeat_group"] != chorus_g and bool(later)
+        fall = last.get("fall", 0.0)
+        if after_last_chorus or fall >= 0.2 or (last["label"] == "chorus" and last["energy"] < 0.6 * max(en)):
+            last["label"] = "outro"
     return secs
 
 
@@ -197,6 +226,7 @@ def analyze_structure(y: np.ndarray, sr: int, song: dict, stems: dict | None = N
     F = bar_features(y, sr, edges, dur)
     nov = novelty(F)
     cuts = boundaries(nov)
+    cuts = split_long(nov, cuts, len(edges))
     idx = [0] + cuts + [len(edges)]
     spans = list(zip(idx[:-1], idx[1:]))
     grp = _cluster(F, spans)
@@ -205,12 +235,16 @@ def analyze_structure(y: np.ndarray, sr: int, song: dict, stems: dict | None = N
     for (a, b), g in zip(spans, grp):
         t0, t1 = (0.0 if a == 0 else float(bounds[a])), float(min(dur, bounds[b]))
         e = energy[int(t0 * curves.HZ):max(int(t0 * curves.HZ) + 1, int(t1 * curves.HZ))]
-        secs.append({"start": round(t0, 3), "end": round(t1, 3), "label": "verse",
+        h = len(e) // 2
+        fall = float((e[:h].mean() - e[h:].mean()) / max(e[:h].mean(), 1e-6)) if h >= 3 else 0.0
+        secs.append({"fall": fall, "start": round(t0, 3), "end": round(t1, 3), "label": "verse",
                      "energy": round(float(e.mean()) if len(e) else 0.0, 3), "repeat_group": _name(g)})
     secs[-1]["end"] = round(dur, 3)
     label_sections(secs)
     if stems:
         _stem_refine(secs, stems)
+    for s in secs:
+        s.pop("fall", None)
     return secs
 
 

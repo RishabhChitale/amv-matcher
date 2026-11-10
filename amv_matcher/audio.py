@@ -20,7 +20,7 @@ from . import paths as _paths
 CACHE_PATH = _paths.CACHE / "songs.json"
 WF_DIR = CACHE_PATH.parent / "wf"
 WF_POINTS = 4000
-CACHE_VERSION = "v6"
+CACHE_VERSION = "v7"
 GRID_MAX_FIT_MS = 70.0     # use the constant-tempo grid when the robust beat residual is below this
 GRID_MAX_DRIFT_MS = 100.0   # ...and no 16-beat window drifts further than this from the line
 GRID_MIN_BEATS = 8
