@@ -65,15 +65,16 @@ Same, for a song (Range supported, 206).
  "drops": [12.4], "lulls": [[4.0, 6.5]],
  "energy_curve": [0.1, 0.2], "energy_hz": 10}
 ```
-`peaks` is a flat list `[min0, max0, min1, max1, ...]`, 4000 pairs (8000 numbers) spanning the whole song, values -1..1. No raw audio is ever returned. `beat_strengths[i]` (0-1) belongs to `beat_times[i]`.
+`peaks` is a flat list `[min0, max0, min1, max1, ...]`, 4000 pairs (8000 numbers) spanning the whole song, values -1..1. No raw audio is ever returned. `beat_strengths[i]` (0-1) belongs to `beat_times[i]`. `beat_times`, `drops` (the drop times) and `lulls` are absolute song time in seconds.
 
 ## GET /api/pump?path=&boom=40&decay=180&drops_only=false&fps=30&shake=false&start=0&duration=
-`boom` 0-100 (0 = off), `decay` ms 50-400, `start`/`duration` select the song-time window (omit `duration` = whole song). Keyframe `t` is song time in seconds.
+`boom` 0-100 (0 = off), `decay` ms 50-400, `start`/`duration` select the song-time window (omit `duration` = whole song). Keyframe `t` is WINDOW-RELATIVE seconds (`t = i/fps`, t=0 at song time `start`; song time = `start + t`), which is what a clip-relative Resolve export wants.
 ```json
+// example: start=20, duration=10 -> t runs 0..10 (song time 20..30)
 {"fps": 30.0, "keyframes": [
   {"t": 0.0, "scale": 1.0, "brightness": 1.0, "dx": 0.0, "dy": 0.0},
   {"t": 0.5, "scale": 1.0108, "brightness": 1.0, "dx": 0.0, "dy": 0.0},
-  {"t": 12.4, "scale": 1.048, "brightness": 1.35, "dx": 3.1, "dy": -2.4}
+  {"t": 4.4, "scale": 1.048, "brightness": 1.35, "dx": 3.1, "dy": -2.4}
 ]}
 ```
 
