@@ -26,6 +26,7 @@ if "--selftest" in sys.argv and not os.environ.get("AMV_DATA_DIR"):   # keep the
     import tempfile
     os.environ["AMV_DATA_DIR"] = tempfile.mkdtemp(prefix="amv-selftest-data-")
 
+from amv_matcher import nativeshell as ns
 from amv_matcher import paths
 from amv_matcher import server as srv
 
@@ -188,6 +189,60 @@ class Api:
     def log(self, msg):
         LOG.info("ui: %s", msg)
 
+    def notify(self, title, body=""):
+        """Native notification (macOS; best-effort no-op elsewhere). Returns True if one was posted."""
+        return ns.run(ns.notify_cmd(title, body))
+
+    def resolve_installed(self):
+        return ns.resolve_app() is not None
+
+    def open_in_resolve(self, src):
+        """Open an export (inside the exports dir) in DaVinci Resolve when installed."""
+        p = paths.exports_member(src)
+        return bool(p) and ns.run(ns.resolve_cmd(p))
+
+    def _pick_project(self, save, name=""):
+        import webview
+        if save:
+            r = self.window.create_file_dialog(webview.SAVE_DIALOG, directory=str(paths.default_export_dir()),
+                                               save_filename=ns.project_name(name))
+        else:
+            r = self.window.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=False,
+                                               file_types=("AMV project (*.amvproj)",))
+        if not r:
+            return ""
+        p = Path(r if isinstance(r, str) else r[0])
+        return str(p.with_suffix(".amvproj") if save and p.suffix.lower() != ".amvproj" else p)
+
+    def pick_project_open(self):
+        return self._pick_project(False)
+
+    def pick_project_save(self, name=""):
+        return self._pick_project(True, name)
+
+
+def _screens():
+    try:
+        import webview
+        return [(sc.x, sc.y, sc.width, sc.height) for sc in webview.screens]
+    except Exception:
+        return None
+
+
+def build_menu(fire):
+    """Native menu bar. Every item calls fire('<action>'), which reaches the page as nativeMenu(action)."""
+    from webview.menu import Menu, MenuAction, MenuSeparator
+    A = lambda label, act: MenuAction(label, lambda: fire(act))
+    return [
+        Menu("File", [A("New Project", "new"), A("Open Project…", "open"), A("Save", "save"), A("Save As…", "save_as"),
+                      MenuSeparator(), A("Add Media Folder…", "add_folder"), A("Export…", "export")]),
+        Menu("Edit", [A("Undo", "undo"), A("Redo", "redo"), MenuSeparator(), A("Delete", "delete")]),
+        Menu("View", [A("Toggle Media Panel", "toggle_media"), A("Toggle Stems", "toggle_stems"),
+                      A("Toggle Effects", "toggle_effects")]),
+        Menu("Playback", [A("Play / Pause", "play_pause")]),
+        Menu("Help", [A("Help", "help")]),
+    ]
+
 
 def run_window() -> int:
     import webview
@@ -197,9 +252,32 @@ def run_window() -> int:
     s.start()
     LOG.info("server on %s (frozen=%s data=%s)", s.url, paths.FROZEN, paths.DATA)
     api = Api()
-    win = webview.create_window(TITLE, s.url + "/", js_api=api, width=1440, height=900, min_size=(1100, 700),
-                                background_color="#0b0d12")
+    geom = ns.load_geometry(_screens())
+    win = webview.create_window(TITLE, s.url + "/", js_api=api, min_size=(ns.MIN_W, ns.MIN_H),
+                                background_color="#0b0d12", **geom)
     api.window = win
+
+    def js(code):
+        try:
+            win.evaluate_js(code)
+        except Exception:
+            LOG.exception("evaluate_js")
+
+    def save_geom(*_):
+        try:
+            ns.save_geometry(win.x, win.y, win.width, win.height)
+        except Exception:
+            LOG.exception("save geometry")
+
+    def on_closing():
+        save_geom()
+        js("window.nativeBeforeQuit && window.nativeBeforeQuit()")   # autosave hook; the page has no time to await
+        time.sleep(0.3)
+
+    win.events.resized += lambda *a: save_geom()
+    win.events.moved += lambda *a: save_geom()
+    win.events.closing += on_closing
+    MENU = build_menu(lambda action: js("window.nativeMenu && window.nativeMenu(%s)" % json.dumps(action)))
 
     def on_drop(e):
         try:
@@ -248,7 +326,7 @@ def run_window() -> int:
             if os.environ.get("AMV_EXIT_AFTER_SNAPSHOT"):
                 win.destroy()
 
-    webview.start(bind, debug=bool(os.environ.get("AMV_DEBUG")))
+    webview.start(bind, menu=MENU, debug=bool(os.environ.get("AMV_DEBUG")))
     LOG.info("window closed; shutting down")
     s.stop()
     return 0
