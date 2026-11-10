@@ -40,3 +40,5 @@ Honest-leftovers tracker: the goal is to perfect the app until none remain open.
 | L34 | Auto-sync | the step list says 'retime skipped' while the final plan contains retime sections (the events don't match the plan) | gligar | in progress | a test: every non-empty plan component has a kept step |
 | L35 | Render | the Boom/pump effect isn't baked into rendered mp4 exports (preview only) | gligar | open | an export with Boom 80 shows the scale/brightness pulses in the frames |
 | L36 | Docs | the release asset names (AMV-Matcher-macos-arm/intel/windows.zip) are unverified until the first green CI release | commander | open | the names match the actual release |
+| L37 | Native | the menu items show no keyboard-shortcut hints (the keys work via shell.js) | krokorok | open | the menu shows the accelerators (e.g. Save ⌘S) on macOS and Windows |
+| L38 | Native | notifications are macOS-only; Windows shows none | krokorok | open | a Windows toast on job finish (verified in CI selftest via a mocked notifier, then a real run) |
