@@ -508,7 +508,7 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
               max_speed_dev: float = 0.25, max_tempo_dev: float = 0.08, min_section_s: float = 0.75,
               max_cuts: int = 3, min_gain: float = 0.5, max_passes: int = 2, allow_splice: bool = True, lead_s: float | None = None,
               allow_loop: bool = False, original: bool = False, unlock_original: bool = False,
-              *, progress_cb=None, should_cancel=None, stem_targets=None, prefer_energy=False) -> dict:
+              *, progress_cb=None, should_cancel=None, stem_targets=None, prefer_energy=True) -> dict:
     """Try several tool orders (each from the baseline) and keep the best path, so the result is never
     worse than any single tool applied directly.
 
@@ -535,8 +535,9 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
     stem_targets (optional, stemsync.stem_targets(song, stems_feats)) go to every score call and, as extra
     soft snap targets for calm-block events, to the retime planner; None = unchanged behaviour.
 
-    prefer_energy (keyword-only, default False = unchanged behaviour): the arrange step ranks by energy
-    correlation and keeps the highest-arc arrangement within the total/tight/sync guards of the baseline."""
+    prefer_energy (keyword-only, default True; False = the original arrange objective): the arrange step
+    ranks by energy correlation and keeps the highest-arc arrangement within the total/tight/sync guards
+    of the baseline."""
     lead_s = S.PERCEPTUAL_LEAD_S if lead_s is None else lead_s
     lead_s = min(0.12, max(0.0, float(lead_s)))   # cuts/peaks land lead_s before the beat (0 = on it)
     t0 = time.perf_counter()

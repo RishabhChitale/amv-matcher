@@ -1,5 +1,6 @@
 """/api/auto-sync: guard, path validation, clamping, 409, job result verbatim, cached final in scans."""
 import time
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -31,7 +32,7 @@ def test_guard_paths_and_clamp(tmp_path, monkeypatch):
     o = _autosync_options(AutoSyncRequest(video_path="a", song_path="b", lead_s=5, budget_s=9999,
                                           guardrails={"max_speed_dev": 3, "max_tempo_pct": 50, "max_cuts": 99}))
     assert o == {"lead_s": 0.12, "allow_loop": False, "max_speed_dev": 0.25, "max_tempo_pct": 8.0,
-                 "max_cuts": 3, "budget_s": 60.0, "unlock_original": False}
+                 "max_cuts": 3, "budget_s": 60.0, "unlock_original": False, "prefer_energy": True}
     o = _autosync_options(AutoSyncRequest(video_path="a", song_path="b", guardrails={"max_cuts": -2, "max_speed_dev": -1}))
     assert o["max_cuts"] == 0 and o["max_speed_dev"] == 0.0
 
@@ -264,10 +265,12 @@ def test_prefer_energy_param_plumbed(tmp_path, monkeypatch):
         return fake
     monkeypatch.setattr(server._autosync, "auto_sync", fake_auto)
     c = TestClient(server.app)
-    r = c.post("/api/auto-sync", json=_body(v, s))
-    assert r.status_code == 200 and "prefer_energy" not in r.json()["options"]
-    assert _wait(c, r.json()["job_id"])["status"] == "done"
-    r = c.post("/api/auto-sync", json=_body(v, s, prefer_energy=True))
-    assert r.status_code == 200 and r.json()["options"]["prefer_energy"] is True
-    assert _wait(c, r.json()["job_id"])["status"] == "done"
-    assert seen[0]["prefer_energy"] is False and seen[1]["prefer_energy"] is True
+    keys = []
+    for extra in ({}, {"prefer_energy": True}, {"prefer_energy": False}):
+        r = c.post("/api/auto-sync", json=_body(v, s, **extra))
+        assert r.status_code == 200
+        keys.append(server._opts_key(Path(v), Path(s), r.json()["options"]))
+        assert r.json()["options"]["prefer_energy"] is (extra.get("prefer_energy", True))
+        assert _wait(c, r.json()["job_id"])["status"] == "done"
+    assert [x["prefer_energy"] for x in seen] == [True, True, False]
+    assert keys[0] == keys[1] != keys[2]

@@ -367,7 +367,7 @@ def test_arrange_kept_forced(monkeypatch):
     monkeypatch.setattr(AS, "_done", lambda r, t: False)
     monkeypatch.setattr(AS, "_gain", lambda new, old, mg: True)
     monkeypatch.setattr(AS, "ORDER_COST", ("splice_first",))
-    r = auto_sync(song, vid, budget_s=60.0)
+    r = auto_sync(song, vid, budget_s=60.0, prefer_energy=False)
     arr = [s for s in r["steps"] if s["tool"] == "arrange"]
     assert calls and calls[0] == 3 and arr and arr[0]["kept"] and arr[0]["params"]["moves"] == 2
     assert AS.effort_of({"segments": segs}, 48.0)["splices"] == 2
@@ -380,7 +380,7 @@ def test_arrange_not_picked_when_no_gain(monkeypatch):
                                        {"src_start": 40.0, "src_end": 50.0, "dst_start": 30.0}], "moves": 1,
         "sections_used": ["x"]})
     monkeypatch.setattr(AS, "_gain", lambda new, old, mg: False)
-    r = auto_sync(song, vid, budget_s=60.0)
+    r = auto_sync(song, vid, budget_s=60.0, prefer_energy=False)
     assert not any(s["kept"] for s in r["steps"] if s["tool"] == "arrange")
     assert not (r["plan"]["segments"] or [])
 
@@ -711,10 +711,15 @@ def test_prefer_energy_routes_to_arrange(monkeypatch):
         calls.append(kw)
         return real(song, video, max_moves, lead_s=lead_s, **kw)
     monkeypatch.setattr(AS, "plan_arrangement", spy)
-    from tests.test_arrange import make_song, make_video
-    song, vid = make_song(), make_video()
-    AS.auto_sync(song, vid, budget_s=8)
-    assert all(k == {} for k in calls)                    # default: called exactly as before
+    monkeypatch.setattr(AS, "plan_splice", lambda *a, **k: {"eligible": False})
+    monkeypatch.setattr(AS, "_done", lambda r, t: False)
+    monkeypatch.setattr(AS, "ORDER_COST", ("splice_first",))
+    song, vid = _arr_pair()
+    AS.auto_sync(song, vid, budget_s=60, prefer_energy=False)
+    assert calls and all(k == {} for k in calls)                    # explicit false: called exactly as the old default
     calls.clear()
-    AS.auto_sync(song, vid, budget_s=8, prefer_energy=True)
-    assert all(k == {"prefer_energy": True} for k in calls)
+    AS.auto_sync(song, vid, budget_s=60)
+    assert calls and all(k == {"prefer_energy": True} for k in calls)     # default is on
+    calls.clear()
+    AS.auto_sync(song, vid, budget_s=60, prefer_energy=True)
+    assert calls and all(k == {"prefer_energy": True} for k in calls)
