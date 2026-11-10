@@ -10,11 +10,16 @@ Runs locally; it serves files only to your own browser (127.0.0.1, no login, no 
 This creates `.venv`, installs dependencies and starts the server. Open http://127.0.0.1:8765 (the script tries to open it for you). Paste the video path and the music folder path, then press Scan. Songs: .mp3 .wav .m4a .flac. Tests: `.venv/bin/python -m pytest`. Backend routes are in [docs/API.md](docs/API.md).
 
 ## Using the editor
-- **Player**: the video plays with the selected song. Clicking a result row loads that song onto A1 at its best offset. It does not autoplay: press Space or Play to hear it in sync with the video.
+- **Results list**: ranked songs with a score ring, BPM and trim window; the list scrolls. Songs too short for the video are under "Too short", unreadable files under "Skipped". Clicking a row loads that song onto A1 at its best offset. It does not autoplay: press Space or Play to hear it in sync with the video.
 - **Timeline**: V1 shows the video's energy curve as a filled area, cuts as thin ticks, and calm/peak segments as tinted bands. A1 shows the selected song's waveform, beat ticks, drops as glowing diamonds, and a thin pump lane underneath.
-- **Song offset**: drag the song clip on A1 to set a manual offset. The score and trim window update live.
-- **Boom panel (Effects)**: pulses the video on beats. Boom sets strength, Decay the fall-off time, Drops only ignores ordinary beats, Shake adds a jolt on drops. Preview only for now; `GET /api/pump` returns the same pulses as keyframes.
+- **Song offset**: drag the song clip on A1 to set a manual offset. The score updates live and the result's trim row shows the new window marked "(manual)".
+- **Effects panel**: Boom (0-100, default 40) sets pulse strength; Decay (50-400 ms, default 180) sets how fast it fades; Drops only ignores ordinary beats; Shake jolts the picture on drops. Drops also flash the video brighter. Preview only for now; `GET /api/pump` returns the same pulses as keyframes. These settings are remembered in the browser between visits (Boom starts at 0 if your system asks for reduced motion).
+- **Formats**: if the browser can't play the video (.mkv and some others), the player shows "This format can't preview in the browser; scores still work."
 - **Keys**: Space play/pause; Left/Right one frame; Shift+Left/Right one second; J slower, K pause, L faster.
+
+## Testing
+- `.venv/bin/python -m pytest`
+- `.venv/bin/python tools/ui_smoke.py` drives the UI in headless Chrome and prints PASS/FAIL per check. It needs Google Chrome installed and the server running (`./run.sh`).
 
 ## How the score works
 `total = 0.20 * tempo + 0.40 * sync + 0.40 * arc`, each 0-100.
