@@ -1,0 +1,23 @@
+/* Edit / Deliver page tabs (Resolve-style). Hooked from index.html only. */
+#pages{position:fixed;left:0;right:0;bottom:0;z-index:40;display:flex;justify-content:center;gap:4px;padding:6px 0;background:rgba(14,14,18,.92);border-top:1px solid rgba(255,255,255,.08)}
+#pages button{min-width:120px;padding:6px 18px;border-radius:8px;border:1px solid transparent;background:transparent;color:inherit;opacity:.65;cursor:pointer;font:inherit}
+#pages button.on{opacity:1;background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.18)}
+body{padding-bottom:46px}
+#deliver{display:none;flex-direction:column;gap:10px;padding:14px}
+body.page-deliver #deliver{display:flex}
+body.page-deliver #media,body.page-deliver .sidebar{display:none}
+body.page-deliver .layout{grid-template-columns:minmax(0,1fr) 380px}
+body.page-deliver .editor{grid-column:1}
+body.page-deliver #deliver{grid-column:2;grid-row:1}
+#deliver h3{margin:0;font-size:14px}
+#deliver .dl-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+#deliver .dl-sum{font-size:12px;opacity:.75}
+#deliver .dl-bar{height:8px;border-radius:4px;background:rgba(255,255,255,.1);overflow:hidden}
+#deliver .dl-bar i{display:block;height:100%;width:0;background:#7c5cff;transition:width .3s}
+#deliver .dl-lock{font-size:12px;color:#ffb454}
+#dl-queue{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px;font-size:12px}
+#dl-queue li{display:flex;justify-content:space-between;gap:8px;padding:4px 6px;border-radius:6px;background:rgba(255,255,255,.05)}
+#dl-playhead{position:absolute;top:0;bottom:0;width:2px;background:#ff4d6d;box-shadow:0 0 6px #ff4d6d;pointer-events:none;display:none;z-index:5}
+body.rendering #dl-playhead{display:block}
+body.page-deliver #dl-go{display:inline-block}
+body.locked-media #media,body.locked-media #stage,body.locked-media #tl-wrap,body.locked-media #results-panel{cursor:not-allowed}
