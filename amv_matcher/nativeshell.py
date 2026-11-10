@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import json
 import os
+import base64
+import logging
 import subprocess
 import sys
+import time
 from pathlib import Path
 
-from . import paths
+from . import paths, winsafe
+
+log = logging.getLogger(__name__)
 
 MIN_W, MIN_H = 1100, 700
 DEFAULT_GEOM = {"width": 1440, "height": 900}
@@ -58,6 +63,80 @@ def notify_cmd(title, body, platform=None):
     if (platform or sys.platform) == "darwin":
         return ["osascript", "-e", f"display notification {applescript_str(body)} with title {applescript_str(title)}"]
     return None
+
+
+def _xml_esc(s) -> str:
+    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&apos;")
+
+
+def toast_script(title, body) -> str:
+    """PowerShell script showing a toast via Windows.UI.Notifications. Text is XML-escaped, then embedded in a
+    single-quoted here-string-free literal (single quotes doubled), so no quoting can break out."""
+    xml = ('<toast><visual><binding template="ToastGeneric"><text>%s</text><text>%s</text></binding></visual></toast>'
+           % (_xml_esc(str(title)[:200]), _xml_esc(str(body)[:300])))
+    lit = xml.replace("'", "''")
+    return ("[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null\n"
+            "[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null\n"
+            "$x = New-Object Windows.Data.Xml.Dom.XmlDocument\n"
+            "$x.LoadXml('%s')\n"
+            "$t = [Windows.UI.Notifications.ToastNotification]::new($x)\n"
+            "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('AMV Matcher').Show($t)\n" % lit)
+
+
+def powershell_cmd(title, body) -> list:
+    enc = base64.b64encode(toast_script(title, body).encode("utf-16-le")).decode("ascii")
+    return ["powershell.exe", "-NoProfile", "-WindowStyle", "Hidden", "-EncodedCommand", enc]
+
+
+def _toast_winotify(title, body) -> bool:
+    from winotify import Notification  # optional dependency (not in requirements)
+    Notification(app_id="AMV Matcher", title=str(title), msg=str(body)).show()
+    return True
+
+
+def _toast_win10toast(title, body) -> bool:
+    from win10toast import ToastNotifier  # optional dependency (not in requirements)
+    ToastNotifier().show_toast(str(title), str(body), duration=5, threaded=True)
+    return True
+
+
+def _toast_powershell(title, body) -> bool:
+    r = winsafe.run(powershell_cmd(title, body), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, timeout=10)
+    return r.returncode == 0
+
+
+_last_notify: dict = {}
+RATE_S = 3.0
+
+
+def notify(title, body="") -> bool:
+    """Best-effort native notification; never raises. macOS: osascript. Windows: winotify, win10toast, then
+    PowerShell toast. Other OSes: no-op (False). The same message within 3 s is ignored."""
+    try:
+        key = (str(title), str(body))
+        now = time.monotonic()
+        if now - _last_notify.get(key, -1e9) < RATE_S:
+            return False
+        if sys.platform == "darwin":
+            ok = run(notify_cmd(title, body))
+        elif sys.platform == "win32" or os.name == "nt":
+            ok = False
+            for fn in (_toast_winotify, _toast_win10toast, _toast_powershell):
+                try:
+                    if fn(title, body):
+                        ok = True
+                        break
+                except Exception as e:  # ImportError or backend failure: try the next one
+                    log.debug("toast backend %s failed: %s", fn.__name__, e)
+        else:
+            return False
+        if ok:
+            _last_notify[key] = now
+        return bool(ok)
+    except Exception:
+        log.exception("notify failed")
+        return False
 
 
 def resolve_app(platform=None, exists=os.path.exists):

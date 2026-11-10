@@ -190,8 +190,8 @@ class Api:
         LOG.info("ui: %s", msg)
 
     def notify(self, title, body=""):
-        """Native notification (macOS; best-effort no-op elsewhere). Returns True if one was posted."""
-        return ns.run(ns.notify_cmd(title, body))
+        """Native notification (macOS osascript, Windows toast; no-op elsewhere). Returns True if one was posted."""
+        return ns.notify(title, body)
 
     def resolve_installed(self):
         return ns.resolve_app() is not None
