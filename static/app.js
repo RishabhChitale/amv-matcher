@@ -22,7 +22,7 @@ function syncAudio(force) {
   if (!S.sel) return;
   const st = songTime();
   if (st < 0 || st > (aud.duration || 1e9)) { if (!aud.paused) aud.pause(); return; }
-  if (force || Math.abs(aud.currentTime - st) > 0.04) aud.currentTime = st;
+  if (force || Math.abs(aud.currentTime - st) > 0.03) aud.currentTime = st;
   if (S.playing && aud.paused) aud.play().catch(() => {});
 }
 function play() {
