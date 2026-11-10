@@ -56,3 +56,36 @@ def test_close_guard_never_blocks_and_destroys_once():
     assert g.finished.wait(3)
     assert calls == ["geom", "js", "destroy"] and ran_on[0] != main
     assert g() is None                               # after destroy the close is allowed
+
+
+def test_shutdown_guard_graceful_and_fallback():
+    import threading
+    # graceful: request_close runs once off the caller, cancel set -> no kill/exit
+    calls, exits = [], []
+    g = ns.ShutdownGuard(lambda: calls.append("close"), lambda: calls.append("kill"), exits.append, fallback=2)
+    assert g.trigger() is True and g.trigger() is False          # idempotent
+    g.cancel.set()
+    assert g.finished.wait(3) and calls == ["close"] and exits == []
+    # fallback: window never closes -> children killed, exit(0)
+    calls, exits = [], []
+    g = ns.ShutdownGuard(lambda: calls.append("close"), lambda: calls.append("kill"), exits.append, fallback=0.2)
+    g.trigger()
+    assert g.finished.wait(3) and calls == ["close", "kill"] and exits == [0]
+    # request_close raising must not prevent the fallback
+    exits = []
+    def boom():
+        raise RuntimeError("x")
+    g = ns.ShutdownGuard(boom, lambda: None, exits.append, fallback=0.1)
+    g.trigger()
+    assert g.finished.wait(3) and exits == [0]
+
+
+def test_kill_children_kills_descendants_only():
+    import subprocess, sys, time
+    p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    ns.kill_children()
+    for _ in range(50):
+        if p.poll() is not None:
+            break
+        time.sleep(0.1)
+    assert p.poll() is not None

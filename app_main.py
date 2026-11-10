@@ -266,6 +266,8 @@ def run_window() -> int:
     import webview
     from webview.dom import DOMEventHandler
     seed_rife_from_dev_cache()
+    SHUTDOWN = ns.ShutdownGuard(lambda: None, ns.kill_children, os._exit)
+    SHUTDOWN.install()
     s = Server()
     s.start()
     LOG.info("server on %s (frozen=%s data=%s)", s.url, paths.FROZEN, paths.DATA)
@@ -290,6 +292,7 @@ def run_window() -> int:
     on_closing = ns.CloseGuard(
         save_geom, lambda: js("window.nativeBeforeQuit && window.nativeBeforeQuit()"), lambda: win.destroy())
 
+    SHUTDOWN.request_close = on_closing
     win.events.resized += lambda *a: save_geom()
     win.events.moved += lambda *a: save_geom()
     win.events.closing += on_closing
@@ -345,6 +348,7 @@ def run_window() -> int:
     webview.start(bind, menu=MENU, debug=bool(os.environ.get("AMV_DEBUG")))
     LOG.info("window closed; shutting down")
     s.stop()
+    SHUTDOWN.cancel.set()
     return 0
 
 

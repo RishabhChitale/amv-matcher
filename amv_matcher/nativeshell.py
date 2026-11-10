@@ -247,3 +247,98 @@ class CloseGuard:
             except Exception:
                 log.exception("close guard destroy")
             self.finished.set()
+
+
+def kill_children() -> None:
+    """SIGKILL every descendant of this process (worker pool, resource tracker, ffmpeg/rife they started)."""
+    me = os.getpid()
+    if sys.platform.startswith("win"):
+        try:
+            subprocess.run(["taskkill", "/PID", str(me), "/T", "/F"], capture_output=True)
+        except Exception:  # noqa: BLE001
+            pass
+        return
+    try:
+        out = subprocess.run(["ps", "-axo", "pid=,ppid="], capture_output=True, text=True, timeout=5).stdout
+        kids: dict = {}
+        for ln in out.splitlines():
+            a = ln.split()
+            if len(a) == 2:
+                kids.setdefault(int(a[1]), []).append(int(a[0]))
+        todo, seen = list(kids.get(me, [])), []
+        while todo:
+            p = todo.pop()
+            seen.append(p)
+            todo.extend(kids.get(p, []))
+        import signal as _sg
+        for p in seen:
+            try:
+                os.kill(p, _sg.SIGKILL)
+            except OSError:
+                pass
+    except Exception:  # noqa: BLE001
+        log.exception("kill_children")
+
+
+class ShutdownGuard:
+    """SIGTERM/SIGINT -> orderly quit. trigger() only starts a thread (safe from a signal handler / any thread):
+    it asks for a normal close (CloseGuard: autosave off-thread, then window destroy -> Server.stop), and if the
+    process is still alive after `fallback` seconds it kills the worker descendants and exits."""
+
+    def __init__(self, request_close, kill_kids, exit_fn, fallback=5.0):
+        self.request_close, self.kill_kids, self.exit_fn, self.fallback = request_close, kill_kids, exit_fn, fallback
+        self._lock = __import__("threading").Lock()
+        self.fired = False
+        self.cancel = __import__("threading").Event()   # set when a normal shutdown completed
+        self.finished = __import__("threading").Event()
+
+    def trigger(self, *_):
+        import threading
+        with self._lock:
+            if self.fired:
+                return False
+            self.fired = True
+        threading.Thread(target=self._run, daemon=True, name="shutdown-guard").start()
+        return True
+
+    def _run(self):
+        try:
+            try:
+                self.request_close()
+            except Exception:  # noqa: BLE001
+                log.exception("shutdown request_close")
+            if not self.cancel.wait(self.fallback):
+                log.warning("graceful shutdown timed out; killing workers")
+                try:
+                    self.kill_kids()
+                except Exception:  # noqa: BLE001
+                    log.exception("shutdown kill_kids")
+                self.exit_fn(0)
+        finally:
+            self.finished.set()
+
+    def install(self):
+        """POSIX: a Python-level handler never runs while the main thread sits in the Cocoa loop, so the C-level
+        handler writes the signal number to a wakeup pipe that a dedicated thread reads (no signal mask: spawned
+        workers keep default signal behaviour). Windows: plain handlers that only start the guard thread."""
+        import signal
+        import threading
+        sigs = [signal.SIGTERM, signal.SIGINT]
+        if sys.platform.startswith("win"):
+            for s in sigs + [getattr(signal, "SIGBREAK", signal.SIGINT)]:
+                signal.signal(s, self.trigger)
+            return
+        r, w = os.pipe()
+        os.set_blocking(w, False)
+        for s in sigs:
+            signal.signal(s, lambda *a: None)
+        signal.set_wakeup_fd(w, warn_on_full_buffer=False)
+
+        def waiter():
+            while True:
+                try:
+                    if os.read(r, 16):
+                        self.trigger()
+                except OSError:
+                    return
+        threading.Thread(target=waiter, daemon=True, name="signal-waiter").start()
