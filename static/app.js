@@ -95,6 +95,8 @@ function loadVideo(j) {
   $('empty').classList.add('hidden'); $('vid-msg').classList.add('hidden');
   vid.src = '/api/video?path=' + encodeURIComponent(j.video_path);
   $('vinfo').textContent = `${fmtMS(S.dur)} | ${j.video.motion_tempo_bpm.toFixed(0)} BPM motion`;
+  $('vc-dur').textContent = fmtMS(S.dur) + ' (' + S.dur.toFixed(1) + 's)'; $('vc-bpm').textContent = j.video.motion_tempo_bpm.toFixed(1) + ' BPM';
+  $('vc-cuts').textContent = j.video.cut_count ?? (j.video.cut_times || []).length;
   update();
 }
 
@@ -132,7 +134,7 @@ async function selectSong(r) {
   S.offset = r.best_offset_s || 0;
   aud.src = '/api/audio?path=' + encodeURIComponent(r.path);
   try { S.wf = await (await fetch('/api/waveform?path=' + encodeURIComponent(r.path))).json(); } catch (e) { S.wf = null; }
-  buildPump(); seek(0); draw();
+  buildPump(); readout(); seek(0); draw();
 }
 
 // ---------- effects (pump) ----------
@@ -167,7 +169,7 @@ function pumpAt(st) {
     const a = 0.03 * boom * e.s * (e.d ? 4 : 1) * k; if (a > sc) sc = a;
     if (e.d && k > br) { br = k; di = i; }
   }
-  return {scale: 1 + sc, bright: 1 + 0.35 * br * (boom > 0 ? 1 : 0), k: br, di};
+  return {scale: 1 + sc, bright: 1 + 0.35 * (boom / 100) * br, k: br, di};
 }
 function applyPump() {
   if (!S.sel || !S.wf || FX.boom === 0) { vid.style.transform = ''; vid.style.filter = ''; return; }
@@ -270,17 +272,26 @@ cv.addEventListener('pointerdown', e => {
 cv.addEventListener('pointermove', e => {
   if (!drag) return; const x = e.clientX - cv.getBoundingClientRect().left;
   if (drag.kind === 'seek') return seek(x2t(x));
-  S.offset = drag.off - x2t(x - drag.x); syncAudio(true); draw();
+  S.offset = clampOff(drag.off - x2t(x - drag.x)); syncAudio(true); readout(); draw();
   clearTimeout(scoreTimer); scoreTimer = setTimeout(rescore, 120);
 });
 cv.addEventListener('pointerup', () => { drag = null; });
+function clampOff(o) { const mx = S.wf ? Math.max(0, S.wf.duration - S.dur) : 0; return Math.min(mx, Math.max(0, o)); }
+function readout() {
+  $('vc-off').textContent = S.sel ? S.offset.toFixed(2) + ' s' : '--';
+  $('vc-trim').textContent = S.sel ? 'Use ' + fmtMS(S.offset) + ' to ' + fmtMS(S.offset + S.dur) : '--';
+}
 async function rescore() {
   if (!S.sel || !S.videoPath) return;
   try {
     const r = await fetch('/api/score', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({video_path: S.videoPath, song_path: S.sel.path, offset: S.offset})});
     const j = await r.json(); if (!r.ok) return; Object.assign(S.sel, j, {best_offset_s: S.sel.best_offset_s});
+    const el0 = document.querySelector('.res.sel'); if (el0) { const b = el0.querySelectorAll('.bar i'); [j.tempo_pct, j.sync_pct, j.arc_pct].forEach((v, k) => { if (b[k]) b[k].style.width = v + '%'; }); }
     const el = document.querySelector('.res.sel'); if (el) { const i = el.dataset.i; el.querySelector('.rmeta').innerHTML = `${S.sel.bpm.toFixed(0)} BPM | Use ${fmtMS(j.trim_start_s)} to ${fmtMS(j.trim_end_s)} (manual)`; el.querySelector('.ring b').textContent = Math.round(j.total_pct) + '%'; }
   } catch (e) {}
 }
-$('scrub').addEventListener('pointerdown', e => { const r = $('scrub').getBoundingClientRect(); seek((e.clientX - r.left) / r.width * S.dur); });
+const scrubTo = e => { const r = $('scrub').getBoundingClientRect(); seek((e.clientX - r.left) / r.width * S.dur); };
+$('scrub').addEventListener('pointerdown', e => { $('scrub').setPointerCapture(e.pointerId); $('scrub').dragging = true; scrubTo(e); });
+$('scrub').addEventListener('pointermove', e => { if ($('scrub').dragging) scrubTo(e); });
+$('scrub').addEventListener('pointerup', () => { $('scrub').dragging = false; });
 resize();

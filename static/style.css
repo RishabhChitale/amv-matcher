@@ -56,3 +56,5 @@ input[type=range]{accent-color:var(--v)}
 #fx .row input[type=range]{flex:1}#fx b{min-width:52px;text-align:right;font-family:ui-monospace,Menlo,monospace;font-size:12px}
 #fx .tog{color:var(--txt)}
 @media(max-width:1000px){.layout{grid-template-columns:1fr}.topbar{flex-wrap:wrap}}
+.vcard{display:flex;gap:22px;padding:8px 14px;flex-wrap:wrap}.vcard div{display:flex;flex-direction:column}.vcard span{color:var(--mut);font-size:10px;text-transform:uppercase;letter-spacing:.6px}.vcard b{font:600 15px ui-monospace,Menlo,monospace}
+.stage video{transition:none}.res .bar i{transition:width 300ms ease}
