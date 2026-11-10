@@ -579,6 +579,47 @@ def export_mp4(req: ExportMp4Request):
     return {"job_id": job_id, "status": "running"}
 
 
+class ExportResolveRequest(BaseModel):
+    video_path: str
+    song_path: str
+    plan: dict = {}
+    boom: float = 40
+    decay: float = 180
+    drops_only: bool = False
+    shake: bool = False
+
+
+def _run_export_resolve(job_id: str, vp: Path, sp: Path, req: ExportResolveRequest):
+    from . import resolve
+    job = JOBS[job_id]
+    try:
+        song = analyze_song(str(sp))
+        video = analyze_video(str(vp))
+        res = resolve.export_bundle(
+            vp, sp, req.plan or {}, song, video, EXPORTS, boom=req.boom, decay=req.decay,
+            drops_only=req.drops_only, shake=req.shake,
+            progress=lambda stage, n: job.update(stage=stage, done=n))
+        z = Path(res["zip"]).resolve()
+        job.update(status="done", done=3, total=3, message="Done", path=res["folder"],
+                   zip=str(z), url=_export_url(z), clips=res["clips"], markers=res["markers"],
+                   out_duration=res["out_duration"])
+    except Exception as e:
+        job.update(status="error", error=f"{type(e).__name__}: {e}")
+
+
+@app.post("/api/export-resolve", dependencies=[Depends(_origin_guard)])
+def export_resolve(req: ExportResolveRequest):
+    """DaVinci Resolve bundle (FCPXML + Fusion macro + audio + how-to). Untested in Resolve."""
+    vp = _safe_video(req.video_path)
+    sp = _safe_song(req.song_path)
+    job_id = uuid.uuid4().hex[:12]
+    with _jobs_lock:
+        JOBS[job_id] = {"id": job_id, "status": "running", "stage": "analyze", "done": 0,
+                        "total": 3, "message": "Exporting Resolve bundle", "error": None}
+    _pool.submit(_run_export_resolve, job_id, vp, sp, req)
+    return {"job_id": job_id, "status": "running"}
+
+
 @app.get("/")
 def index():
     return FileResponse(STATIC / "index.html")

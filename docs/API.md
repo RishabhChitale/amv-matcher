@@ -166,6 +166,10 @@ Serves a file from `.exports/` only (403 for anything else) as a download (`Cont
 ### POST /api/export-mp4
 Body `{"video_path", "audio_path"}` where `audio_path` is a `.wav` inside `.exports/` (else 403). Returns `{"job_id", "status": "running"}`; poll `GET /api/scan/{job_id}` (`done` is 0-100 progress). When `status == "done"` the job has `path`, `url` (use with `/api/export-file`) and `size`; on failure `status == "error"` with `error`. The video's own audio is dropped and replaced by the wav (AAC 192k). The video stream is copied untouched when its codec is h264/hevc/mpeg4/av1/vp9 (falling back to a re-encode if the copy fails), otherwise re-encoded to H.264 (yuv420p, crf 20). Output: `.exports/<video>__<song>.mp4`.
 
+### POST /api/export-resolve
+DaVinci Resolve bundle (free 20/21 target; **not tested in Resolve**, only structurally validated). Body `{"video_path", "song_path", "plan": {...}, "boom": 40, "decay": 180, "drops_only": false, "shake": false}`; `plan` is the auto-sync plan (`offset`, `tempo_ratio`, `segments`, `retime`) or a simple `{"offset": s}`. Origin-guarded; paths must pass the usual allowlist (403). Returns `{"job_id", "status": "running"}`; poll `GET /api/scan/{job_id}`. On `done` the job has `path` (folder `.exports/<video>__<song>_resolve/`), `zip`, `url` (zip, via `/api/export-file`), `clips`, `markers`, `out_duration`.
+Folder: `timeline.fcpxml` (FCPXML 1.9; original video as one asset-clip per constant-speed section, speed via `<timeMap>`; song as audio clips, one per splice segment on alternating lanes with fadeIn/fadeOut crossfades; markers `beat` (<= 1 per bar), `DROP`, `CUT`), `AMV_Pump.drfx`, `AMV_Pump_plan.setting` (pump keyframes baked for this plan), `audio/` (song as heard; tempo-stretched wav when `tempo_ratio != 1`; relative paths), `HOW-TO-IMPORT.txt`. The video is referenced by absolute file URI (never copied).
+
 ## Native app shell (app_main.py)
 
 ### POST /api/register-paths
