@@ -1,0 +1,16 @@
+/* stems-install card (T-STEMSUI) */
+#stems-install{display:none!important}
+.si-card{margin:6px 0;padding:8px 10px;border:1px solid var(--line);border-radius:10px;background:rgba(0,0,0,.25);min-height:84px}
+.si-card.hidden,.si-sep.hidden{display:none}
+.si-title{display:block;font-size:13px}
+.si-note{font-size:12px;margin:2px 0 6px}
+.si-steps{display:flex;gap:12px;list-style:none;margin:0 0 6px;padding:0;font-size:11px;opacity:.6}
+.si-steps.hidden{visibility:hidden;display:flex}
+.si-steps li.cur{opacity:1;font-weight:700}.si-steps li.done{opacity:.9}.si-steps li.done::before{content:"\2713 "}
+.si-bar{height:6px;border-radius:3px;background:rgba(255,255,255,.1);overflow:hidden}
+.si-bar i{display:block;height:100%;width:0;background:var(--accent,#8b5cf6);transition:width .3s}
+.si-bar.si-off{visibility:hidden}
+.si-pkg{font-size:11px;min-height:15px;margin-top:3px}
+.si-err{font-size:12px;color:#ff6b7a;min-height:0}
+.si-row{display:flex;gap:8px;margin-top:6px}.si-row button{font-size:12px;padding:5px 10px}.si-row .hidden{display:none}
+.si-sep{font-size:11px;margin:2px 0}
