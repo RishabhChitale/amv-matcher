@@ -235,14 +235,15 @@ import glob as _glob
 import os as _os
 import pytest as _pytest
 
-_R = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
-_RS = _glob.glob(_os.path.join(_R, ".uploads", "song", "*songS1*.mp3"))
-_RV = _glob.glob(_os.path.join(_R, ".uploads", "video", "*videoA*.mp4"))
+from tests import realmedia as _realmedia
+
+_RS = [_realmedia.song_s1()] if _realmedia.song_s1() else []
+_RV = [_realmedia.video_a()] if _realmedia.video_a() else []
 
 
-@_pytest.mark.skipif(not (_RS and _RV), reason="real songS1/videoA files missing")
+@_pytest.mark.skipif(not (_RS and _RV), reason="real video A / song S1 not configured")
 @_pytest.mark.skipif(_os.environ.get("AMV_REAL") != "1", reason="AMV_REAL=1 only")
-def test_assemble_trim_real_songS1_videoA():
+def test_assemble_trim_real_pair_a_s1():
     from amv_matcher import score as S
     from amv_matcher.audio import analyze_song
     from amv_matcher.splice import _assemble

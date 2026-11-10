@@ -95,17 +95,15 @@ def test_video_segments_struct():
     assert "peak" in [s["kind"] for s in out]
 
 
-_REAL = [p for p in [os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".uploads", "song")]
-         if os.path.isdir(p)]
+from tests import realmedia
 
 
 @pytest.mark.skipif(os.environ.get("AMV_REAL") != "1", reason="AMV_REAL=1 only")
-def test_real_songS1_sections():
-    import glob
-    f = glob.glob(os.path.join(_REAL[0], "*songS1*.mp3")) if _REAL else []
+def test_real_s1_sections():
+    f = realmedia.song_s1()
     if not f:
-        pytest.skip("songS1 mp3 missing")
-    song = analyze_song(f[0])
+        pytest.skip("real song S1 not configured")
+    song = analyze_song(f)
     print("\nbpm", song["bpm"], "bar_phase", song["bar_phase"], "dur", song["duration"])
     for s in song["sections"]:
         print(f'{s["start"]:7.2f}-{s["end"]:7.2f} {s["label"]:9s} grp {s["repeat_group"]} energy {s["energy"]}')

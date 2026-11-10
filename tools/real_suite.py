@@ -10,7 +10,7 @@ Cases live in <app data dir>/real_cases.json (NOT in git):
               "expect": {"own_min": 60, "cross_max": 40, "song_min": 50}}]}
 Song tokens: "@own" = the video's own soundtrack (kind own), "@own:<id>" = another case video's
 soundtrack on this video (kind cross), anything else is a song file (kind song).
-Expect keys: own_min / song_min (alias songS1_like_min) are minimum total %, cross_max a maximum.
+Expect keys: own_min / song_min are minimum total %, cross_max a maximum.
 Discover mode adds uploads/songs not yet in cases as 'exploratory' cases (scores only, no pass/fail).
 Videos are only ever referred to by case id in output; file names/paths of videos are never printed.
 Exit code 1 on any failure. Numeric only: never looks at frames.
@@ -31,7 +31,6 @@ from amv_matcher.video import VIDEO_EXTS, analyze_video    # noqa: E402
 ORIGINAL_SLACK_S = 0.5
 EXTRACTED = paths.CACHE / "extracted"
 UPLOADS = paths.UPLOADS
-SEED_VIDEO_MATCH = {"A": "videoA"}     # id -> substring of the video file name (never printed)
 
 _VIDEOS: dict = {}
 _SONGS: dict = {}
@@ -65,11 +64,18 @@ def list_media(folder: Path, exts) -> list:
 
 
 def seed_cases() -> list:
-    """First-run seed: video A (name contains 'videoA') and the other uploaded video as B."""
+    """First-run seed. Env AMV_REAL_VIDEO_A / AMV_REAL_VIDEO_B / AMV_REAL_SONG_S1 win; otherwise the
+    uploaded videos are assigned A, B by size (largest first) and every uploaded song is used.
+    The id -> path mapping lives only in the untracked cases file."""
+    import os
+    ev = lambda k: Path(os.environ[k]) if os.environ.get(k) else None
     vids = list_media(UPLOADS / "video", VIDEO_EXTS)
+    vids.sort(key=lambda p: -p.stat().st_size)
     songs = [str(p) for p in list_media(UPLOADS / "song", AUDIO_EXTS)]
-    a = [v for v in vids if SEED_VIDEO_MATCH["A"] in v.name.lower()]
-    b = [v for v in vids if v not in a]
+    if ev("AMV_REAL_SONG_S1"):
+        songs = [str(ev("AMV_REAL_SONG_S1"))] + [s for s in songs if s != str(ev("AMV_REAL_SONG_S1"))]
+    a = [ev("AMV_REAL_VIDEO_A")] if ev("AMV_REAL_VIDEO_A") else vids[:1]
+    b = [ev("AMV_REAL_VIDEO_B")] if ev("AMV_REAL_VIDEO_B") else [v for v in vids if v not in a][:1]
     cases = []
     if a:
         cases.append({"id": "A", "video": str(a[0]), "songs": ["@own"] + songs + (["@own:B"] if b else []),
@@ -202,7 +208,7 @@ def check(case: dict, row: dict) -> str:
     if kind == "cross" and "cross_max" in exp:
         return "pass" if total <= exp["cross_max"] else f"FAIL cross {total}>{exp['cross_max']}"
     if kind == "song":
-        lo = exp.get("song_min", exp.get("songS1_like_min"))
+        lo = exp.get("song_min")
         if lo is not None:
             return "pass" if total >= lo else f"FAIL song {total}<{lo}"
     return "n/a"

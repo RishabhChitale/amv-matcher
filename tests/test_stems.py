@@ -10,7 +10,9 @@ from fastapi.testclient import TestClient
 from amv_matcher import stems as S
 
 SR = 44100
-UPLOADED_SONG = next(iter(sorted((Path(__file__).resolve().parent.parent / ".uploads" / "song").glob("*songS1*"))), None)
+from tests import realmedia
+
+UPLOADED_SONG = Path(realmedia.song_s1()) if realmedia.song_s1() else None
 
 
 def _clicks(seconds, period=0.5, seed=1):
@@ -184,8 +186,8 @@ def test_disk_space_refusal(api, monkeypatch):
     assert c.post("/api/stems/install").status_code in (200, 507)
 
 
-@pytest.mark.skipif(os.environ.get("AMV_DEMUCS") != "1" or UPLOADED_SONG is None, reason="set AMV_DEMUCS=1 (needs .venv-stems + the songS1 upload)")
-def test_demucs_real_songS1(cache, capsys):
+@pytest.mark.skipif(os.environ.get("AMV_DEMUCS") != "1" or UPLOADED_SONG is None, reason="set AMV_DEMUCS=1 (needs .venv-stems + a configured real song S1)")
+def test_demucs_real_s1(cache, capsys):
     assert S.demucs_installed()
     dur = float(sf.info(str(UPLOADED_SONG)).duration) if UPLOADED_SONG.suffix != ".mp3" else None
     import librosa
