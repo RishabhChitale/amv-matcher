@@ -10,7 +10,7 @@ Honest-leftovers tracker: the goal is to perfect the app until none remain open.
 | L4 | Auto-sync | energy arc tops out at 73 on the real pair (the remaining gap to 100); the slow_section fixture is still weak | gligar | open: try a structure-level splice (sections, using the stem textures) | fixture sync >= 95, arc improves on drop fixtures |
 | L5 | Auto-sync | the tail keeps the last speed (out_duration drifts); runtime near the 10 s budget | gligar | fixed in a0eb580 (tail + budget); runtime bounds tracked in L18 | out_duration report + budget test |
 | L6 | Auto-sync | not yet run on real media (songS1 to videoA) | gligar | fixed in 1451ba1/d379c66: real songS1 + videoA auto-sync 84 -> 93 (tempo 100, sync 98, tight 84% within 40 ms, median 9 ms) at lead 0.06 | AMV_REAL=1 test passes |
-| L7 | UI | ui_smoke 104/106: Boom checks fixed; 2 offset-drag checks fail because synthetic auto offsets now sit at ~0 (test fragility) | beedrill | in progress (beedrill: set a known offset before the drag checks) | ui_smoke 106/106 |
+| L7 | UI | ui_smoke 104/106: Boom checks fixed; 2 offset-drag checks fail because synthetic auto offsets now sit at ~0 (test fragility) | beedrill | fixed in c02f84d (the drag/overview checks set a known offset first) | ui_smoke 106/106 |
 | L8 | UI | a real Finder folder drop is untested (only faked) | user + app shell | ready for the user: open ~/Claude/amv-matcher/dist/AMV Matcher.app and drag a real Finder folder in (first launch: right-click > Open, it's unsigned) | manual check in the native app |
 | L9 | UI | .mkv and other formats can't preview in the browser | app shell | fixed in 9dde0f5 (an automatic H.264 preview proxy for mkv/avi/mov) | tests/test_app_shell.py::test_proxy_for_non_web_codec |
 | L10 | Platform | runs as a local server in a browser, not an app; Windows not supported | app shell | partly fixed: the macOS app (pywebview + PyInstaller, 479 MB) builds and opens its window (54f291d); Windows/CI need the private GitHub repo (waiting on user approval) | the .app and .exe from CI launch and pass `--selftest` |
@@ -22,9 +22,11 @@ Honest-leftovers tracker: the goal is to perfect the app until none remain open.
 | L16 | Scorer | the original-audio source got a non-zero best offset (-1.91) although it's intrinsically aligned | krokorok | fixed in 052f7de (own audio scored at offset 0 only) | own audio always offset 0 |
 | L17 | Export | render/export/splice with negative offsets not verified | krokorok + gligar | open | export test at offset -0.63 |
 | L18 | Tests | runtime bounds (splice < 3 s, 3-min auto-sync < 10 s) unverified on a quiet machine | commander | open | re-run when the load avg < 4 |
-| L19 | Stems | test_stems::test_quiet_detail_and_vocal_phrase_starts failing (work in progress) | beedrill | in progress | test_stems green |
+| L19 | Stems | test_stems::test_quiet_detail_and_vocal_phrase_starts failing (work in progress) | beedrill | fixed in 1d7b9dd (test_stems green); real Demucs on songS1 passed: 4 stems within 0.05 s | test_stems green |
 | L20 | Stems | the packaged app excludes torch/Demucs; stems need an optional pack installed into `STEMS_PACK` (design only, no installer yet) | app shell | open | an in-app 'install stems pack' flow that creates the venv and passes test_stems |
 | L21 | Scorer | the perceptual lead (60 ms, from the 2 ground truths) is applied consistently to sync/phrase/tightness | krokorok | fixed in 7a865bb | the ground-truth table own 84/97, cross <= 43 |
 | L22 | UI | no 'Cut lead' setting and no Auto-sync button/visuals in the UI yet | beedrill | open | ui_smoke covers the auto-sync flow |
 | L23 | Audio | a corrupt audio packet was skipped, shifting later audio by up to 21 ms | krokorok | fixed in 54f291d | test_media_audio click timing within 1 ms |
 | L24 | Platform | the app is unsigned (Gatekeeper warning on first launch on Mac; SmartScreen on Windows) | commander | open | decide signing/notarization with the user |
+| L25 | UI | the Boom-at-drop brightness smoke check is intermittent (max 1.000 in some runs) | beedrill | in progress | 115/115 three runs in a row |
+| L26 | Stems | Demucs takes 755 s for a 233 s song on this Intel Mac CPU (~3.2x realtime) | beedrill | open | a faster config measured, or the wait shown clearly in the UI with progress + cancel |
