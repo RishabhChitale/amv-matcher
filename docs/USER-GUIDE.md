@@ -6,7 +6,28 @@ Short notes on each panel. Items marked *coming soon* are not finished yet.
 Your media pool. Press **Add folder** to add a folder; files stay where they are and are never copied.
 - Switch between List and Grid, search by name, sort by name, date or duration.
 - Double-click a file to link it into the project.
-- Each file shows a thumbnail. If a file came from the internet, its download source is shown.
+- Each file shows a thumbnail. Files that came from the internet carry a small globe badge with the source site; hover it for the full URL, or use Copy source URL.
+- Folders are linked in place: the app reads the files where they are and keeps only small caches, so removing a folder from the pool never touches your files.
+
+## Menu bar (desktop app)
+The menu items do not show shortcut hints, but these keys work (Cmd on macOS, Ctrl on Windows).
+| Menu | Items |
+|---|---|
+| File | New Project (Cmd/Ctrl+N), Open Project... (Cmd/Ctrl+O), Save (Cmd/Ctrl+S), Save As... (Cmd/Ctrl+Shift+S), Add Media Folder..., Export... |
+| Edit | Undo (Cmd/Ctrl+Z), Redo (Cmd/Ctrl+Shift+Z, or Ctrl+Y), Delete (Delete/Backspace) |
+| View | Toggle Media Panel, Toggle Stems, Toggle Effects |
+| Playback | Play / Pause (Space) |
+| Help | Help |
+Project items (New/Open/Save/Save As) are *coming soon*: the menu entries exist, but the project UI behind them is not finished. The New match popup is also *coming soon* (see below).
+
+## Native touches
+- **Notifications:** a long job (like a render) sends a system notification when it finishes, only if the window is in the background. macOS only for now; Windows shows none.
+- **Remembered window:** size and position are saved when you resize, move or close, and restored on the next launch. A position that is now off-screen is ignored.
+- **Open in DaVinci Resolve:** after an export, if Resolve is installed, you can open the export in it directly. The Resolve export itself is untested (see docs/LEFTOVERS.md).
+- **Reveal in Finder / Explorer:** shows an exported or source file in your file manager.
+
+## Projects (*coming soon*)
+Projects (`.amvproj`) will have Open, Save, Save As, Recent, autosave on close and Relink in the app. The project UI is not finished yet; today only the backend API exists (docs/API.md). This section will be updated when it lands.
 
 ## Player, transport and shortcuts
 The video plays in the stage. The scrub bar under it seeks. The timecode shows hours:minutes:seconds:frames.
@@ -21,8 +42,8 @@ If the video can't be decoded for preview, the player says so. Scores still work
 - **Stems lanes:** open "A1 stems" under the timeline. Pick a method (Auto, Quick built-in, or Demucs best) and press **Separate stems**. Each stem gets a lane, and "play stems mix" plays them together. Demucs is an optional install (about 1 GB).
 
 ## Audio sources and Match results
-- **New match** (Cmd/Ctrl+N): pick a video and a music folder. Drag and drop works, or paste a path.
-- **Match results** list every song with its fit %, BPM and trim window. Search, sort by "Fit now" or "After auto-sync", preview with Space, and press **Use this audio** (Enter) to load it.
+- **New match** (Cmd/Ctrl+N; the new popup is *coming soon*, the current dialog works): pick a video and a music folder. Drag and drop works, or paste a path.
+- **Match results** (a redesigned popup is *coming soon*) list every song with its fit %, BPM and trim window. Search, sort by "Fit now" or "After auto-sync", preview with Space, and press **Use this audio** (Enter) to load it.
 - The **Audio sources** panel holds the same list. Songs shorter than the video are under "Too short". Unreadable files are under "Skipped".
 - **Auto-sync all** runs auto-sync on the top 5 songs in turn.
 

@@ -31,6 +31,9 @@ A step-by-step guide to every panel is in [docs/USER-GUIDE.md](docs/USER-GUIDE.m
 - **Projects:** `.amvproj` files with save, load, relink and autosave (file support is in; the in-app menu is coming soon).
 - **Resolve export:** FCPXML timeline with retime clips, markers and an AMV Pump Fusion effect. Not yet tested in Resolve.
 
+## Desktop touches
+A native menu bar (File, Edit, View, Playback, Help) with the usual Cmd/Ctrl shortcuts, system notifications when a job finishes in the background, a remembered window size and position, Open in DaVinci Resolve, and Reveal in Finder/Explorer. Projects (Open, Save, Save As, Recent, autosave, Relink) and the redesigned New match and Match results popups are coming soon. See [docs/USER-GUIDE.md](docs/USER-GUIDE.md).
+
 ## Building from source
 - **Dev:** run `./run.sh` (macOS/Linux) or `run.bat` (Windows). It creates `.venv` if missing, installs `requirements.txt`, then starts the desktop app with `.venv/bin/python app_main.py`.
 - **Stems (optional):** Demucs needs its own venv, see `requirements-stems.txt`. The packaged app leaves it out; an in-app installer is coming soon.
