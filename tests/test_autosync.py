@@ -568,3 +568,66 @@ def test_retime_tries_other_offsets_when_best_offset_finds_nothing(monkeypatch):
     r = auto_sync(song, vid)
     assert r["plan"]["retime"] and r["plan"]["retime"]["sections"]
     assert abs(r["plan"]["offset"] - best) >= 0.5
+
+
+# ---- steps must describe exactly the plan the user gets ----
+def slow24_cuts():
+    """24 s video: 0.5 s cuts, a slow 0.625 s section from 3 to 9 s, 0.5 s cuts again."""
+    c = list(np.arange(0.5, 3.0, 0.5)) + list(3.0 + 0.625 * np.arange(0, 10) )
+    c = [x for x in c if x < 9.0] + list(np.arange(9.0, 24.0, 0.5))
+    return sorted(set(c))
+
+
+def _consistency_pairs():
+    return {
+        "slow24": (make_song(26.0), make_video(slow24_cuts(), duration=24.0)),
+        "slow_wide": (make_song(22.0), make_video(slow_wide_cuts(), duration=20.0)),
+        "slow_section": (make_song(), make_video(slow_section_cuts())),
+        "slow_drift": (make_song(90.0), make_video(np.arange(1, 56) * 0.52, 30.0, 115.4)),
+        "arrange": _arr_pair(),
+        "drop": drop_fixture(),
+    }
+
+
+def check_steps_match_plan(r):
+    steps, plan = r["steps"], r["plan"]
+    kept = lambda tool: [s for s in steps if s["tool"] == tool and s["kept"]]
+    # a tool's final record is either kept or explicitly marked as retained from an earlier kept step
+    for tool in {s["tool"] for s in steps}:
+        last = [s for s in steps if s["tool"] == tool][-1]
+        if not last["kept"] and kept(tool):
+            assert last["params"].get("retained") is True, (tool, last)
+    movers = [s for s in steps if s["kept"] and (s["tool"] in ("offset", "arrange", "splice")
+                                                  or (s["tool"] == "retime" and "offset" in s["params"]))]
+    if abs(plan["offset"]) > 1e-9:
+        assert movers, "offset in plan without a kept step"
+        assert abs(movers[-1]["params"].get("offset", 0.0) - plan["offset"]) <= 0.01, (movers[-1], plan["offset"])
+    if plan["tempo_ratio"] != 1:
+        assert kept("tempo")
+    if plan["segments"] and len(plan["segments"]) > 1:
+        assert kept("arrange") or kept("splice")
+    if plan["retime"] and plan["retime"]["sections"]:
+        rt = kept("retime")
+        assert rt and rt[-1]["params"]["sections"] == len(plan["retime"]["sections"])
+    else:
+        assert not kept("retime") or not plan["retime"]
+    if plan["nudges"]:
+        assert kept("micro") and kept("micro")[-1]["params"]["nudges"] == len(plan["nudges"])
+    else:
+        assert not kept("micro")
+
+
+@pytest.mark.parametrize("name", ["slow24", "slow_wide", "slow_section", "slow_drift", "arrange", "drop"])
+def test_steps_describe_plan(name):
+    song, vid = _consistency_pairs()[name]
+    r = auto_sync(song, vid, budget_s=40.0)
+    check_steps_match_plan(r)
+
+
+def test_slow24_retime_kept_and_reported():
+    song, vid = _consistency_pairs()["slow24"]
+    r = auto_sync(song, vid)
+    assert r["plan"]["retime"] and r["plan"]["retime"]["sections"]
+    rts = [s for s in r["steps"] if s["tool"] == "retime"]
+    assert rts[0]["kept"]
+    assert all(s["kept"] or s["params"].get("retained") for s in rts)

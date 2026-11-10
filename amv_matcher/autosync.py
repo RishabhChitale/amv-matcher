@@ -230,7 +230,7 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
     def left():
         return budget_s - (time.perf_counter() - t0)
 
-    state = {"cancelled": False, "open": None}
+    state = {"cancelled": False, "open": None, "pass": 0}
 
     def emit(tool, status, before, after=None, kept=None):
         if progress_cb is None:
@@ -261,6 +261,10 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
     def rec(tool, params, before, after, kept, rb=None, ra=None):
         """rb/ra: score results before/after (tightness is reported from them; ra only when kept)."""
         state["open"] = None
+        if state["pass"] > 0:               # later pass: say so, and say when an earlier kept result still stands
+            params = dict(params, **{"pass": state["pass"] + 1})
+            if not kept and any(s["tool"] == tool and s["kept"] for s in steps):
+                params["retained"] = True   # not replaced: the earlier kept step of this tool is still in the plan
         emit(tool, "end", before, after, kept)
         steps.append({"tool": tool, "params": params, "score_before": round(before, 2),
                       "score_after": round(after, 2), "kept": bool(kept),
@@ -288,6 +292,7 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
         return apply_warp(video, retime["warp"]) if retime else video
 
     for ps in range(max_passes):
+        state["pass"] = ps
         start_cur = cur
         for tool in order:
             if _done(cur, target) or left() <= 0 or cancel():
@@ -393,7 +398,10 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
                                 rp, wv, rr, kept, alt_off = rp2, wv2, rr2, True, o2
                     except Cancelled:
                         break
-                rec("retime", {"sections": len(rp["sections"]), "max_speed_dev": max_speed_dev},
+                rparams = {"sections": len(rp["sections"]), "max_speed_dev": max_speed_dev}
+                if kept and alt_off is not None:
+                    rparams["offset"] = round(alt_off, 3)       # the retime moved the offset (plan.offset)
+                rec("retime", rparams,
                     _tot(cur), _tot(rr) if kept else _tot(cur), kept, cur, rr)
                 if kept:
                     retime, cur_video, cur, nudges = rp, wv, rr, []
