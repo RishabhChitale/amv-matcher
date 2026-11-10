@@ -16,6 +16,8 @@ import av
 import numpy as np
 import soundfile as sf
 
+from . import winsafe
+
 SR = 44100
 COPYABLE_VIDEO = {"h264", "hevc", "mpeg4", "av1", "vp9"}   # codecs we remux into mp4 as-is
 
@@ -23,7 +25,7 @@ COPYABLE_VIDEO = {"h264", "hevc", "mpeg4", "av1", "vp9"}   # codecs we remux int
 # ---------------------------------------------------------------- extraction
 def _extract_key(path: Path) -> str:
     st = path.stat()
-    return hashlib.sha256(f"{path.resolve()}|{int(st.st_mtime)}|{st.st_size}".encode()).hexdigest()[:12]
+    return hashlib.sha256(f"{winsafe.norm_case_path(path.resolve())}|{int(st.st_mtime)}|{st.st_size}".encode()).hexdigest()[:12]
 
 
 def has_audio_stream(video_path) -> bool:
@@ -69,7 +71,7 @@ def extract_audio(video_path, out_dir: Path) -> Optional[Path]:
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(".tmp.wav")
     sf.write(str(tmp), data, SR, subtype="PCM_16")
-    os.replace(tmp, out)
+    winsafe.replace_retry(tmp, out)
     return out
 
 
@@ -120,7 +122,7 @@ def render_audio(song_path, segments, video_duration: float, out_path: Path,
     out_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = out_path.with_suffix(".tmp.wav")
     sf.write(str(tmp), out.T, SR, subtype="PCM_16")
-    os.replace(tmp, out_path)
+    winsafe.replace_retry(tmp, out_path)
     return n_total / SR
 
 
@@ -143,13 +145,13 @@ def export_mp4(video_path, audio_path, out_path: Path,
             raise
         except Exception:
             _export(video_path, audio_path, tmp, progress, copy=False)   # copy failed: re-encode
-        os.replace(tmp, out_path)
+        winsafe.replace_retry(tmp, out_path)
     finally:
-        tmp.unlink(missing_ok=True)
+        winsafe.safe_unlink(tmp)
 
 
 def _export(video_path, audio_path, tmp: Path, progress, copy: Optional[bool]) -> None:
-    tmp.unlink(missing_ok=True)
+    winsafe.safe_unlink(tmp)
     with av.open(str(video_path)) as vin:
         if not vin.streams.video:
             raise ExportError("The video has no video stream")

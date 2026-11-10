@@ -11,7 +11,7 @@ from fractions import Fraction
 
 import av
 
-from . import paths
+from . import paths, winsafe
 
 PROXY_H = 540
 WEB_CODECS = {".mp4": {"h264"}, ".m4v": {"h264"}, ".mov": {"h264"}, ".webm": {"vp8", "vp9"}}
@@ -26,7 +26,7 @@ def proxy_dir() -> Path:
 
 def _key(vp: Path) -> str:
     st = vp.stat()
-    return hashlib.sha1(f"{vp.resolve()}|{st.st_size}|{int(st.st_mtime)}|v1".encode()).hexdigest()[:16]
+    return hashlib.sha1(f"{winsafe.norm_case_path(vp.resolve())}|{st.st_size}|{int(st.st_mtime)}|v1".encode()).hexdigest()[:16]
 
 
 def video_codec(vp: Path) -> str:
@@ -57,12 +57,12 @@ def build(vp: Path) -> Path:
             return out
         out.parent.mkdir(parents=True, exist_ok=True)
         tmp = out.with_suffix(".tmp.mp4")
-        tmp.unlink(missing_ok=True)
+        winsafe.safe_unlink(tmp)
         try:
             _encode(vp, tmp)
-            os.replace(tmp, out)
+            winsafe.replace_retry(tmp, out)
         finally:
-            tmp.unlink(missing_ok=True)
+            winsafe.safe_unlink(tmp)
     return out
 
 
