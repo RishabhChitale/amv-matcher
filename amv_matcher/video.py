@@ -162,42 +162,74 @@ def events_tempo(cut_times, peak_times, duration: float):
     return cands[0][0], cands
 
 
-def analyze_video(path: str) -> dict:
+def _frames_cv2(path: str):
+    """Legacy reader (fallback): yields (fps, gray float32 160-wide frames)."""
     cap = cv2.VideoCapture(path)
     if not cap.isOpened():
-        raise ValueError("OpenCV could not open the video")
+        raise ValueError("could not open the video")
     src_fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
     if src_fps <= 0 or src_fps > 1000:
         src_fps = 30.0
     step = max(1, int(round(src_fps / MAX_FPS)))
-    fps = src_fps / step
+
+    def gen():
+        idx = 0
+        try:
+            while True:
+                if step > 1:
+                    if not cap.grab():
+                        break
+                    if idx % step != 0:
+                        idx += 1
+                        continue
+                    ok, frame = cap.retrieve()
+                else:
+                    ok, frame = cap.read()
+                if not ok or frame is None:
+                    break
+                idx += 1
+                h, w = frame.shape[:2]
+                small = cv2.resize(frame, (160, max(1, int(round(h * 160 / w)))), interpolation=cv2.INTER_AREA)
+                yield cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+        finally:
+            cap.release()
+    return src_fps / step, gen()
+
+
+def _frames(path: str):
+    """(fps, iterator of uint8 gray frames 160 px wide): threaded software decode, cv2 fallback."""
+    try:
+        from . import decode
+        src_fps = float(decode.probe_video(path).get("fps") or 0.0)
+        if src_fps <= 0 or src_fps > 1000:
+            src_fps = 30.0
+        fps = MAX_FPS if src_fps > MAX_FPS else src_fps
+        stream = decode.open_frames(path, width=160, fps=MAX_FPS, hw="off", pix_fmt=_PIX)
+
+        def gen():
+            with stream:
+                for _t, g in stream:
+                    yield g if _PIX == "gray" else cv2.cvtColor(g, cv2.COLOR_BGR2GRAY)
+        return fps, gen()
+    except Exception:
+        return _frames_cv2(path)
+
+
+_PIX = "bgr24"    # "bgr24" + cv2.cvtColor gives exact parity with the old reader (~+10% cost)
+
+
+def analyze_video(path: str) -> dict:
+    fps, frames = _frames(path)
 
     diffs, thumbs, bright = [], [], []
     prev = None
-    idx = 0
-    while True:
-        if step > 1:
-            ok = cap.grab()
-            if not ok:
-                break
-            if idx % step != 0:
-                idx += 1
-                continue
-            ok, frame = cap.retrieve()
-        else:
-            ok, frame = cap.read()
-        if not ok or frame is None:
-            break
-        idx += 1
-        h, w = frame.shape[:2]
-        small = cv2.resize(frame, (160, max(1, int(round(h * 160 / w)))), interpolation=cv2.INTER_AREA)
-        gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    for g in frames:
+        gray = g.astype(np.float32)
         if prev is not None:
             diffs.append(float(np.mean(np.abs(gray - prev))))
         bright.append(float(gray.mean()))
         thumbs.append(cv2.resize(gray, (32, 18), interpolation=cv2.INTER_AREA).astype(np.uint8))
         prev = gray
-    cap.release()
     if len(diffs) < 8:
         raise ValueError("video too short or no decodable frames")
 

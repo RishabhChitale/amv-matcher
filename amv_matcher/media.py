@@ -154,6 +154,8 @@ def _export(video_path, audio_path, tmp: Path, progress, copy: Optional[bool]) -
         if not vin.streams.video:
             raise ExportError("The video has no video stream")
         vs_in = vin.streams.video[0]
+        vs_in.thread_type = "AUTO"
+        vs_in.thread_count = 0
         codec = vs_in.codec_context.name
         do_copy = (codec in COPYABLE_VIDEO) if copy is None else copy
         dur = float(vin.duration / av.time_base) if vin.duration else 0.0
@@ -211,8 +213,7 @@ def _export(video_path, audio_path, tmp: Path, progress, copy: Optional[bool]) -
             else:
                 tb = Fraction(1, 1) / Fraction(vs_in.average_rate or 30)
                 for i, frame in enumerate(vin.decode(vs_in)):
-                    img = frame.to_ndarray(format="rgb24")[: vs.height, : vs.width]
-                    nf = av.VideoFrame.from_ndarray(np.ascontiguousarray(img), format="rgb24")
+                    nf = frame.reformat(width=vs.width, height=vs.height, format="yuv420p")
                     nf.pts, nf.time_base = i, tb
                     for p in vs.encode(nf):
                         send(p)

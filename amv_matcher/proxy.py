@@ -72,6 +72,7 @@ def _encode(vp: Path, tmp: Path) -> None:
             raise RuntimeError("no video stream")
         vs_in = vin.streams.video[0]
         vs_in.thread_type = "AUTO"
+        vs_in.thread_count = 0
         w, h = vs_in.width, vs_in.height
         nh = min(PROXY_H, h)
         nh -= nh % 2
