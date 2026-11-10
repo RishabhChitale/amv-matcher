@@ -453,6 +453,22 @@ def selftest(log_path: str = "") -> int:
         from amv_matcher import render
         assert str(render.rife_dir()).startswith(str(paths.CACHE)), render.rife_dir()
         print("selftest ok: rife dir =", render.rife_dir(), "| installed:", rt["installed"], "| frozen:", paths.FROZEN)
+        # 6. one real job through the worker pool: proves spawn + freeze_support + kind imports when frozen
+        from amv_matcher.workers import WorkerPool   # own 1-worker pool: independent of AMV_WORKERS
+        wp = WorkerPool(workers=1)
+        try:
+            t2 = time.time()
+            wjid = wp.submit("probe", str(vp), 0)
+            while True:
+                st = wp.status(wjid)
+                assert st is not None and st["state"] not in ("error", "cancelled"), st
+                if st["state"] == "done":
+                    break
+                assert time.time() - t2 < 60, f"worker pool job not done in 60 s: {st}"
+                time.sleep(0.2)
+        finally:
+            wp.shutdown()
+        print("selftest ok: worker pool job (probe) -> done in", round(time.time() - t2, 1), "s")
         s.stop()
         return 0
     except Exception as e:  # noqa: BLE001

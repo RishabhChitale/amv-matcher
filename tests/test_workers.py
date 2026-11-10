@@ -376,3 +376,18 @@ def test_watchdog_errors_job_stuck_queued_with_no_worker(mkpool, monkeypatch):
     wait_for(p, j, timeout=10)
     st = p.status(j)
     assert st["state"] == "error" and "stalled" in st["error"]
+
+def test_on_battery_without_psutil(monkeypatch):
+    """The frozen app has no psutil: on_battery() must fall back and never raise."""
+    import builtins
+    import sys
+    from amv_matcher import workers
+    monkeypatch.setitem(sys.modules, "psutil", None)   # import psutil -> ImportError
+    real = builtins.__import__
+
+    def blocked(name, *a, **k):
+        if name == "psutil":
+            raise ImportError("blocked")
+        return real(name, *a, **k)
+    monkeypatch.setattr(builtins, "__import__", blocked)
+    assert workers.on_battery() in (True, False, None)
