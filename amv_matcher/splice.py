@@ -29,6 +29,7 @@ import math
 import numpy as np
 
 from . import score as S
+from .retime import Cancelled
 
 BEAT_PER_BAR = 4
 CUT_PENALTY = 1.5          # combined-score points charged per cut
@@ -376,7 +377,7 @@ def _empty(reason, phase):
 
 
 def plan_splice(song: dict, video: dict, max_cuts: int, min_segment_s: float = 2.0,
-                allow_negative: bool = False, lead_s: float = None) -> dict:
+                allow_negative: bool = False, lead_s: float = None, *, should_cancel=None) -> dict:
     """Plan: {"eligible", "segments": [{"src_start","src_end","dst_start"}], "cuts", scores...,
     "lead_silence_s"}.
 
@@ -424,6 +425,8 @@ def plan_splice(song: dict, video: dict, max_cuts: int, min_segment_s: float = 2
             if 0 <= o <= sd - min_segment_s and all(abs(o - c) > 1e-6 for c in cands):
                 cands.append(o)
     for o in cands:
+        if should_cancel is not None and should_cancel():
+            raise Cancelled()
         k0 = int(np.searchsorted(bars, o - 1e-6))
         if k0 >= K:
             continue
@@ -435,6 +438,8 @@ def plan_splice(song: dict, video: dict, max_cuts: int, min_segment_s: float = 2
         r0 = R - 1 if g + L >= min_segment_s - 1e-9 else min(R - 1, int(math.ceil((g + L) / L - 1e-9)) - 1)
         plans = _dp(gain, int(max_cuts), R, lambda s, g=g: vd - (g + s * L) >= min_segment_s - 1e-9, (k0, r0))
         for _v, c, path in plans:
+            if should_cancel is not None and should_cancel():
+                raise Cancelled()
             segs = _path_to_plan(path, bars, vd, L, o)
             if len(segs) - 1 > max_cuts or not _valid(segs, vd, min_segment_s, sd):
                 continue

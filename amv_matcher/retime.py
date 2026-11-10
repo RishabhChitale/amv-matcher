@@ -13,6 +13,11 @@ LOOKBACK = 6             # matched events a chain may skip back over
 NEAR = 2                 # candidate beats per side of an event
 TAIL_STEP_S = 1.0        # video seconds per tail ramp step
 SPEED_COST = 0.02        # tie-break: prefer speeds near 1
+CANCEL_EVERY = 8         # DP outer iterations between should_cancel() polls
+
+
+class Cancelled(Exception):
+    """Raised by a planner when its should_cancel() callback returns True (caller keeps its best-so-far)."""
 
 
 def _wmap(warp, t):
@@ -81,7 +86,7 @@ def _events_for_dp(song, video, offset, ev_t, ev_w, vd):
     return merged, sync_unit, arc_unit, drops, lulls
 
 
-def _anchors(events, sync_unit, arc_unit, drops, lulls, beats_out, dev, jump):
+def _anchors(events, sync_unit, arc_unit, drops, lulls, beats_out, dev, jump, should_cancel=None):
     """DP over (event, candidate output time, incoming speed bucket).
 
     Chain links have speed in [1-dev, 1+dev]; consecutive link speeds differ by <= jump;
@@ -117,6 +122,8 @@ def _anchors(events, sync_unit, arc_unit, drops, lulls, beats_out, dev, jump):
         cands.append(lst)
     ent = [[dict() for _ in lst] for lst in cands]   # ent[i][ci][bucket] = (score, prev_key|None, speed)
     for i, ev in enumerate(events):
+        if should_cancel is not None and i % CANCEL_EVERY == 0 and should_cancel():
+            raise Cancelled()
         e = ev["t"]
         for ci, (c, val) in enumerate(cands[i]):
             slot = ent[i][ci]
@@ -177,7 +184,7 @@ def _sections(warp, min_section_s, speed_tol=0.02):
 
 
 def plan_retime(song: dict, video: dict, offset: float, max_speed_dev: float = 0.25,
-                min_section_s: float = 0.75, lead_s: float = None) -> dict:
+                min_section_s: float = 0.75, lead_s: float = None, *, should_cancel=None) -> dict:
     """Warp video time so events land on the nearest suitable beats (song at `offset`).
 
     Output time t_out = song time - offset. speed = video seconds per output second.
@@ -195,7 +202,7 @@ def plan_retime(song: dict, video: dict, offset: float, max_speed_dev: float = 0
     beats = beats[(beats > 0) & (beats < vd / max(1e-6, 1.0 - max_speed_dev) + 1.0)]
     before = S.score_at(song, video, offset, lead_s=lead_s)["sync_pct"]
     events, sync_unit, arc_unit, drops, lulls = _events_for_dp(song, video, offset, ev_t, ev_w, vd)
-    anchors = _anchors(events, sync_unit, arc_unit, drops, lulls, beats, max_speed_dev, DP_JUMP) \
+    anchors = _anchors(events, sync_unit, arc_unit, drops, lulls, beats, max_speed_dev, DP_JUMP, should_cancel) \
         if events and (len(beats) or len(drops) or lulls) else []
     warp = [[0.0, 0.0]] + [[a, b] for a, b in anchors]
     if not anchors:

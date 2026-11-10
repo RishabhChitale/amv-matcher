@@ -420,7 +420,7 @@ def test_effort_rearranged_fraction_and_scale():
 def test_natural_total_exposed():
     r = auto_sync(make_song(90.0), make_video(np.arange(1, 56) * 0.52, duration=30.0, tempo=115.4))
     f = r["final"]
-    assert f["natural_total_pct"] == int(round(r["steps"][0]["score_before"]))
+    assert f["natural_total_pct"] == int(round(r["steps"][0]["score_after"]))
     assert f["natural_total_pct"] <= f["total_pct"]
 
 
@@ -447,3 +447,79 @@ def test_original_unlock_restores_old_behaviour():
     b = auto_sync(song, vid, original=True, unlock_original=True)
     assert b["plan"]["original_locked"] is False and "original audio locked" not in b["limits_hit"]
     assert b["final"]["total_pct"] == a["final"]["total_pct"]
+
+
+def _cb_case():
+    cuts = np.arange(1, 56) * 0.52
+    return make_song(90.0), make_video(cuts, duration=30.0, tempo=115.4)
+
+
+def test_progress_events_pair_up_and_match_steps():
+    song, vid = _cb_case()
+    ev = []
+    r = auto_sync(song, vid, progress_cb=ev.append)
+    assert ev and set(ev[0]) == {"step", "status", "score_before", "score_after", "kept", "elapsed_s"}
+    assert ev[0]["step"] == "offset" and ev[0]["status"] == "start"
+    assert ev[0]["score_after"] is None and ev[0]["kept"] is None
+    stack = []
+    for e in ev:                                     # strictly alternating start/end per step
+        if e["status"] == "start":
+            assert not stack
+            stack.append(e["step"])
+        else:
+            assert stack == [e["step"]] and e["kept"] in (True, False) and e["score_after"] is not None
+            stack.pop()
+    assert not stack
+    assert [e["elapsed_s"] for e in ev] == sorted(e["elapsed_s"] for e in ev)
+    ends = [e for e in ev if e["status"] == "end"]
+    # every recorded step of the winning path has a matching end event (same tool, kept flag, scores)
+    for s in r["steps"]:
+        assert any(e["step"] == s["tool"] and e["kept"] == s["kept"] and abs(e["score_after"] - s["score_after"]) < 0.01
+                   and abs(e["score_before"] - s["score_before"]) < 0.01 for e in ends)
+    assert {e["step"] for e in ev} <= {"offset", "tempo", "splice", "arrange", "retime", "micro"}
+
+
+def test_progress_callback_exception_is_swallowed():
+    song, vid = _cb_case()
+
+    def boom(_e):
+        raise RuntimeError("nope")
+    a = auto_sync(song, vid, progress_cb=boom, should_cancel=lambda: 1 / 0)
+    b = auto_sync(song, vid)
+    assert a["final"]["total_pct"] == b["final"]["total_pct"] and "cancelled" not in a["limits_hit"]
+
+
+def test_cancel_before_start_returns_baseline():
+    song, vid = _cb_case()
+    ev = []
+    r = auto_sync(song, vid, progress_cb=ev.append, should_cancel=lambda: True)
+    assert "cancelled" in r["limits_hit"] and r["eligible"]
+    assert [s["tool"] for s in r["steps"]] == ["offset"]
+    assert r["final"]["total_pct"] == r["final"]["natural_total_pct"]
+    assert r["plan"]["retime"] is None and not r["plan"]["segments"] or len(r["plan"]["segments"]) <= 1
+    assert [e["step"] for e in ev] == ["offset", "offset"]
+
+
+def test_cancel_mid_run_returns_valid_plan_at_least_baseline():
+    song, vid = _cb_case()
+    base = auto_sync(song, vid, should_cancel=lambda: True)["final"]["total_pct"]
+    n = {"ends": 0}
+
+    def cb(e):
+        if e["status"] == "end":
+            n["ends"] += 1
+    r = auto_sync(song, vid, progress_cb=cb, should_cancel=lambda: n["ends"] >= 1)
+    assert "cancelled" in r["limits_hit"]
+    assert r["final"]["total_pct"] >= base and r["plan"]["offset"] is not None
+    full = auto_sync(song, vid)
+    assert "cancelled" not in full["limits_hit"]
+
+
+def test_cancel_inside_retime_loop():
+    from amv_matcher.retime import Cancelled, plan_retime
+    import pytest
+    song, vid = make_song(), make_video(slow_section_cuts())
+    with pytest.raises(Cancelled):
+        plan_retime(song, vid, 0.0, should_cancel=lambda: True)
+    r = auto_sync(song, vid, min_gain=0.05, should_cancel=lambda: True)
+    assert "cancelled" in r["limits_hit"] and r["final"]["total_pct"] >= 0
