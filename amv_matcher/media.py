@@ -10,6 +10,8 @@ import os
 from pathlib import Path
 from typing import Callable, Optional
 
+from fractions import Fraction
+
 import av
 import numpy as np
 import soundfile as sf
@@ -207,10 +209,11 @@ def _export(video_path, audio_path, tmp: Path, progress, copy: Optional[bool]) -
                     p.stream = vs
                     send(p)
             else:
-                for frame in vin.decode(vs_in):
+                tb = Fraction(1, 1) / Fraction(vs_in.average_rate or 30)
+                for i, frame in enumerate(vin.decode(vs_in)):
                     img = frame.to_ndarray(format="rgb24")[: vs.height, : vs.width]
                     nf = av.VideoFrame.from_ndarray(np.ascontiguousarray(img), format="rgb24")
-                    nf.pts, nf.time_base = frame.pts, frame.time_base
+                    nf.pts, nf.time_base = i, tb
                     for p in vs.encode(nf):
                         send(p)
                 for p in vs.encode(None):

@@ -7,6 +7,8 @@ import os
 import threading
 from pathlib import Path
 
+from fractions import Fraction
+
 import av
 
 from . import paths
@@ -79,9 +81,11 @@ def _encode(vp: Path, tmp: Path) -> None:
             vs = out.add_stream("libx264", rate=rate)
             vs.width, vs.height, vs.pix_fmt = nw, nh, "yuv420p"
             vs.options = {"preset": "veryfast", "crf": "26", "movflags": "+faststart"}
-            for frame in vin.decode(vs_in):
+            tb = Fraction(1, 1) / Fraction(rate)
+            for i, frame in enumerate(vin.decode(vs_in)):
                 f = frame.reformat(width=nw, height=nh, format="yuv420p")
-                f.pts = None
+                f.pts = i            # source time_base (e.g. 1/600) must not leak into the 1/rate encoder
+                f.time_base = tb
                 for pkt in vs.encode(f):
                     out.mux(pkt)
             for pkt in vs.encode(None):
