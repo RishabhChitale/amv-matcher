@@ -364,7 +364,7 @@ class _Slot:
 class WorkerPool:
     def __init__(self, workers=None, timeout=DEFAULT_TIMEOUT, kind_modules=(),
                  spawn_timeout=DEFAULT_SPAWN_TIMEOUT, battery_detector=on_battery, battery_poll=15.0, max_events=5000):
-        n = workers if workers else max(1, (os.cpu_count() or 2) - 1)
+        n = workers if workers else max(1, (os.cpu_count() or 2) - 2)   # keep 2 cores free for the UI/WebKit
         self._ctx = mp.get_context("spawn")
         self._kind_modules = list(kind_modules)
         self._timeout = timeout  # counts from the worker's 'started' handshake only

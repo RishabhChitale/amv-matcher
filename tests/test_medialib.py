@@ -171,3 +171,58 @@ def test_uses_replace_retry(env, monkeypatch):
     monkeypatch.setattr(media_lib, "replace_retry", lambda a, b: (calls.append(1), real(a, b))[1])
     media_lib.add_root(str(env[2]))
     assert calls
+
+
+def test_probe_persistence_is_throttled(env, tmp_path, monkeypatch):
+    """probe() must not rewrite probe.json on every call (U3 perf)."""
+    c, root, tmp = env
+    writes = []
+    real = media_lib._probe_flush
+
+    def spy(cf, force=False):
+        before = cf.stat().st_mtime_ns if cf.exists() else None
+        real(cf, force)
+        after = cf.stat().st_mtime_ns if cf.exists() else None
+        writes.append(before != after)
+    monkeypatch.setattr(media_lib, "_probe_flush", spy)
+    vids = []
+    for i in range(5):
+        v = root / f"v{i}.mp4"
+        make_video(str(v), seconds=1.0)
+        vids.append(v)
+    for v in vids:
+        media_lib.probe(str(v))
+    assert sum(writes) <= 2, writes
+
+
+def test_thumb_decodes_are_capped(env, monkeypatch):
+    """Concurrent thumb requests never run more than 2 decodes at once."""
+    import threading
+    import time
+    c, root, tmp = env
+    live = {"n": 0, "max": 0}
+    lock = threading.Lock()
+    paths = []
+    for i in range(6):
+        v = root / f"t{i}.mp4"
+        make_video(str(v), seconds=1.0)
+        paths.append(str(v))
+
+    import av
+    real_open = av.open
+
+    def slow(*a, **k):
+        with lock:
+            live["n"] += 1
+            live["max"] = max(live["max"], live["n"])
+        time.sleep(0.1)
+        try:
+            return real_open(*a, **k)
+        finally:
+            with lock:
+                live["n"] -= 1
+    monkeypatch.setattr(av, "open", slow)
+    ts = [threading.Thread(target=media_lib.thumb, args=(p, 0.1)) for p in paths]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    assert live["max"] <= 2, live

@@ -391,3 +391,15 @@ def test_on_battery_without_psutil(monkeypatch):
         return real(name, *a, **k)
     monkeypatch.setattr(builtins, "__import__", blocked)
     assert workers.on_battery() in (True, False, None)
+
+
+def test_default_worker_count_keeps_two_cores_free(monkeypatch):
+    """Default pool size leaves 2 cores for the UI (never below 1)."""
+    import amv_matcher.workers as workers
+    for cpus, want in ((2, 1), (4, 2), (8, 6), (None, 1)):
+        monkeypatch.setattr(workers.os, "cpu_count", lambda c=cpus: c)
+        p = WorkerPool()
+        try:
+            assert len(p._slots) == want, (cpus, len(p._slots))
+        finally:
+            p.shutdown()

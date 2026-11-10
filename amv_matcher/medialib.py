@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -140,12 +141,13 @@ def list_dir(path: str) -> dict:
     if not p.is_dir():
         raise NotADirectoryError(str(p))
     folders, files = [], []
+    roots = _resolved_roots()   # once per listing (was re-read from disk for every entry)
     for e in p.iterdir():
         if e.name.startswith("."):
             continue
         try:
             rp = e.resolve()
-            if not under_root(rp):       # a symlink pointing out of every root is not listed
+            if not any(is_relative_to_ci(rp, r) for r in roots):       # a symlink pointing out of every root is not listed
                 continue
             if e.is_dir():
                 folders.append({"name": e.name, "path": str(e)})
@@ -193,6 +195,33 @@ def _do_probe(p: Path) -> dict:
     return out
 
 
+_PROBE_MEM: dict = {}      # cache-file path -> {key: result}; loaded once, flushed at most once a second
+_PROBE_FLUSH: dict = {}    # cache-file path -> time of the last write
+_PROBE_FLUSH_EVERY = 1.0
+
+
+def _probe_cache(cf: Path) -> dict:
+    k = str(cf)
+    if k not in _PROBE_MEM:
+        try:
+            _PROBE_MEM[k] = json.loads(cf.read_text())
+        except (OSError, ValueError):
+            _PROBE_MEM[k] = {}
+    return _PROBE_MEM[k]
+
+
+def _probe_flush(cf: Path, force: bool = False) -> None:
+    k = str(cf)
+    now = time.monotonic()
+    if not force and now - _PROBE_FLUSH.get(k, 0.0) < _PROBE_FLUSH_EVERY:
+        return
+    _PROBE_FLUSH[k] = now
+    cf.parent.mkdir(parents=True, exist_ok=True)
+    tmp = cf.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(_PROBE_MEM[k]))
+    replace_retry(tmp, cf)
+
+
 def probe(path: str) -> dict:
     p = safe_path(path)
     if not p.is_file() or kind_of(p) is None:
@@ -200,27 +229,20 @@ def probe(path: str) -> dict:
     key = _key(p)
     cf = Path(CACHE) / "probe.json"
     with _lock:
-        try:
-            cache = json.loads(cf.read_text())
-        except (OSError, ValueError):
-            cache = {}
-    if key in cache:
-        return cache[key]
+        hit = _probe_cache(cf).get(key)
+    if hit is not None:
+        return hit
     res = _do_probe(p)
     with _lock:
-        try:
-            cache = json.loads(cf.read_text())
-        except (OSError, ValueError):
-            cache = {}
-        cache[key] = res
-        cf.parent.mkdir(parents=True, exist_ok=True)
-        tmp = cf.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(cache))
-        replace_retry(tmp, cf)
+        _probe_cache(cf)[key] = res
+        _probe_flush(cf)   # throttled: not a whole-file rewrite per probe
     return res
 
 
 # ---------------------------------------------------------------- thumbnails
+_THUMB_SLOTS = threading.BoundedSemaphore(2)
+
+
 def thumb(path: str, t: Optional[float] = None, w: int = 240) -> Path:
     """Path of a cached JPEG frame at t seconds (default 10% of the duration), scaled to width w."""
     import av
@@ -238,13 +260,16 @@ def thumb(path: str, t: Optional[float] = None, w: int = 240) -> Path:
     if out.is_file():
         return out
     frame = None
-    with av.open(str(p)) as c:
-        s = c.streams.video[0]
-        c.seek(int(t / float(s.time_base)), stream=s, backward=True, any_frame=False)
-        for f in c.decode(s):
-            frame = f
-            if f.time is not None and f.time >= t:
-                break
+    with _THUMB_SLOTS:   # at most 2 decodes at once, so a folder of lazy thumbnails can't starve the UI
+        if out.is_file():
+            return out
+        with av.open(str(p)) as c:
+            s = c.streams.video[0]
+            c.seek(int(t / float(s.time_base)), stream=s, backward=True, any_frame=False)
+            for f in c.decode(s):
+                frame = f
+                if f.time is not None and f.time >= t:
+                    break
     if frame is None:
         raise RuntimeError("no frame")
     h = max(2, int(round(frame.height * w / frame.width / 2)) * 2)
