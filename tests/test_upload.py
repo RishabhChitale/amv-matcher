@@ -132,3 +132,23 @@ def test_delete_clears_only_uploads(env):
     assert c.delete("/api/uploads").json() == {"freed": 9}
     assert c.get("/api/uploads").json() == {"count": 0, "bytes": 0}
     assert keep.exists() and s.exists() and v.exists()
+
+
+def test_analyze_video_and_empty_score_songs(env):
+    server, c, v, s, tmp = env
+    uv = up(c, "video", "jump.avi", v.read_bytes()).json()["path"]
+    r = c.post("/api/analyze-video", json={"video_path": uv})
+    assert r.status_code == 200, r.text
+    info = r.json()["video"]
+    for k in ("duration", "fps", "motion_tempo_bpm", "cut_times", "energy_curve", "segments", "shots"):
+        assert k in info
+    # same object as the scan's video section
+    jid = c.post("/api/score-songs", json={"video_path": uv, "song_paths": []}).json()
+    assert jid["video"] == info and jid["results"] == [] and jid["too_short"] == []
+    # second call served from the cache
+    assert c.post("/api/analyze-video", json={"video_path": uv}).json()["video"] == info
+    # guards: bad Origin, unscanned path outside uploads, not a video
+    assert c.post("/api/analyze-video", json={"video_path": uv}, headers={"Origin": "https://evil.example"}).status_code == 403
+    assert c.post("/api/analyze-video", json={"video_path": str(s)}).status_code == 403
+    assert c.post("/api/analyze-video", json={"video_path": "/etc/passwd"}).status_code == 403
+    assert c.post("/api/analyze-video", json={"video_path": str(tmp / "uploads" / ".." / "x.avi")}).status_code == 403

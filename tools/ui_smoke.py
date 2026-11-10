@@ -159,15 +159,17 @@ def main():
         c.ev("document.getElementById('b-play').click()")
         c.pump(3.0)
         d = c.ev("({v:document.getElementById('vid').currentTime,off:S.offset,apaused:document.getElementById('aud').paused,muted:document.getElementById('vid').muted})")
-        drifts = []
-        for _ in range(8):
-            x = c.ev("(()=>{const v=document.getElementById('vid'),a=document.getElementById('aud');return (a.currentTime-S.offset)-v.currentTime})()")
-            drifts.append(abs(x) * 1000)
-            c.pump(0.15)
-        drifts.sort()
-        drift = drifts[len(drifts) // 2]
-        check("plays: video advanced ~3 s, muted, audio playing", d["v"] > 2.0 and d["muted"] and not d["apaused"], str(d))
-        check("A/V drift < 40 ms (median of 8)", drift < 40, f"{drift:.1f} ms, samples {[round(x) for x in drifts]}")
+        drifts = sorted(c.ev("""new Promise(res=>{const v=document.getElementById('vid'),a=document.getElementById('aud'),out=[],t0=performance.now();
+          const f=()=>{out.push(Math.abs((a.currentTime-S.offset)-v.currentTime)*1000);performance.now()-t0<3000?requestAnimationFrame(f):res(out)};requestAnimationFrame(f)})"""))
+        d = c.ev("({v:document.getElementById('vid').currentTime,off:S.offset,apaused:document.getElementById('aud').paused,muted:document.getElementById('vid').muted})")
+        med, p95 = drifts[len(drifts) // 2], drifts[min(len(drifts) - 1, int(len(drifts) * 0.95))]
+        try:
+            load = os.getloadavg()[0]
+        except OSError:
+            load = -1
+        check("plays: video advanced, muted, audio playing", d["v"] > 2.0 and d["muted"] and not d["apaused"], str(d))
+        check("A/V drift over 3 s of playback: median < 25 ms and p95 < 60 ms", med < 25 and p95 < 60,
+              f"median {med:.1f} ms, p95 {p95:.1f} ms, n={len(drifts)}, load avg {load:.1f}")
         tc = c.ev("document.getElementById('tc').textContent")
         check("timecode HH:MM:SS:FF format", bool(__import__('re').match(r"^\d\d:\d\d:\d\d:\d\d$", tc or "")), tc)
 

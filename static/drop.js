@@ -1,6 +1,6 @@
 'use strict';
 // Drag-and-drop / Browse uploads. Depends on app.js globals (S, $, esc, loadVideo, renderResults, selectSong, pause, draw...).
-const D = {videoPath: '', queue: [], dropped: new Set(), chain: Promise.resolve()};
+const D = {names: {}, videoPath: '', queue: [], dropped: new Set(), chain: Promise.resolve()};
 const VEXT = ['.mp4', '.mov', '.mkv', '.webm', '.avi', '.m4v'], AEXT = ['.mp3', '.wav', '.m4a', '.flac', '.ogg', '.aac'];
 const extOf = n => { const i = n.lastIndexOf('.'); return i < 0 ? '' : n.slice(i).toLowerCase(); };
 const kindOf = n => VEXT.includes(extOf(n)) ? 'video' : AEXT.includes(extOf(n)) ? 'song' : '';
@@ -42,12 +42,19 @@ async function scoreSongs(videoPath, paths) {
   return j;
 }
 const curVideo = () => S.video ? S.videoPath : D.videoPath;
-const markDropped = r => { if (D.dropped.has(r.path)) r.dropped = true; return r; };
+const markDropped = r => { shown(r); if (D.dropped.has(r.path)) r.dropped = true; return r; };
 const byScore = (a, b) => (b.total_pct - a.total_pct) || (b.sync_pct - a.sync_pct);
 
+const shown = r => { if (r && D.names[r.path]) r.name = D.names[r.path]; return r; };
+function setVideoBox(path) {
+  const el = $('video-path');
+  if (path && D.names[path]) { el.value = D.names[path] + ' (uploaded)'; el.dataset.real = path; el.title = path; }
+  else { el.value = path || el.value; delete el.dataset.real; el.title = ''; }
+}
+$('video-path').addEventListener('input', () => { delete $('video-path').dataset.real; $('video-path').title = ''; });
 function applyVideo(j) {
   if (j.video && (!S.video || S.videoPath !== j.video_path)) { pause(); loadVideo({video: j.video, video_path: j.video_path}); }
-  $('video-path').value = j.video_path || $('video-path').value;
+  if (j.video_path) setVideoBox(j.video_path);
 }
 // Score `paths` against the current video; replace=true swaps the whole list, otherwise merge by path.
 async function scoreAndShow(paths, replace) {
@@ -60,12 +67,12 @@ async function scoreAndShow(paths, replace) {
     else {
       const seen = new Set(paths);
       results = S.results.filter(r => !seen.has(r.path)).concat((j.results || []).map(markDropped));
-      short = (S.short || []).filter(r => !seen.has(r.path)).concat(j.too_short || []);
+      short = (S.short || []).filter(r => !seen.has(r.path)).concat((j.too_short || []).map(shown));
     }
     results.sort(byScore); S.results = results;
     const first = results.find(r => D.dropped.has(r.path)) || results[0];
     S.sel = hadSel ? (results.find(r => r.path === hadSel) || null) : S.sel;
-    renderResults({too_short: short, skipped: (S.skipped || []).concat(j.skipped || [])});
+    renderResults({too_short: short, skipped: (S.skipped || []).concat((j.skipped || []).map(shown))});
     $('status').textContent = j.message || '';
     if (!S.sel && first) selectSong(first);
     t.close();
@@ -81,7 +88,7 @@ async function doVideo(file) {
   try {
     setP(0); pause();
     const up = await upload(file, 'video', setP);
-    D.videoPath = up.path; $('video-path').value = up.path; D.dropped.add(up.path);
+    D.names[up.path] = up.name || file.name; D.videoPath = up.path; setVideoBox(up.path); D.dropped.add(up.path);
     fg.style.strokeDashoffset = 0; txt.textContent = 'Analyzing...';
     $('empty').classList.add('hidden');
     const known = [...new Set([...S.results, ...(S.short || [])].map(r => r.path).concat(D.queue))];
@@ -99,7 +106,7 @@ async function doSongs(files) {
     n++; const t = toast(`${n}/${files.length} ${f.name} 0%`, {pct: 0});
     try {
       const up = await upload(f, 'song', p => t.set(`${n}/${files.length} ${f.name} ${Math.round(p * 100)}%`, p * 100));
-      paths.push(up.path); D.dropped.add(up.path);
+      paths.push(up.path); D.names[up.path] = up.name || f.name; D.dropped.add(up.path);
     } catch (e) { note(`${f.name}: ${e.message}`, true); }
     t.close();
   }

@@ -108,6 +108,10 @@ Body: `{"video_path": str, "song_paths": [str, ...]}`. The video must be a scann
 - **One song: synchronous.** The response is the finished job plus `job_id`: `{"job_id": "...", "status": "done", "results": [...], "too_short": [], "skipped": [], "video": {...}, ...}`.
 - **Two or more songs: job + progress.** Response `{"job_id": "a1b2c3d4e5f6", "status": "running"}`; poll `GET /api/scan/{job_id}` (same object as a scan).
 A client can handle both: if `status == "done"` use it, else poll.
+- **Zero songs: video analysis only.** `song_paths: []` is allowed and returns synchronously `{"job_id", "status": "done", "video": {...}, "results": [], "too_short": [], "skipped": []}`.
+
+### POST /api/analyze-video
+Body: `{"video_path": str}`. The video must be under `.uploads/` or a previously scanned video (else 403; bad Origin 403; undecodable video 422). Returns `{"video_path": "<resolved>", "video": {...}}` where `video` is the same object as the `video` section of a scan (`duration`, `fps`, `motion_tempo_bpm`, `cut_times`, `cut_count`, `energy_curve`, `energy_hz`, `segments`, `lulls`, `peak_segments`, `shots`, `peak_count`). Synchronous; the result is cached in memory per video, so repeat calls are instant.
 
 ### GET /api/uploads
 ```json

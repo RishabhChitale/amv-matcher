@@ -75,8 +75,9 @@ button.danger{background:rgba(255,59,78,.25);border-color:var(--red)}
 #up-txt{font-size:12px;text-align:center;padding:0 16px}
 #tl-wrap,#results-panel{position:relative}
 body.dragging .topbar,body.dragging .vcard,body.dragging .transport,body.dragging #fx,body.dragging .hint{opacity:.5;transition:opacity var(--ease)}
-body.dragging .dz::after{content:attr(data-dz);position:absolute;inset:4px;z-index:20;pointer-events:none;display:flex;align-items:center;justify-content:center;
-  border:2px dashed var(--v);border-radius:12px;background:rgba(139,92,246,.12);color:#fff;font-weight:700;font-size:15px;letter-spacing:.4px;
-  box-shadow:0 0 22px rgba(139,92,246,.6),inset 0 0 22px rgba(34,211,238,.3);border-image:none;animation:dzp 1.2s ease-in-out infinite alternate}
-body.dragging .dz.bad::after{content:attr(data-bad);border-color:var(--red);background:rgba(255,59,78,.16);box-shadow:0 0 22px rgba(255,59,78,.6);animation:none}
+body.dragging .dz::before{content:'';position:absolute;inset:0;z-index:19;pointer-events:none;border-radius:inherit;background:rgba(14,15,18,.7);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);outline:2px dashed var(--v);outline-offset:-4px;animation:dzp 1.2s ease-in-out infinite alternate}
+body.dragging .dz::after{content:'\2913\00a0\00a0' attr(data-dz);position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:20;pointer-events:none;white-space:nowrap;
+  padding:9px 18px;border-radius:999px;background:rgba(139,92,246,.35);border:1px solid var(--v);color:#fff;font-weight:700;font-size:14px;letter-spacing:.3px;box-shadow:0 0 22px rgba(139,92,246,.6)}
+body.dragging .dz.bad::before{outline-color:var(--red);animation:none}
+body.dragging .dz.bad::after{content:'\2715\00a0\00a0' attr(data-bad);background:rgba(255,59,78,.3);border-color:var(--red);box-shadow:0 0 22px rgba(255,59,78,.6)}
 @keyframes dzp{from{border-color:var(--v)}to{border-color:var(--c)}}

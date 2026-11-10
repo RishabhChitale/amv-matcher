@@ -302,18 +302,32 @@ def _run_score_songs(job_id: str, vp: Path, songs: list):
         job.update(status="error", error=f"{type(e).__name__}: {e}", message=str(e))
 
 
+class AnalyzeVideoRequest(BaseModel):
+    video_path: str
+
+
+@app.post("/api/analyze-video", dependencies=[Depends(_origin_guard)])
+def analyze_video_endpoint(req: AnalyzeVideoRequest):
+    vp = _safe_video(req.video_path)
+    video = VIDEOS.get(str(vp))
+    if video is None:
+        try:
+            video = VIDEOS[str(vp)] = analyze_video(str(vp))
+        except Exception as e:
+            raise HTTPException(422, f"Could not analyze video: {type(e).__name__}: {e}")
+    return JSONResponse({"video_path": str(vp), "video": _video_info(video)})
+
+
 @app.post("/api/score-songs", dependencies=[Depends(_origin_guard)])
 def score_songs(req: ScoreSongsRequest):
     vp = _safe_video(req.video_path)
-    if not req.song_paths:
-        raise HTTPException(400, "song_paths is empty")
     songs = [_safe_song(str(x)) for x in req.song_paths]
     job_id = uuid.uuid4().hex[:12]
     with _jobs_lock:
         JOBS[job_id] = {"id": job_id, "status": "running", "stage": "starting", "done": 0,
                         "total": 0, "message": "Starting", "video": None,
                         "results": None, "too_short": [], "skipped": [], "error": None}
-    if len(songs) == 1:      # synchronous: the finished job comes back inline
+    if len(songs) <= 1:      # synchronous (0 songs = video analysis only): finished job inline
         _run_score_songs(job_id, vp, songs)
         return JSONResponse({"job_id": job_id, **JOBS[job_id]})
     _pool.submit(_run_score_songs, job_id, vp, songs)
