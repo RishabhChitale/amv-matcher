@@ -4,8 +4,8 @@ from __future__ import annotations
 import numpy as np
 
 W_TEMPO = 0.20
-W_SYNC = 0.40
-W_ARC = 0.40
+W_SYNC = 0.60
+W_ARC = 0.20
 DROP_MATCH_S = 0.5        # video peak within this of a song drop
 ARC_BONUS_PER_MATCH = 10.0
 ARC_BONUS_MAX = 20.0
@@ -110,15 +110,73 @@ def _phrase_level(song, cut_t, vd, off):
     return float(np.clip((f - base) / max(1e-6, 1.0 - base), 0.0, 1.0))
 
 
+LOCK_A = 1.5                  # logistic slope on the lock prominence z
+LOCK_B = 1.5                  # z at which sync is 50%
+LOCK_LAG_S = -0.05            # human edits land ~50 ms before the beat
+LOCK_TOL_S = 0.06             # no penalty within this of the expected lag
+LOCK_FINE_W = 0.15
+LOCK_RAW_W = 0.05             # un-saturated beat credit: keeps small local gains visible to planners
+LOCK_SPAN = 0.12              # tempo scan +-12% for the null
+LOCK_EXCL = 0.02              # exclude +-2% around the song period from the null
+_LOCK_CACHE = {}
+
+
+def _grid_ref(song):
+    g = _beats(song)
+    if len(g) < 2:
+        return None
+    return float(np.median(np.diff(g))), float(g[0])
+
+
+def _lock(song, ev_t, ev_w):
+    """Tempo-lock of the video events to the song grid: prominence z of the events' beat
+    coherence R at the song period against R at nearby (wrong) periods, plus the complex
+    coherence and the grid origin. Independent of the song offset."""
+    ref = _grid_ref(song)
+    if ref is None or len(ev_t) < 3:
+        return None
+    key = (id(song), len(ev_t), float(ev_t.sum()), float(ev_w.sum()), ref)
+    hit = _LOCK_CACHE.get(key)
+    if hit is not None:
+        return hit
+    T, g0 = ref
+    w = ev_w / ev_w.sum()
+    ratios = np.linspace(1 - LOCK_SPAN, 1 + LOCK_SPAN, 121)
+    Rs = np.abs(np.exp(2j * np.pi * ev_t[None, :] / (T * ratios[:, None])) @ w)
+    mask = np.abs(ratios - 1) > LOCK_EXCL
+    base = Rs[mask]
+    med = float(np.median(base))
+    mad = max(1.4826 * float(np.median(np.abs(base - med))), 0.5 * float(np.std(base)), 1e-3)
+    z0c = complex(np.sum(w * np.exp(2j * np.pi * ev_t / T)))
+    z = (abs(z0c) - med) / mad
+    z *= min(1.0, len(ev_t) / 12.0)          # few events -> little evidence
+    out = (z, z0c, T, g0)
+    if len(_LOCK_CACHE) > 256:
+        _LOCK_CACHE.clear()
+    _LOCK_CACHE[key] = out
+    return out
+
+
 def _sync_pct_at(song, ev_t, ev_w, vd, off):
-    beats = _beats(song)
-    off = off + EVENT_LATENCY_S
-    b = _beat_level(ev_t, ev_w, beats, vd, off)
-    cut_t = ev_t[ev_w >= CUT_WEIGHT]
-    ph = _phrase_level(song, cut_t, vd, off)
-    if ph is None:
-        ph = b
-    return float(np.clip(100.0 * (SYNC_BEAT_W * b + SYNC_PHRASE_W * ph), 0, 100))
+    """Discriminative sync 0..100: logistic of the tempo-lock prominence z, times how well
+    the offset puts the events at the expected lag from the beat (cosine of phase error)."""
+    ev_t = np.asarray(ev_t, dtype=float)
+    ev_w = np.asarray(ev_w, dtype=float)
+    k = _lock(song, ev_t, ev_w)
+    if k is None:
+        return 0.0
+    z, z0c, T, g0 = k
+    # coherence of events shifted by off, relative to the grid origin and expected lag
+    ph = np.exp(2j * np.pi * (off - g0 - LOCK_LAG_S) / T) * z0c
+    r = abs(z0c)
+    err = abs(float(np.angle(ph))) / (2 * np.pi) * T          # seconds from the expected lag
+    align = 1.0 if err <= LOCK_TOL_S else float(np.exp(-0.5 * ((err - LOCK_TOL_S) / LOCK_TOL_S) ** 2))
+    lock = 100.0 / (1.0 + np.exp(-LOCK_A * (z - LOCK_B))) * align
+    # small fine-alignment term: keeps retime/splice/nudge improvements visible once the
+    # lock itself has saturated (real edits are only loosely sample-accurate, so weight is low)
+    b = _beat_level(ev_t, ev_w, _beats(song), vd, off)
+    fine = 100.0 * (1.0 - np.exp(-b / 0.05))
+    return float(np.clip((1 - LOCK_FINE_W - LOCK_RAW_W) * lock + LOCK_FINE_W * fine + LOCK_RAW_W * 100.0 * b, 0, 100))
 
 
 def _events(video):
@@ -178,7 +236,14 @@ def _pack(song, video, off, tempo_pct, rate, sync_pct, arc_pct):
 
 
 def _tempo(song, video):
-    return tempo_score(song["bpm"], video["motion_tempo_bpm"], video.get("motion_tempo_candidates"))
+    pct, rate = tempo_score(song["bpm"], video["motion_tempo_bpm"], video.get("motion_tempo_candidates"))
+    # events that cohere at the song's own period are tempo evidence too (the events-tempo
+    # estimator can lock onto a wrong ratio, e.g. 175 vs 126 bpm)
+    ev_t, ev_w = _events(video)
+    k = _lock(song, ev_t, ev_w)
+    if k is not None:
+        pct = max(pct, float(100.0 / (1.0 + np.exp(-LOCK_A * (k[0] - LOCK_B)))))
+    return pct, rate
 
 
 def score_at(song: dict, video: dict, offset: float) -> dict:

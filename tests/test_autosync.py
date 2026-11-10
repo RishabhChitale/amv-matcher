@@ -16,7 +16,7 @@ def test_slow_drift_fixed():
 
 
 def test_slow_section_retimed():
-    r = auto_sync(make_song(), make_video(slow_section_cuts()))
+    r = auto_sync(make_song(), make_video(slow_section_cuts()), min_gain=0.05)  # sync is near-saturated; 3 of ~50 cuts drift
     assert r["final"]["sync_pct"] >= 95
     rt = r["plan"]["retime"]
     assert rt and any(abs(s["speed"] - 1.25) < 0.1 for s in rt["sections"])
@@ -205,7 +205,7 @@ def test_negative_offset_auto_sync_valid_plan():
 
 
 def test_tail_ramps_to_speed_one_and_durations_reported():
-    r = auto_sync(make_song(), make_video(slow_section_cuts()))
+    r = auto_sync(make_song(), make_video(slow_section_cuts()), min_gain=0.05)  # sync is near-saturated; 3 of ~50 cuts drift
     assert r["final"]["video_duration_s"] == 30.0
     assert r["final"]["out_duration_s"] > 0
     rt = r["plan"]["retime"]

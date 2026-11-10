@@ -41,7 +41,7 @@ def test_warp_invariants():
 def test_slow_section_found():
     song, vid = make_song(), make_video(slow_section_cuts())
     r = plan_retime(song, vid, 0.0)
-    assert r["sync_after"] >= 95 > r["sync_before"]
+    assert r["sync_after"] >= 95 and r["sync_after"] > r["sync_before"]
     sp = [s for s in r["sections"] if s["v_start"] < 12 and s["v_end"] > 10]
     assert sp and abs(sp[0]["speed"] - 1.25) < 0.1
 
