@@ -1,0 +1,14 @@
+/* U4: Media sidebar collapsed to an icon rail by default + FPS counter */
+.layout.rail-on{grid-template-columns:48px minmax(0,1fr) 360px;transition:grid-template-columns .18s ease}
+.layout.rail-on.rail-open{grid-template-columns:270px minmax(0,1fr) 360px}
+body.page-deliver .layout.rail-on{grid-template-columns:minmax(0,1fr) 380px}
+#media .rail-btn{display:none;width:100%;border:0;background:none;color:var(--mut,#9aa);cursor:pointer;padding:6px 0;font-size:18px;line-height:1}
+#media .rail-btn:hover{color:var(--fg,#fff)}
+.rail-on #media .rail-btn{display:block}
+.rail-on:not(.rail-open) #media{padding:6px 0;align-items:center;overflow:hidden}
+.rail-on:not(.rail-open) #media>:not(.rail-btn){display:none}
+.rail-on:not(.rail-open) #media .rail-btn.rail-count{font-size:11px;font-variant-numeric:tabular-nums;padding:2px 0}
+@media(max-width:1000px){.layout.rail-on,.layout.rail-on.rail-open{grid-template-columns:1fr}.rail-on:not(.rail-open) #media{max-height:48px}}
+.fps-hud{position:absolute;top:6px;left:6px;z-index:5;padding:2px 6px;border-radius:4px;background:rgba(0,0,0,.55);color:#cfe;font:11px/1.3 ui-monospace,Menlo,monospace;pointer-events:none;white-space:pre}
+.fps-btn{position:absolute;top:6px;right:6px;z-index:5;padding:1px 6px;font:11px ui-monospace,Menlo,monospace;border:1px solid rgba(255,255,255,.25);border-radius:4px;background:rgba(0,0,0,.45);color:#ddd;cursor:pointer;opacity:.55}
+.fps-btn:hover,.fps-btn.on{opacity:1}
