@@ -700,3 +700,21 @@ def test_stem_targets_none_matches_default():
     a = auto_sync(song, vid, budget_s=5.0)
     b = auto_sync(song, vid, budget_s=5.0, stem_targets=None)
     assert a["final"] == b["final"]
+
+
+def test_prefer_energy_routes_to_arrange(monkeypatch):
+    from amv_matcher import autosync as AS
+    calls = []
+    real = AS.plan_arrangement
+
+    def spy(song, video, max_moves, lead_s=None, **kw):
+        calls.append(kw)
+        return real(song, video, max_moves, lead_s=lead_s, **kw)
+    monkeypatch.setattr(AS, "plan_arrangement", spy)
+    from tests.test_arrange import make_song, make_video
+    song, vid = make_song(), make_video()
+    AS.auto_sync(song, vid, budget_s=8)
+    assert all(k == {} for k in calls)                    # default: called exactly as before
+    calls.clear()
+    AS.auto_sync(song, vid, budget_s=8, prefer_energy=True)
+    assert all(k == {"prefer_energy": True} for k in calls)

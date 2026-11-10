@@ -127,11 +127,26 @@ def _key(r, moves):
             -(float(me) if me is not None else 1e9), -moves)
 
 
-def _eval(song, video, segs, ncuts, lead_s=None):
+ENERGY_GUARD_TOTAL = 0     # prefer_energy: candidate total may be at most this many points below the baseline
+ENERGY_GUARD_TIGHT = 0.5   # ... tight_pct at most this much below
+ENERGY_GUARD_SYNC = 0.5    # ... sync_pct at most this much below
+
+
+def _energy_key(r, moves, guard):
+    """prefer_energy objective: highest arc among candidates that stay within the guards of the
+    baseline (total, tight_pct, sync_pct), then total, tight_pct, fewer moves."""
+    t = r.get("tightness") or {}
+    tp = float(t.get("tight_pct") or 0.0)
+    ok = (r["total_pct"] >= guard["total"] - ENERGY_GUARD_TOTAL and tp >= guard["tight"] - ENERGY_GUARD_TIGHT
+          and float(r.get("sync_pct", 0)) >= guard["sync"] - ENERGY_GUARD_SYNC)
+    return (1 if ok else 0, round(float(r["arc_pct"]), 1), int(round(float(r["total_pct"]))), tp, -moves)
+
+
+def _eval(song, video, segs, ncuts, lead_s=None, guard=None):
     vd = float(video["duration"])
     asm = _assemble(song, segs, vd)
     r = S.score_at(asm, video, 0.0, lead_s=lead_s)
-    return {"r": r, "key": _key(r, ncuts)}
+    return {"r": r, "key": _energy_key(r, ncuts, guard) if guard else _key(r, ncuts)}
 
 
 def _entries(song, secs, o2, off):
@@ -164,7 +179,7 @@ def _ok_next(secs, order, nxt):
     return run <= MAX_REPEAT
 
 
-def _proxy(secs, order, venv, vd):
+def _proxy(secs, order, venv, vd, pearson=False):
     """Mean squared error between normalised song energy as arranged and the video energy, over
     the covered prefix (lower is better)."""
     parts, n = [], 0
@@ -174,10 +189,19 @@ def _proxy(secs, order, venv, vd):
     m = min(len(cat), len(venv))
     if m == 0:
         return 1e9
+    if pearson:       # prefer_energy: rank by video-vs-song energy correlation (what the arc score rewards)
+        a, b = cat[:m], venv[:m]
+        if m < 5 or a.std() < 1e-9 or b.std() < 1e-9:
+            return 1e9
+        return float((1.0 - np.corrcoef(a, b)[0, 1]) * 50.0)
     return float(np.mean((cat[:m] - venv[:m]) ** 2)) * 100.0
 
 
-def plan_arrangement(song: dict, video: dict, max_moves: int = 3, lead_s: float | None = None) -> dict:
+def plan_arrangement(song: dict, video: dict, max_moves: int = 3, lead_s: float | None = None,
+                     prefer_energy: bool = False) -> dict:
+    """prefer_energy=False (default) is the original objective. True ranks the beam by energy
+    correlation and picks the highest-arc arrangement that keeps total / tight_pct / sync_pct within
+    the ENERGY_GUARD_* margins of the baseline (opt-in; see docs/ARC-RESEARCH.md on g-arc)."""
     vd = float(video["duration"])
     base = S.score(song, video, lead_s=lead_s)
     if not base.get("eligible", True):
@@ -196,7 +220,12 @@ def plan_arrangement(song: dict, video: dict, max_moves: int = 3, lead_s: float 
                 "improvement_pct": int(r["total_pct"]) - base_total}
 
     secs = _secs(song)
-    base_r = _eval(song, video, base_segs, 0, lead_s)
+    guard = None
+    if prefer_energy:
+        _bt = base.get("tightness") or {}
+        guard = {"total": base_total, "tight": float(_bt.get("tight_pct") or 0.0),
+                 "sync": float(base.get("sync_pct", 0))}
+    base_r = _eval(song, video, base_segs, 0, lead_s, guard)
     best = (base_segs, [], base, base_r["key"], 0)
     if max_moves < 0 or len(secs) < 2 or float(song["duration"]) < vd:
         return pack(best[0], [], secs, best[2], best[3], 0)
@@ -238,7 +267,7 @@ def plan_arrangement(song: dict, video: dict, max_moves: int = 3, lead_s: float 
             break
         # rank by proxy + soft penalties; keep the best BEAM (separately per move count so a
         # cheap move-free prefix is never crowded out)
-        scored = sorted(nxt_beam, key=lambda st: _proxy(secs, st[0], venv, vd) + MOVE_PENALTY * st[1]
+        scored = sorted(nxt_beam, key=lambda st: _proxy(secs, st[0], venv, vd, prefer_energy) + MOVE_PENALTY * st[1]
                         + (0 if secs[st[0][0]]["label"] in GOOD_START else START_PENALTY))
         beam = scored[:BEAM]
         # keep a protected lane of states that start in the section the baseline trim starts in:
@@ -269,7 +298,7 @@ def plan_arrangement(song: dict, video: dict, max_moves: int = 3, lead_s: float 
             moves = max(0, len(merged) - 1)
             if moves > max_moves:
                 continue
-            e = _eval(song, video, merged, 0, lead_s)
+            e = _eval(song, video, merged, 0, lead_s, guard)
             obj = e["key"]
             if obj > best[3]:
                 best = (segs, o2, e["r"], obj, moves)

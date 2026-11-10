@@ -97,3 +97,14 @@ def test_real_pair_a_s1():
     print("order", r["sections_used"], r["section_order"], "moves", r["moves"])
     print("arc", r["arc_before"], "->", r["arc_after"], "total", r["total_before"], "->", r["total_after"])
     assert r["total_after"] >= r["total_before"]
+
+
+def test_prefer_energy_default_off_identical_and_flag_valid():
+    song, vid = make_song(), make_video()
+    d0 = plan_arrangement(song, vid, max_moves=3)
+    assert plan_arrangement(song, vid, max_moves=3, prefer_energy=False) == d0
+    r = plan_arrangement(song, vid, max_moves=3, prefer_energy=True)
+    assert r["eligible"] and r["moves"] <= 3
+    assert r["arc_after"] >= d0["arc_after"] - 1e-9          # flag never lowers arc
+    assert r["total_after"] >= r["total_before"] - 0         # guard: total not below baseline
+    assert r["objective"] != d0["objective"]                  # different objective tuple (arc-first)

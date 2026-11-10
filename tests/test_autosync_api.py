@@ -251,3 +251,23 @@ def test_real_auto_sync_progress_and_cancel(tmp_path, monkeypatch):
         assert abs(sum(g["src_end"] - g["src_start"] for g in segs) - 4.0) < 0.05
     else:           # plain trim (offset may be negative)
         assert -4.0 < plan["offset"] <= 8.0 - 4.0 + 1e-6      # negative = song starts late (lead-in)
+
+
+def test_prefer_energy_param_plumbed(tmp_path, monkeypatch):
+    v, s = _setup(tmp_path, monkeypatch)
+    seen = []
+    fake = {"steps": [], "final": {"total_pct": 90, "fit_after_effort": 80.0, "effort": {}, "tightness": None},
+            "plan": {"segments": []}, "why_not_100": "x"}
+
+    def fake_auto(song, video, prefer_energy=False, **kw):
+        seen.append(dict(kw, prefer_energy=prefer_energy))
+        return fake
+    monkeypatch.setattr(server._autosync, "auto_sync", fake_auto)
+    c = TestClient(server.app)
+    r = c.post("/api/auto-sync", json=_body(v, s))
+    assert r.status_code == 200 and "prefer_energy" not in r.json()["options"]
+    assert _wait(c, r.json()["job_id"])["status"] == "done"
+    r = c.post("/api/auto-sync", json=_body(v, s, prefer_energy=True))
+    assert r.status_code == 200 and r.json()["options"]["prefer_energy"] is True
+    assert _wait(c, r.json()["job_id"])["status"] == "done"
+    assert seen[0]["prefer_energy"] is False and seen[1]["prefer_energy"] is True

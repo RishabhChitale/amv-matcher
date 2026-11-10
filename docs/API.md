@@ -271,7 +271,8 @@ on intro/chorus/drop is preferred. The plain single trim is the baseline and is 
 
 `POST /api/auto-sync` (Origin-guarded; video/song paths must be allowed) starts a job running `autosync.auto_sync`.
 
-Body: `{video_path, song_path, lead_s?, allow_loop? (false), guardrails?: {max_speed_dev, max_tempo_pct, max_cuts}, budget_s?}`.
+Body: `{video_path, song_path, lead_s?, allow_loop? (false), guardrails?: {max_speed_dev, max_tempo_pct, max_cuts}, budget_s?, unlock_original? (false), prefer_energy? (false)}`.
+`prefer_energy` (top-level bool, opt-in): the arrange step ranks by energy correlation and keeps the highest-arc arrangement that stays within the total / tight_pct / sync_pct guards of the baseline. It echoes in `options` only when true; omitted/false behaves exactly as before. Measured trade-off (see `docs/ARC-RESEARCH.md` on branch `g-arc`): arc can rise ~10 points on some pairs at a cost in tightness, so keep it off by default.
 Options are clamped to the engine limits: `lead_s` 0-0.12, `max_speed_dev` 0-0.25, `max_tempo_pct` 0-8, `max_cuts` 0-3, `budget_s` 1-60 (default 20).
 
 Returns `{job_id, status: "running", options}` (the clamped options). A second request for the same (video, song) pair while one runs returns `409 {detail, job_id}`.

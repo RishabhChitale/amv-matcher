@@ -221,7 +221,7 @@ ARRANGE_MIN_LEFT_S = 8.0   # arrange costs ~5 s on a 4-minute song: skipped when
 
 def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min_section_s, max_cuts,
          min_gain, max_passes, allow_splice, lead_s=0.0, loop_segs=None, memo=None, deadline=None, lock_original=False,
-         progress_cb=None, should_cancel=None, t_start=None, stem_targets=None):
+         progress_cb=None, should_cancel=None, t_start=None, stem_targets=None, prefer_energy=False):
     t0 = time.perf_counter()
     t_start = t0 if t_start is None else t_start
     steps, limits = [], []
@@ -381,11 +381,12 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
                     and float(cur_song["duration"]) >= svd \
                     and (deadline is None or deadline - time.perf_counter() > ARRANGE_MIN_LEFT_S):
                 begin("arrange", _tot(cur))
-                key = (id(cur_song), id(sv), lead_s)
+                key = (id(cur_song), id(sv), lead_s, bool(prefer_energy))
                 if memo is not None and key in memo:
                     ap = memo[key][2]
                 else:
-                    ap = plan_arrangement(cur_song, sv, ARRANGE_MAX_MOVES, lead_s=lead_s)
+                    ap = (plan_arrangement(cur_song, sv, ARRANGE_MAX_MOVES, lead_s=lead_s, prefer_energy=True) if prefer_energy
+                          else plan_arrangement(cur_song, sv, ARRANGE_MAX_MOVES, lead_s=lead_s))
                     if memo is not None:
                         memo[key] = (cur_song, sv, ap)       # keep the objects alive so ids stay unique
                 cancel()                    # arrange is not interruptible: poll again once it returns
@@ -507,7 +508,7 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
               max_speed_dev: float = 0.25, max_tempo_dev: float = 0.08, min_section_s: float = 0.75,
               max_cuts: int = 3, min_gain: float = 0.5, max_passes: int = 2, allow_splice: bool = True, lead_s: float | None = None,
               allow_loop: bool = False, original: bool = False, unlock_original: bool = False,
-              *, progress_cb=None, should_cancel=None, stem_targets=None) -> dict:
+              *, progress_cb=None, should_cancel=None, stem_targets=None, prefer_energy=False) -> dict:
     """Try several tool orders (each from the baseline) and keep the best path, so the result is never
     worse than any single tool applied directly.
 
@@ -532,7 +533,10 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
     limits_hit containing 'cancelled'.
 
     stem_targets (optional, stemsync.stem_targets(song, stems_feats)) go to every score call and, as extra
-    soft snap targets for calm-block events, to the retime planner; None = unchanged behaviour."""
+    soft snap targets for calm-block events, to the retime planner; None = unchanged behaviour.
+
+    prefer_energy (keyword-only, default False = unchanged behaviour): the arrange step ranks by energy
+    correlation and keeps the highest-arc arrangement within the total/tight/sync guards of the baseline."""
     lead_s = S.PERCEPTUAL_LEAD_S if lead_s is None else lead_s
     lead_s = min(0.12, max(0.0, float(lead_s)))   # cuts/peaks land lead_s before the beat (0 = on it)
     t0 = time.perf_counter()
@@ -582,7 +586,7 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
         run = _run(song, video, orders[name], target, max(rem / max(1, len(names) - i), 2.0), max_speed_dev,
                    max_tempo_dev, min_section_s, max_cuts, min_gain, max_passes, allow_splice, lead_s,
                    loop_segs=loop_segs, memo=memo, deadline=deadline, lock_original=lock,
-                   progress_cb=progress_cb, should_cancel=cancelled, t_start=t0, stem_targets=stem_targets)
+                   progress_cb=progress_cb, should_cancel=cancelled, t_start=t0, stem_targets=stem_targets, prefer_energy=prefer_energy)
         run["path"] = name
         runs.append(run)
         if best is None or _rank(run["cur"]) > _rank(best["cur"]):

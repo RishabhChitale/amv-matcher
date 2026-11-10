@@ -1033,6 +1033,7 @@ class AutoSyncRequest(BaseModel):
     guardrails: Optional[AutoSyncGuardrails] = None
     budget_s: Optional[float] = None
     unlock_original: bool = False      # only matters when song_path is the video's own audio
+    prefer_energy: bool = False        # opt-in: arrange step favours the energy arc within sync/tight guards
 
 
 def _clamp(v, lo, hi, default):
@@ -1050,7 +1051,8 @@ def _autosync_options(req: AutoSyncRequest) -> dict:
             "max_tempo_pct": _clamp(g.max_tempo_pct, 0.0, L["max_tempo_pct"], L["max_tempo_pct"]),
             "max_cuts": int(_clamp(g.max_cuts, 0, L["max_cuts"], L["max_cuts"])),
             "budget_s": _clamp(req.budget_s, 1.0, L["budget_s"], 20.0),
-            "unlock_original": bool(req.unlock_original)}
+            "unlock_original": bool(req.unlock_original),
+            **({"prefer_energy": True} if req.prefer_energy else {})}   # absent when off: cache keys unchanged
 
 
 def _run_autosync(job_id: str, vp: Path, sp: Path, opts: dict, pair):
@@ -1087,6 +1089,8 @@ def _run_autosync(job_id: str, vp: Path, sp: Path, opts: dict, pair):
             _stt = _cached_stem_targets(sp, song)
             if _stt:
                 kw["stem_targets"] = _stt
+        if opts.get("prefer_energy") and "prefer_energy" in inspect.signature(_autosync.auto_sync).parameters:
+            kw["prefer_energy"] = True
         res = _autosync.auto_sync(song, video, budget_s=opts["budget_s"], max_speed_dev=opts["max_speed_dev"],
                                   max_tempo_dev=opts["max_tempo_pct"] / 100.0, max_cuts=opts["max_cuts"],
                                   lead_s=opts["lead_s"], allow_loop=opts["allow_loop"], **kw)
