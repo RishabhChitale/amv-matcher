@@ -42,6 +42,15 @@ SETTING_DIR_MAC = "~/Library/Application Support/Blackmagic Design/DaVinci Resol
 SETTING_DIR_WIN = r"%AppData%\Blackmagic Design\DaVinci Resolve\Support\Fusion\Templates\Edit\Effects" + "\\"
 
 
+def setting_dir(platform=None) -> str:
+    """Resolve effects-template dir for the platform; %AppData% / ~ are expanded at use time (W-19)."""
+    import os
+    import sys
+    if (platform or sys.platform) == "win32":
+        return os.path.expandvars(SETTING_DIR_WIN)
+    return os.path.expanduser(SETTING_DIR_MAC)
+
+
 # ------------------------------------------------------------------ time helpers
 def snap_fps(fps) -> Fraction:
     f = float(fps)

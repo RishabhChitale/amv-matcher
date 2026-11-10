@@ -17,17 +17,22 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-if getattr(sys, "frozen", False):   # PyInstaller windowed apps have no stdout/stderr
+def ensure_std_streams():
+    """Windowed exes (PyInstaller console=False, pythonw) start with sys.stdout/stderr = None: give them a
+    harmless stream so any print/logging never crashes (W-16)."""
     for _n in ("stdout", "stderr"):
         if getattr(sys, _n) is None:
-            setattr(sys, _n, open(os.devnull, "w"))
+            setattr(sys, _n, open(os.devnull, "w", encoding="utf-8"))
+
+
+ensure_std_streams()
 
 if "--selftest" in sys.argv and not os.environ.get("AMV_DATA_DIR"):   # keep the selftest out of the user's data
     import tempfile
     os.environ["AMV_DATA_DIR"] = tempfile.mkdtemp(prefix="amv-selftest-data-")
 
 from amv_matcher import nativeshell as ns
-from amv_matcher import paths
+from amv_matcher import paths, winsafe
 from amv_matcher import server as srv
 
 TITLE = "AMV Matcher"
@@ -134,7 +139,7 @@ class Api:
         """Copy an export (inside the exports dir) to a place the user picks. Returns the saved path or ''."""
         import webview
         p = Path(str(src)).resolve()
-        if not p.is_file() or not p.is_relative_to(paths.EXPORTS.resolve()):
+        if not p.is_file() or not winsafe.is_relative_to_ci(p, paths.EXPORTS.resolve()):
             return ""
         d = paths.default_export_dir()
         r = self.window.create_file_dialog(webview.SAVE_DIALOG, directory=str(d), save_filename=p.name)
@@ -149,8 +154,7 @@ class Api:
 
     @staticmethod
     def _launch(cmd):
-        import subprocess
-        subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        winsafe.popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def open_path(self, src):
         """Open an export (file or folder inside the exports dir) with the OS default app. Returns True if launched."""
@@ -178,7 +182,7 @@ class Api:
             if sys.platform == "darwin":
                 self._launch(["open", "-R", str(p)])
             elif sys.platform == "win32":
-                self._launch(["explorer", "/select," + str(p)])
+                self._launch(ns.explorer_select_cmd(p))   # exit code ignored: Explorer returns 1 on success
             else:
                 self._launch(["xdg-open", str(p if p.is_dir() else p.parent)])
         except OSError as e:
@@ -296,7 +300,7 @@ def run_window() -> int:
     def on_drop(e):
         try:
             files = e.get("dataTransfer", {}).get("files", []) or []
-            ps = [f.get("pywebviewFullPath") for f in files if f.get("pywebviewFullPath")]
+            ps = [ns.normalize_drop_path(f.get("pywebviewFullPath")) for f in files if f.get("pywebviewFullPath")]
             LOG.info("native drop: %s", ps)
             win.evaluate_js("window.nativeDrop && window.nativeDrop(%s)" % json.dumps(ps))
         except Exception:

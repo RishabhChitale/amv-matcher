@@ -1,0 +1,44 @@
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+import check_leftovers as cl  # noqa: E402
+
+MD = """# L
+| ID | Area | Leftover | Owner | Status | How we'll verify |
+|---|---|---|---|---|---|
+| L1 | A | x | o | fixed in abc123 (note) | tests/test_a.py::test_one |
+| L2 | A | x | o | done | `pytest tests/test_b.py -k foo` |
+| L3 | A | x | o | open | tests/test_c.py::test_c |
+| L4 | A | x | o | fixed in def | manual check in the native app |
+| L5 | A | x | o | fixed | `rm -rf /tmp/x` |
+| L6 | A | x | o | fixed | `.venv/bin/python tools/real_suite.py --quick` |
+| L7 | A | x | o | fixed | `pytest tests/x.py; rm -rf /` |
+"""
+
+
+def rows():
+    return {r["id"]: r for r in map(cl.classify, cl.parse(MD))}
+
+
+def test_parse_and_classify():
+    r = rows()
+    assert len(r) == 7
+    assert r["L1"]["kind"] == "automatable"
+    assert r["L1"]["argv"] == [".venv/bin/python", "-m", "pytest", "-q", "tests/test_a.py::test_one"]
+    assert r["L2"]["argv"][-3:] == ["tests/test_b.py", "-k", "foo"]
+    assert r["L3"]["kind"] == "skip"
+    assert r["L4"]["kind"] == "manual"
+    assert r["L5"]["kind"] == "unsafe"
+    assert r["L6"]["kind"] == "automatable"
+    assert r["L7"]["kind"] == "unsafe"
+
+
+def test_dry_run_executes_nothing(monkeypatch, tmp_path, capsys):
+    f = tmp_path / "L.md"
+    f.write_text(MD)
+    monkeypatch.setattr(cl, "LEFTOVERS", f)
+    monkeypatch.setattr(cl.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("ran")))
+    assert cl.main(["--dry-run", "--only", "L1,L2,L5"]) == 0
+    out = capsys.readouterr().out
+    assert "automatable 2" in out and "unsafe 1" in out

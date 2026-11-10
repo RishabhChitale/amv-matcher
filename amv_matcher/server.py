@@ -25,7 +25,7 @@ from .pump import pump_keyframes
 from .score import MIN_OFFSET_S, score, score_at
 from .splice import plan_splice
 from .video import VIDEO_EXTS, analyze_video
-from . import paths, proxy
+from . import paths, proxy, winsafe
 from . import autosync as _autosync
 from .cache import get_cache
 
@@ -62,20 +62,20 @@ def _origin_guard(request: Request):
 
 def _in_uploads(p: Path) -> bool:
     try:
-        return p.is_relative_to(UPLOADS.resolve())
+        return winsafe.is_relative_to_ci(p, UPLOADS.resolve())
     except Exception:
         return False
 
 
 def _under(p: Path, base: Path) -> bool:
     try:
-        return p.is_relative_to(base.resolve())
+        return winsafe.is_relative_to_ci(p, base.resolve())
     except Exception:
         return False
 
 
 def _in_music_dirs(p: Path) -> bool:
-    return any(p == Path(d) or Path(d) in p.parents for d in ALLOWED_DIRS)
+    return any(winsafe.is_relative_to_ci(p, d) for d in ALLOWED_DIRS)
 
 
 
@@ -282,8 +282,8 @@ def scan(req: ScanRequest):
         JOBS[job_id] = {"id": job_id, "status": "running", "stage": "starting", "done": 0,
                         "total": 0, "message": "Starting", "video": None,
                         "results": None, "reference": None, "too_short": [], "skipped": [], "error": None}
-        ALLOWED_DIRS.add(str(md.resolve()))
-        ALLOWED_VIDEOS.add(str(vp.resolve()))
+        ALLOWED_DIRS.add(winsafe.norm_case_path(md.resolve()))
+        ALLOWED_VIDEOS.add(winsafe.norm_case_path(vp.resolve()))
     _pool.submit(_run_job, job_id, req)
     return {"job_id": job_id}
 
@@ -302,9 +302,9 @@ def allow_path(path) -> str:
     if not p.is_file():
         raise ValueError("not a file")
     if p.suffix.lower() in VIDEO_EXTS:
-        ALLOWED_VIDEOS.add(str(p))
+        ALLOWED_VIDEOS.add(winsafe.norm_case_path(p))
     elif p.suffix.lower() in AUDIO_EXTS:
-        ALLOWED_SONGS.add(str(p))
+        ALLOWED_SONGS.add(winsafe.norm_case_path(p))
     else:
         raise ValueError("not a media file")
     return str(p)
@@ -315,7 +315,7 @@ def _safe_song(path: str) -> Path:
         p = Path(path).expanduser().resolve()
     except Exception:
         raise HTTPException(400, "Bad path")
-    if not (_in_music_dirs(p) or str(p) in ALLOWED_SONGS or _in_uploads(p) or _under(p, EXTRACTED)) or p.suffix.lower() not in AUDIO_EXTS or not p.is_file():
+    if not (_in_music_dirs(p) or winsafe.norm_case_path(p) in ALLOWED_SONGS or _in_uploads(p) or _under(p, EXTRACTED)) or p.suffix.lower() not in AUDIO_EXTS or not p.is_file():
         raise HTTPException(403, "Path is not a song inside a scanned music folder or the uploads folder")
     return p
 
@@ -325,7 +325,7 @@ def _safe_video(path: str) -> Path:
         p = Path(path).expanduser().resolve()
     except Exception:
         raise HTTPException(400, "Bad path")
-    if not (str(p) in ALLOWED_VIDEOS or _in_uploads(p)) or p.suffix.lower() not in VIDEO_EXTS or not p.is_file():
+    if not (winsafe.norm_case_path(p) in ALLOWED_VIDEOS or _in_uploads(p)) or p.suffix.lower() not in VIDEO_EXTS or not p.is_file():
         raise HTTPException(403, "Path is not a scanned or uploaded video")
     return p
 
@@ -516,6 +516,7 @@ def _sanitize_name(name: str) -> str:
     return f"{stem}.{ext.lower()}" if ext else stem
 
 
+_RESERVED_STEMS = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 @app.post("/api/upload", dependencies=[Depends(_origin_guard)])
 async def upload(request: Request, kind: str, name: str):
     if kind not in UPLOAD_LIMITS:
@@ -525,6 +526,8 @@ async def upload(request: Request, kind: str, name: str):
     ext = Path(clean).suffix.lower()
     if ext not in exts:
         raise HTTPException(400, f"Unsupported {kind} type '{ext}'; use {sorted(exts)}")
+    if stem.split(".")[0].strip().upper() in _RESERVED_STEMS:   # W-07: CON, NUL, COM1.. are device names on Windows
+        stem = "_" + stem
     limit = UPLOAD_LIMITS[kind]
     cl = request.headers.get("content-length")
     if cl and cl.isdigit() and int(cl) > limit:
@@ -546,7 +549,7 @@ async def upload(request: Request, kind: str, name: str):
         final = d / f"{h.hexdigest()[:12]}-{clean}"
         deduped = final.exists()
         if not deduped:
-            os.replace(tmp, final)
+            winsafe.replace_retry(tmp, final)
     finally:
         tmp.unlink(missing_ok=True)
     return {"path": str(final.resolve()), "name": clean, "size": size, "kind": kind, "deduped": deduped}
@@ -566,20 +569,32 @@ def _bytes(files):
     return sum(p.stat().st_size for p in files)
 
 
-def _clear_dir(base: Path) -> int:
-    """Delete everything inside base (never base itself, never anything resolving outside it)."""
-    files = _files_under(base)
-    freed = _bytes(files)
+def _clear_dir(base: Path, skipped: Optional[list] = None) -> int:
+    """Delete everything inside base (never base itself, never anything resolving outside it).
+    Locked files (Windows) are skipped, not raised; their names are appended to `skipped` (W-09)."""
+    skipped = skipped if skipped is not None else []
+    before = _files_under(base)
+    sizes = {}
+    for p in before:
+        try:
+            sizes[p] = p.stat().st_size
+        except OSError:
+            pass
     if base.is_dir():
         root = base.resolve()
         for child in list(base.iterdir()):
-            if not _under(child.resolve(), root):
-                continue
-            if child.is_dir() and not child.is_symlink():
-                shutil.rmtree(child, ignore_errors=True)
-            else:
-                child.unlink(missing_ok=True)
-    return freed
+            try:
+                if not _under(child.resolve(), root):
+                    continue
+                if child.is_dir() and not child.is_symlink():
+                    ok = winsafe.safe_rmtree(child, root)
+                else:
+                    ok = winsafe.safe_unlink(child, root)
+            except OSError:
+                ok = False
+            if not ok:
+                skipped.append(child.name)
+    return sum(sz for p, sz in sizes.items() if not p.exists())
 
 
 @app.get("/api/uploads")
@@ -594,11 +609,14 @@ def uploads_info():
 
 @app.delete("/api/uploads", dependencies=[Depends(_origin_guard)])
 def uploads_clear():
-    uf = _clear_dir(UPLOADS)
-    ef = _clear_dir(EXPORTS)
+    skipped: list = []
+    uf = _clear_dir(UPLOADS, skipped)
+    ef = _clear_dir(EXPORTS, skipped)
     for k in [k for k in VIDEOS if _in_uploads(Path(k))]:
         VIDEOS.pop(k, None)
-    return {"freed": uf + ef, "uploads_freed": uf, "exports_freed": ef}
+    if skipped:
+        print(f"[uploads] skipped locked files: {skipped}", flush=True)
+    return {"freed": uf + ef, "uploads_freed": uf, "exports_freed": ef, "skipped": skipped}
 
 
 class RegisterRequest(BaseModel):
@@ -614,9 +632,9 @@ def register_paths(req: RegisterRequest):
     def add(p: Path):
         ext = p.suffix.lower()
         if ext in VIDEO_EXTS:
-            ALLOWED_VIDEOS.add(str(p)); videos.append(str(p))
+            ALLOWED_VIDEOS.add(winsafe.norm_case_path(p)); videos.append(str(p))
         elif ext in AUDIO_EXTS:
-            ALLOWED_SONGS.add(str(p)); songs.append(str(p))
+            ALLOWED_SONGS.add(winsafe.norm_case_path(p)); songs.append(str(p))
     for raw in req.paths:
         try:
             p = Path(str(raw)).expanduser().resolve()

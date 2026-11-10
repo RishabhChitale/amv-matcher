@@ -6,6 +6,7 @@ import json
 import os
 import base64
 import logging
+import ntpath
 import subprocess
 import sys
 import time
@@ -46,7 +47,7 @@ def save_geometry(x, y, width, height) -> bool:
         paths.DATA.mkdir(parents=True, exist_ok=True)
         tmp = _state_file().with_suffix(".tmp")
         tmp.write_text(json.dumps(dict(zip(("x", "y", "width", "height"), vals))))
-        os.replace(tmp, _state_file())
+        winsafe.replace_retry(tmp, _state_file())
         return True
     except (OSError, ValueError, TypeError):
         return False
@@ -139,11 +140,21 @@ def notify(title, body="") -> bool:
         return False
 
 
+def _program_files() -> list:
+    """%ProgramFiles% (and %ProgramW6432%) with the stock location as the last resort (W-11)."""
+    out = []
+    for v in ("ProgramFiles", "ProgramW6432"):
+        d = os.environ.get(v)
+        if d and d not in out:
+            out.append(d)
+    return out or [r"C:\Program Files"]
+
+
 def resolve_app(platform=None, exists=os.path.exists):
     """Path of the installed DaVinci Resolve, or None."""
     p = platform or sys.platform
     cands = {"darwin": ["/Applications/DaVinci Resolve/DaVinci Resolve.app"],
-             "win32": [r"C:\Program Files\Blackmagic Design\DaVinci Resolve\Resolve.exe"]}.get(p, [])
+             "win32": [ntpath.join(pf, r"Blackmagic Design\DaVinci Resolve\Resolve.exe") for pf in _program_files()]}.get(p, [])
     return next((c for c in cands if exists(c)), None)
 
 
@@ -165,11 +176,30 @@ MENU_ACTIONS = ("new", "open", "save", "save_as", "add_folder", "export", "undo"
                 "toggle_media", "toggle_stems", "toggle_effects", "play_pause", "help")
 
 
+def explorer_select_cmd(p) -> list:
+    """Explorer argv that selects a file: ONE token '/select,<path>' (W-13)."""
+    return ["explorer", "/select," + str(p)]
+
+
+def normalize_drop_path(p, platform=None) -> str:
+    """Native drop paths (pywebviewFullPath) -> clean OS path: forward slashes and a lowercase drive letter
+    become backslashes / upper-case, a \\\\?\\ prefix is dropped (Windows only; POSIX untouched) (W-17)."""
+    p = str(p)
+    if (platform or sys.platform) != "win32":
+        return p
+    if p.startswith("\\\\?\\") and not p.startswith("\\\\?\\UNC"):
+        p = p[4:]
+    p = ntpath.normpath(p)
+    if len(p) > 1 and p[1] == ":":
+        p = p[0].upper() + p[1:]
+    return p
+
+
 def run(cmd) -> bool:
     if not cmd:
         return False
     try:
-        subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        winsafe.popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return True
     except OSError:
         return False
