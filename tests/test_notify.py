@@ -1,4 +1,5 @@
 import base64
+import os
 import subprocess
 import sys
 import types
@@ -13,6 +14,15 @@ def clean(monkeypatch):
     ns._last_notify.clear()
 
 
+def plat(monkeypatch, name):
+    """Fake the OS for notify(): patch every probe nativeshell consults (sys.platform AND os.name), without touching
+    the real os module (pathlib etc. keep working on a real Windows host)."""
+    monkeypatch.setattr(sys, "platform", name)
+    fake_os = types.SimpleNamespace(**vars(os))
+    fake_os.name = "nt" if name == "win32" else "posix"
+    monkeypatch.setattr(ns, "os", fake_os)
+
+
 def fake_mod(monkeypatch, name, cls, calls):
     m = types.ModuleType(name)
     setattr(m, cls, lambda *a, **k: types.SimpleNamespace(show=lambda *a2, **k2: calls.append(name),
@@ -25,7 +35,7 @@ def block(monkeypatch, name):
 
 
 def test_order_winotify_first(monkeypatch):
-    monkeypatch.setattr(sys, "platform", "win32")
+    plat(monkeypatch, "win32")
     calls = []
     fake_mod(monkeypatch, "winotify", "Notification", calls)
     fake_mod(monkeypatch, "win10toast", "ToastNotifier", calls)
@@ -33,7 +43,7 @@ def test_order_winotify_first(monkeypatch):
 
 
 def test_order_win10toast_second(monkeypatch):
-    monkeypatch.setattr(sys, "platform", "win32")
+    plat(monkeypatch, "win32")
     calls = []
     block(monkeypatch, "winotify")
     fake_mod(monkeypatch, "win10toast", "ToastNotifier", calls)
@@ -41,7 +51,7 @@ def test_order_win10toast_second(monkeypatch):
 
 
 def test_powershell_fallback(monkeypatch):
-    monkeypatch.setattr(sys, "platform", "win32")
+    plat(monkeypatch, "win32")
     block(monkeypatch, "winotify")
     block(monkeypatch, "win10toast")
     seen = []
@@ -61,7 +71,7 @@ def test_encoded_command_roundtrip():
 
 
 def test_exceptions_swallowed(monkeypatch):
-    monkeypatch.setattr(sys, "platform", "win32")
+    plat(monkeypatch, "win32")
     block(monkeypatch, "winotify")
     block(monkeypatch, "win10toast")
     def boom(*a, **k):
@@ -69,12 +79,12 @@ def test_exceptions_swallowed(monkeypatch):
     monkeypatch.setattr(ns.winsafe, "run", boom)
     assert ns.notify("t", "b") is False
     monkeypatch.setattr(ns, "notify_cmd", boom)
-    monkeypatch.setattr(sys, "platform", "darwin")
+    plat(monkeypatch, "darwin")
     assert ns.notify("t2", "b") is False
 
 
 def test_rate_limit(monkeypatch):
-    monkeypatch.setattr(sys, "platform", "win32")
+    plat(monkeypatch, "win32")
     calls = []
     fake_mod(monkeypatch, "winotify", "Notification", calls)
     assert ns.notify("t", "b") is True
@@ -84,7 +94,7 @@ def test_rate_limit(monkeypatch):
 
 
 def test_macos_unchanged(monkeypatch):
-    monkeypatch.setattr(sys, "platform", "darwin")
+    plat(monkeypatch, "darwin")
     ran = []
     monkeypatch.setattr(ns, "run", lambda cmd: ran.append(cmd) or True)
     assert ns.notify("Done", "ok") is True
@@ -92,6 +102,6 @@ def test_macos_unchanged(monkeypatch):
 
 
 def test_linux_noop(monkeypatch):
-    monkeypatch.setattr(sys, "platform", "linux")
+    plat(monkeypatch, "linux")
     monkeypatch.setattr(ns, "run", lambda cmd: pytest.fail("must not run"))
     assert ns.notify("t", "b") is False
