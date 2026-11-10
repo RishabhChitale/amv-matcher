@@ -279,8 +279,8 @@ def tightness(song: dict, video: dict, offset: float, lead_s: float = None) -> d
     return out
 
 
-def _pack(song, video, off, tempo_pct, rate, sync_pct, arc_pct, lead_s=None):
-    return {
+def _pack(song, video, off, tempo_pct, rate, sync_pct, arc_pct, lead_s=None, quiet=None):
+    out = {
         "eligible": True,
         "total_pct": int(round(_combine(tempo_pct, sync_pct, arc_pct))),
         "tempo_pct": round(tempo_pct, 1),
@@ -292,6 +292,18 @@ def _pack(song, video, off, tempo_pct, rate, sync_pct, arc_pct, lead_s=None):
         "best_rate": rate,
         "tightness": tightness(song, video, off, lead_s),
     }
+    if quiet is not None:
+        out["quiet_sync"] = quiet["quiet_sync_pct"]
+        out["quiet_sync_beats"] = quiet["quiet_sync_beats_pct"]
+        out["quiet_events"] = quiet["n_calm"]
+    return out
+
+
+def _quiet_at(song, video, ev_t, ev_w, stem_targets, vd, off, lead_s):
+    """Stem-aware calm-block stats at `off` (see stemsync.quiet_stats)."""
+    from . import stemsync
+    return stemsync.quiet_stats(_beats(song), stemsync.target_times(stem_targets), ev_t, ev_w,
+                                stemsync.calm_mask(video, ev_t), vd, off, _lead(lead_s))
 
 
 def _tempo(song, video):
@@ -305,14 +317,23 @@ def _tempo(song, video):
     return pct, rate
 
 
-def score_at(song: dict, video: dict, offset: float, lead_s: float = None) -> dict:
+def score_at(song: dict, video: dict, offset: float, lead_s: float = None, stem_targets=None) -> dict:
     """Score one explicit offset (manual placement of the song on the timeline). lead_s: perceptual
-    lead in seconds (None = PERCEPTUAL_LEAD_S, clamped 0..0.12), applied to sync and tightness alike."""
+    lead in seconds (None = PERCEPTUAL_LEAD_S, clamped 0..0.12), applied to sync and tightness alike.
+    stem_targets (stemsync.stem_targets(...), optional): soft targets inside quiet song sections; calm
+    video events may then also lock to them (adds a 'quiet_sync' key). None = unchanged results."""
     tempo_pct, rate = _tempo(song, video)
     ev_t, ev_w = _events(video)
     vd = float(video["duration"])
-    sync = _sync_pct_at(song, ev_t, ev_w, vd, offset, lead_s) if len(ev_t) and len(song["beat_times"]) >= 2 else 0.0
-    return _pack(song, video, offset, tempo_pct, rate, sync, _arc_pct_at(song, video, offset), lead_s)
+    has = len(ev_t) and len(song["beat_times"]) >= 2
+    sync = _sync_pct_at(song, ev_t, ev_w, vd, offset, lead_s) if has else 0.0
+    quiet = None
+    if stem_targets is not None:
+        quiet = _quiet_at(song, video, ev_t, ev_w, stem_targets, vd, offset, lead_s) if has else \
+            {"quiet_sync_pct": 0.0, "quiet_sync_beats_pct": 0.0, "n_calm": 0, "calm_frac": 0.0, "gain": 0.0}
+        from . import stemsync
+        sync = stemsync.blend_sync(sync, quiet)
+    return _pack(song, video, offset, tempo_pct, rate, sync, _arc_pct_at(song, video, offset), lead_s, quiet)
 
 
 def _xcorr_offsets(song, ev_t, ev_w, lo, hi):
@@ -348,11 +369,12 @@ def _xcorr_offsets(song, ev_t, ev_w, lo, hi):
     return out
 
 
-def score(song: dict, video: dict, allow_negative: bool = False, lead_s: float = None) -> dict:
+def score(song: dict, video: dict, allow_negative: bool = False, lead_s: float = None, stem_targets=None) -> dict:
     """Best placement of the video window inside the song; ineligible if the song is shorter.
     With allow_negative the song may also start up to 3 s after the video (padded with
     silence, no length penalty). Off by default: splice/auto-sync need trim_start_s >= 0.
-    lead_s: perceptual lead in seconds (None = PERCEPTUAL_LEAD_S, clamped 0..0.12)."""
+    lead_s: perceptual lead in seconds (None = PERCEPTUAL_LEAD_S, clamped 0..0.12).
+    stem_targets: optional soft targets (see score_at); None = unchanged results."""
     vd, sd = float(video["duration"]), float(song["duration"])
     if sd < vd:
         return {
@@ -371,6 +393,9 @@ def score(song: dict, video: dict, allow_negative: bool = False, lead_s: float =
 
     def comb_at(o):
         sync = _sync_pct_at(song, ev_t, ev_w, vd, o, lead_s) if has_sync else 0.0
+        if stem_targets is not None and has_sync:
+            from . import stemsync
+            sync = stemsync.blend_sync(sync, _quiet_at(song, video, ev_t, ev_w, stem_targets, vd, o, lead_s))
         arc = _arc_pct_at(song, video, o)
         return W_SYNC * sync + W_ARC * arc, sync, arc
 
@@ -387,4 +412,5 @@ def score(song: dict, video: dict, allow_negative: bool = False, lead_s: float =
             if best is None or c > best[0]:
                 best = (c, o, sy, ar)
     _, off, sync, arc = best
-    return _pack(song, video, off, tempo_pct, rate, sync, arc, lead_s)
+    quiet = _quiet_at(song, video, ev_t, ev_w, stem_targets, vd, off, lead_s) if (stem_targets is not None and has_sync) else None
+    return _pack(song, video, off, tempo_pct, rate, sync, arc, lead_s, quiet)
