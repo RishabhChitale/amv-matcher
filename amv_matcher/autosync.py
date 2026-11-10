@@ -10,6 +10,7 @@ import time
 import numpy as np
 
 from . import score as S
+from . import stemsync
 from .retime import Cancelled, apply_warp, plan_retime
 from .arrange import plan_arrangement
 from .splice import _assemble, lead_silence, plan_splice
@@ -220,7 +221,7 @@ ARRANGE_MIN_LEFT_S = 8.0   # arrange costs ~5 s on a 4-minute song: skipped when
 
 def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min_section_s, max_cuts,
          min_gain, max_passes, allow_splice, lead_s=0.0, loop_segs=None, memo=None, deadline=None, lock_original=False,
-         progress_cb=None, should_cancel=None, t_start=None):
+         progress_cb=None, should_cancel=None, t_start=None, stem_targets=None):
     t0 = time.perf_counter()
     t_start = t0 if t_start is None else t_start
     steps, limits = [], []
@@ -235,8 +236,13 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
             hit = memo[key] = (fn(), objs)  # objs keep the id()-keyed arguments alive
         return hit[0]
 
+    stem_kw = {"stem_targets": stem_targets} if stem_targets is not None else {}   # None: call exactly as before
+    xt = stemsync.target_times(stem_targets) if stem_targets is not None else None
+    sid = id(stem_targets) if stem_targets is not None else 0
+
     def sa(s_, v_, o_):
-        return mm(("sa", id(s_), id(v_), float(o_), lead_s), (s_, v_), lambda: S.score_at(s_, v_, o_, lead_s=lead_s))
+        return mm(("sa", id(s_), id(v_), float(o_), lead_s, sid), (s_, v_, stem_targets),
+                  lambda: S.score_at(s_, v_, o_, lead_s=lead_s, **stem_kw))
 
     def bo(s_, v_, **kw):
         return mm(("bo", id(s_), id(v_), tuple(sorted(kw.items())), lead_s), (s_, v_),
@@ -397,9 +403,10 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
                 begin("retime", _tot(cur))
                 alt_off = None
                 try:
-                    rp = mm(("rt", id(cur_song), id(video), float(offset), max_speed_dev, min_section_s, lead_s), (cur_song, video),
+                    rp = mm(("rt", id(cur_song), id(video), float(offset), max_speed_dev, min_section_s, lead_s, sid),
+                            (cur_song, video, stem_targets),
                             lambda: plan_retime(cur_song, video, offset, max_speed_dev, min_section_s, lead_s=lead_s,
-                                                should_cancel=cancel))
+                                                should_cancel=cancel, extra_targets=xt))
                 except Cancelled:
                     break
                 wv = aw(rp)
@@ -415,9 +422,10 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
                                      lambda: _alt_offsets(cur_song, video, [offset], lead_s=lead_s)):
                             if cancel() or left() <= 0:
                                 break
-                            rp2 = mm(("rt", id(cur_song), id(video), float(o2), max_speed_dev, min_section_s, lead_s), (cur_song, video),
+                            rp2 = mm(("rt", id(cur_song), id(video), float(o2), max_speed_dev, min_section_s, lead_s, sid),
+                                     (cur_song, video, stem_targets),
                                      lambda: plan_retime(cur_song, video, o2, max_speed_dev, min_section_s, lead_s=lead_s,
-                                                         should_cancel=cancel))
+                                                         should_cancel=cancel, extra_targets=xt))
                             if not rp2["sections"] or not rp2["speed_jump_ok"]:
                                 continue
                             wv2 = aw(rp2)
@@ -499,7 +507,7 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
               max_speed_dev: float = 0.25, max_tempo_dev: float = 0.08, min_section_s: float = 0.75,
               max_cuts: int = 3, min_gain: float = 0.5, max_passes: int = 2, allow_splice: bool = True, lead_s: float | None = None,
               allow_loop: bool = False, original: bool = False, unlock_original: bool = False,
-              *, progress_cb=None, should_cancel=None) -> dict:
+              *, progress_cb=None, should_cancel=None, stem_targets=None) -> dict:
     """Try several tool orders (each from the baseline) and keep the best path, so the result is never
     worse than any single tool applied directly.
 
@@ -521,7 +529,10 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
     (step = tool name: offset, tempo, splice, arrange, retime, micro; elapsed_s counts from the call start;
     exceptions in it are ignored). should_cancel() -> bool is polled between steps and inside the retime and
     splice planners; once it returns True the best valid result so far is returned (same shape) with
-    limits_hit containing 'cancelled'."""
+    limits_hit containing 'cancelled'.
+
+    stem_targets (optional, stemsync.stem_targets(song, stems_feats)) go to every score call and, as extra
+    soft snap targets for calm-block events, to the retime planner; None = unchanged behaviour."""
     lead_s = S.PERCEPTUAL_LEAD_S if lead_s is None else lead_s
     lead_s = min(0.12, max(0.0, float(lead_s)))   # cuts/peaks land lead_s before the beat (0 = on it)
     t0 = time.perf_counter()
@@ -571,7 +582,7 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
         run = _run(song, video, orders[name], target, max(rem / max(1, len(names) - i), 2.0), max_speed_dev,
                    max_tempo_dev, min_section_s, max_cuts, min_gain, max_passes, allow_splice, lead_s,
                    loop_segs=loop_segs, memo=memo, deadline=deadline, lock_original=lock,
-                   progress_cb=progress_cb, should_cancel=cancelled, t_start=t0)
+                   progress_cb=progress_cb, should_cancel=cancelled, t_start=t0, stem_targets=stem_targets)
         run["path"] = name
         runs.append(run)
         if best is None or _rank(run["cur"]) > _rank(best["cur"]):
@@ -612,6 +623,9 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
     final["total_pct"] = int(round(_tot(cur)))
     base0 = best["steps"][0]["score_after"] if best["steps"] else _tot(cur)
     final["natural_total_pct"] = int(round(base0))
+    for _k in ("quiet_sync", "quiet_sync_beats", "quiet_events"):      # only present when stem_targets were given
+        if _k in cur:
+            final[_k] = cur[_k]
     final["tightness"] = _tight(cur) or None
     final["tight_pct"] = _tight(cur).get("tight_pct")
     final["median_err_ms"] = _tight(cur).get("median_err_ms")

@@ -10,6 +10,7 @@ DP_JUMP = 0.14           # DP margin under MAX_JUMP (warp points are rounded)
 BUCKET = 0.05            # incoming-speed buckets kept per DP state
 MERGE_S = 0.15           # events closer than this are placed together
 LOOKBACK = 6             # matched events a chain may skip back over
+EXTRA_W = 0.5            # a stem target is worth this share of a beat for a calm event (beats win ties)
 NEAR = 2                 # candidate beats per side of an event
 TAIL_STEP_S = 1.0        # video seconds per tail ramp step
 SPEED_COST = 0.02        # tie-break: prefer speeds near 1
@@ -58,7 +59,7 @@ def _bucket(speed):
     return int(round(speed / BUCKET))
 
 
-def _events_for_dp(song, video, offset, ev_t, ev_w, vd):
+def _events_for_dp(song, video, offset, ev_t, ev_w, vd, calm=None):
     """Events the warp should place: sync events (cuts/peaks -> beats) plus energy events
     (peak-segment starts -> drops, lull starts -> song lulls), merged when closer than MERGE_S."""
     W = max(float(np.sum(ev_w)), 1e-6)
@@ -68,9 +69,12 @@ def _events_for_dp(song, video, offset, ev_t, ev_w, vd):
     arc_events = [e for e in arc_events if 0.05 < e[1] < vd]
     n_arc = len(arc_events)
     arc_unit = S.W_ARC * S.ARC_BONUS_PER_MATCH * min(1.0, (S.ARC_BONUS_MAX / S.ARC_BONUS_PER_MATCH) / max(1, n_arc))
-    raw = [{"t": float(t), "sync": float(w), "drop": False, "lull": None} for t, w in zip(ev_t, ev_w)]
+    cl = calm if calm is not None else np.zeros(len(ev_t), dtype=bool)
+    raw = [{"t": float(t), "sync": float(w), "drop": False, "lull": None, "calm": bool(c)}
+           for t, w, c in zip(ev_t, ev_w, cl)]
     for e in arc_events:
-        raw.append({"t": e[1], "sync": 0.0, "drop": e[0] == "drop", "lull": e[2] if e[0] == "lull" else None})
+        raw.append({"t": e[1], "sync": 0.0, "drop": e[0] == "drop", "lull": e[2] if e[0] == "lull" else None,
+                    "calm": False})
     raw.sort(key=lambda d: d["t"])
     merged = []
     for e in raw:
@@ -78,6 +82,7 @@ def _events_for_dp(song, video, offset, ev_t, ev_w, vd):
             m = merged[-1]
             m["sync"] += e["sync"]
             m["drop"] = m["drop"] or e["drop"]
+            m["calm"] = m.get("calm", False) or e.get("calm", False)
             m["lull"] = m["lull"] if m["lull"] is not None else e["lull"]
         else:
             merged.append(dict(e))
@@ -86,7 +91,8 @@ def _events_for_dp(song, video, offset, ev_t, ev_w, vd):
     return merged, sync_unit, arc_unit, drops, lulls
 
 
-def _anchors(events, sync_unit, arc_unit, drops, lulls, beats_out, dev, jump, should_cancel=None):
+def _anchors(events, sync_unit, arc_unit, drops, lulls, beats_out, dev, jump, should_cancel=None,
+             extra_out=None, extra_w=1.0):
     """DP over (event, candidate output time, incoming speed bucket).
 
     Chain links have speed in [1-dev, 1+dev]; consecutive link speeds differ by <= jump;
@@ -99,6 +105,14 @@ def _anchors(events, sync_unit, arc_unit, drops, lulls, beats_out, dev, jump, sh
         e = ev["t"]
         k = int(np.searchsorted(beats_out, e))
         cs = {round(float(beats_out[j]), 4): True for j in range(max(0, k - NEAR), min(len(beats_out), k + NEAR))}
+        xs = set()
+        if ev.get("calm") and extra_out is not None and len(extra_out):      # soft stem targets: calm events only
+            kx = int(np.searchsorted(extra_out, e))
+            for j in range(max(0, kx - NEAR), min(len(extra_out), kx + NEAR)):
+                c = round(float(extra_out[j]), 4)
+                if c not in cs:
+                    cs[c] = True
+                    xs.add(c)
         if ev["drop"] and len(drops):
             for d in drops[np.argsort(np.abs(drops - e))[:2]]:
                 cs.setdefault(round(float(d), 4), False)
@@ -112,7 +126,7 @@ def _anchors(events, sync_unit, arc_unit, drops, lulls, beats_out, dev, jump, sh
                 continue
             v = 0.0
             if ev["sync"] and (is_beat or (len(beats_out) and np.min(np.abs(beats_out - c)) <= 0.02)):
-                v += sync_unit * ev["sync"]
+                v += sync_unit * ev["sync"] * (extra_w if c in xs else 1.0)
             if ev["drop"] and len(drops) and np.min(np.abs(drops - c)) <= S.DROP_MATCH_S - 0.05:
                 v += arc_unit
             if ev["lull"] is not None and any(sa < c + ev["lull"] and sb > c for sa, sb in lulls):
@@ -184,10 +198,13 @@ def _sections(warp, min_section_s, speed_tol=0.02):
 
 
 def plan_retime(song: dict, video: dict, offset: float, max_speed_dev: float = 0.25,
-                min_section_s: float = 0.75, lead_s: float = None, *, should_cancel=None) -> dict:
+                min_section_s: float = 0.75, lead_s: float = None, *, should_cancel=None,
+                extra_targets=None) -> dict:
     """Warp video time so events land on the nearest suitable beats (song at `offset`).
 
     Output time t_out = song time - offset. speed = video seconds per output second.
+    extra_targets (song times, e.g. stemsync.target_times(...)) are soft snap candidates next to the beat
+    grid for events inside the video's CALM blocks only (same lead as the beats); None = beats only.
     """
     vd = float(video["duration"])
     ev_t, ev_w = S._events(video)
@@ -201,9 +218,18 @@ def plan_retime(song: dict, video: dict, offset: float, max_speed_dev: float = 0
     beats = np.asarray(song["beat_times"], dtype=float) - float(offset) - lead_s
     beats = beats[(beats > 0) & (beats < vd / max(1e-6, 1.0 - max_speed_dev) + 1.0)]
     before = S.score_at(song, video, offset, lead_s=lead_s)["sync_pct"]
-    events, sync_unit, arc_unit, drops, lulls = _events_for_dp(song, video, offset, ev_t, ev_w, vd)
-    anchors = _anchors(events, sync_unit, arc_unit, drops, lulls, beats, max_speed_dev, DP_JUMP, should_cancel) \
-        if events and (len(beats) or len(drops) or lulls) else []
+    extra_out, calm = None, None
+    if extra_targets is not None and len(extra_targets):
+        from . import stemsync
+        calm = stemsync.calm_mask(video, ev_t)
+        x = np.sort(np.asarray(extra_targets, dtype=float)) - float(offset) - lead_s
+        extra_out = x[(x > 0) & (x < vd / max(1e-6, 1.0 - max_speed_dev) + 1.0)]
+        if not calm.any():
+            extra_out = None
+    events, sync_unit, arc_unit, drops, lulls = _events_for_dp(song, video, offset, ev_t, ev_w, vd, calm)
+    anchors = _anchors(events, sync_unit, arc_unit, drops, lulls, beats, max_speed_dev, DP_JUMP, should_cancel,
+                       extra_out, EXTRA_W) \
+        if events and (len(beats) or len(drops) or lulls or extra_out is not None) else []
     warp = [[0.0, 0.0]] + [[a, b] for a, b in anchors]
     if not anchors:
         warp.append([vd, vd])

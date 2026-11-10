@@ -467,6 +467,18 @@ def _sections_with_stems(path, song: dict) -> list:
     return secs
 
 
+def _cached_stem_targets(path, song: dict) -> list:
+    """Soft stem sync targets for the quiet parts when stems are ALREADY cached (never separates)."""
+    try:
+        from . import stems as _st, stemsync
+        for prov in ("demucs", "hpss"):
+            if _st.cached(str(path), prov):
+                return stemsync.stem_targets(song, _st.features_for(str(path), prov))
+    except Exception:
+        pass
+    return []
+
+
 @app.get("/api/waveform")
 def waveform(path: str):
     p = _safe_song(path)
@@ -1071,6 +1083,10 @@ def _run_autosync(job_id: str, vp: Path, sp: Path, opts: dict, pair):
             kw["progress_cb"] = _progress
         if sup["should_cancel"]:
             kw["should_cancel"] = ev.is_set
+        if "stem_targets" in inspect.signature(_autosync.auto_sync).parameters:
+            _stt = _cached_stem_targets(sp, song)
+            if _stt:
+                kw["stem_targets"] = _stt
         res = _autosync.auto_sync(song, video, budget_s=opts["budget_s"], max_speed_dev=opts["max_speed_dev"],
                                   max_tempo_dev=opts["max_tempo_pct"] / 100.0, max_cuts=opts["max_cuts"],
                                   lead_s=opts["lead_s"], allow_loop=opts["allow_loop"], **kw)

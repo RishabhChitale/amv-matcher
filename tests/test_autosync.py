@@ -667,3 +667,36 @@ def test_slow24_real_media_retime_tried_or_reported(tmp_path):
     rt = [s for s in res["steps"] if s["tool"] == "retime"]
     assert rt and all(s["kept"] is False or s["kept"] is True for s in rt)
     print([(s["params"].get("not_in_path"), s["kept"]) for s in rt])
+
+
+# ---- stem_targets threading ---------------------------------------------------------------------
+def _stem_pair():
+    song = make_song(duration=40.0)
+    vid = make_video(slow_section_cuts(), duration=28.0)
+    vid["segments_struct"] = [{"kind": "calm", "start": 0.0, "end": 28.0}]
+    return song, vid
+
+
+def test_stem_targets_threaded_to_score_at(monkeypatch):
+    from amv_matcher import score as S
+    seen = []
+    real = S.score_at
+
+    def spy(*a, **k):
+        seen.append("stem_targets" in k)
+        return real(*a, **k)
+    monkeypatch.setattr(S, "score_at", spy)
+    song, vid = _stem_pair()
+    tg = [{"t": 0.25 + 0.5 * i, "weight": 0.5, "stem": "hh", "kind": "detail"} for i in range(60)]
+    auto_sync(song, vid, budget_s=5.0)
+    assert seen and not any(seen)                     # None -> byte-identical call, no kwarg
+    seen.clear()
+    auto_sync(song, vid, budget_s=5.0, stem_targets=tg)
+    assert any(seen)                                  # the _run scoring calls carry the targets (offset search stays beat-only)
+
+
+def test_stem_targets_none_matches_default():
+    song, vid = _stem_pair()
+    a = auto_sync(song, vid, budget_s=5.0)
+    b = auto_sync(song, vid, budget_s=5.0, stem_targets=None)
+    assert a["final"] == b["final"]

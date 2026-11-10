@@ -91,3 +91,53 @@ def test_tail_returns_to_speed_one():
     w = np.asarray(r["warp"], dtype=float)
     spd = np.diff(w[:, 0]) / np.diff(w[:, 1])
     assert abs(spd[-1] - 1.0) < 1e-2 and r["speed_jump_ok"]
+
+
+# ---- stem targets (extra_targets) -------------------------------------------------------------
+def _calm_video(cuts, lo=0.0, hi=30.0):
+    v = make_video(cuts)
+    v["segments_struct"] = [{"kind": "calm", "start": lo, "end": hi}]
+    return v
+
+
+def _plan_key(r):
+    return (np.asarray(r["warp"]).round(9).tolist(), r["sync_after"], r["out_duration"])
+
+
+def test_extra_targets_none_or_empty_identical():
+    song, vid = make_song(), _calm_video(slow_section_cuts())
+    base = plan_retime(song, vid, 0.0)
+    assert _plan_key(plan_retime(song, vid, 0.0, extra_targets=None)) == _plan_key(base)
+    assert _plan_key(plan_retime(song, vid, 0.0, extra_targets=[])) == _plan_key(base)
+
+
+def test_extra_targets_ignored_outside_calm_blocks():
+    song = make_song()
+    cuts = slow_section_cuts()
+    extra = np.arange(0.25, 28.0, 0.5)
+    no_calm = make_video(cuts)                      # no segments_struct -> no calm events
+    assert _plan_key(plan_retime(song, no_calm, 0.0, extra_targets=extra)) == _plan_key(plan_retime(song, no_calm, 0.0))
+    loud = make_video(cuts)
+    loud["segments_struct"] = [{"kind": "hot", "start": 0.0, "end": 30.0}]
+    assert _plan_key(plan_retime(song, loud, 0.0, extra_targets=extra)) == _plan_key(plan_retime(song, loud, 0.0))
+
+
+def test_extra_targets_pull_calm_cuts_onto_stem_ticks():
+    """Calm cuts ride half-beat soft ticks (slightly drifting); with the ticks as targets they stay locked."""
+    song = make_song()
+    cuts = 0.25 + 0.5 * np.arange(0, 40) * 1.02
+    vid = _calm_video(cuts, 0.0, 30.0)
+    ticks = np.arange(0.25, 30.0, 0.5)
+    r0 = plan_retime(song, vid, 0.0, lead_s=0.0)
+    r1 = plan_retime(song, vid, 0.0, lead_s=0.0, extra_targets=ticks)
+    w = np.asarray(r1["warp"])
+    assert np.all(np.diff(w[:, 0]) > 0) and np.all(np.diff(w[:, 1]) > 0)
+    sp = np.diff(w[:, 0]) / np.diff(w[:, 1])
+    assert sp.min() >= 0.75 - 1e-3 and sp.max() <= 1.25 + 1e-3
+    union = np.sort(np.concatenate([song["beat_times"], ticks]))
+
+    def near(r):
+        ww = np.asarray(r["warp"])
+        out = np.interp(cuts, ww[:, 0], ww[:, 1]) if len(ww) else cuts
+        return float(np.mean(np.abs(out[:, None] - union[None, :]).min(axis=1) <= 0.04))
+    assert near(r1) >= near(r0) and near(r1) >= 0.9
