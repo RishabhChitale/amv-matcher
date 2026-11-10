@@ -24,13 +24,14 @@ This creates `.venv`, installs dependencies and starts the server. Open http://1
 - `.venv/bin/python tools/ui_smoke.py` drives the UI in headless Chrome and prints PASS/FAIL per check. It needs Google Chrome installed and the server running (`./run.sh`).
 
 ## How the score works
-`total = 0.20 * tempo + 0.40 * sync + 0.40 * arc`, each 0-100.
-- **Tempo (20%)**: song BPM vs the video's motion tempo, half/double time allowed.
-- **Sync (40%)**: how many video cuts and motion peaks land on song beats.
-- **Arc (40%)**: how closely the video's energy curve follows the song's, plus bonuses for peaks on drops and calm parts on lulls.
-- **Length rule**: a song shorter than the video is ineligible (listed under "Too short"). A longer song is trimmed: the best window is chosen and shown as the trim window.
+`total = 0.20 * tempo + 0.60 * sync + 0.20 * arc`, each 0-100.
+- **Tempo (20%)**: song BPM vs the video's tempo, half/double time allowed.
+- **Sync (60%)**: how sharply the video's cuts and motion peaks lock to the song's beat at this alignment, compared with the same song slightly shifted or re-tempoed. A song that only fits at its exact tempo and offset scores high; one that fits equally well at wrong tempos scores low.
+- **Arc (20%)**: how closely the video's energy curve follows the song's, plus bonuses for peaks on drops and calm parts on lulls.
+- **Length rule**: a song shorter than the video is ineligible (listed under "Too short"). A longer song is trimmed: the best window is chosen and shown as the trim window. The song may also start up to 3 s after the video starts (a negative offset).
+- **Original audio**: if the video's own soundtrack is in the folder it is scored at offset 0 only, and every other song shows its difference from it ("vs original").
 
-Details and constants: [docs/HOW-SCORING-WORKS.md](docs/HOW-SCORING-WORKS.md).
+Details, constants and how we checked it: [docs/HOW-SCORING-WORKS.md](docs/HOW-SCORING-WORKS.md).
 
 ## Known limits
 - .mkv and some other formats may not preview in the browser; scores still work.
