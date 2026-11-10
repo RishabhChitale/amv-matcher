@@ -58,6 +58,11 @@ def frames(path):
         return [f.to_ndarray(format="rgb24").astype(np.int16) for f in c.decode(video=0)]
 
 
+def _pcm(path):
+    with av.open(str(path)) as c:
+        return np.concatenate([f.to_ndarray()[0] for f in c.decode(audio=0)])
+
+
 def plan_of(warp, **kw):
     p = {"offset": 0.0, "tempo_ratio": 1.0, "segments": [], "nudges": [], "lead_silence_s": 0.0,
          "retime": {"warp": warp, "out_duration": warp[-1][1]}}
@@ -400,7 +405,17 @@ def test_boom_zero_is_identical(clip, tmp_path):
     song = {"beat_times": [1.0, 2.0], "drops": [2.0], "duration": 4.0}
     a = _boom_render(clip, tmp_path, "z0.mp4", song)
     b = _boom_render(clip, tmp_path, "z1.mp4", song, boom=0)
-    assert a.read_bytes() == b.read_bytes()
+    # Compare decoded content, not encoded bytes: libx264 + the mp4 muxer are not bit-deterministic across
+    # OSes (Windows CI differed inside mdat), but "boom=0 never touches pixels" is a pixel/audio claim.
+    fa, fb = frames(a), frames(b)
+    assert len(fa) == len(fb) == int(4.0 * FPS)
+    # frames equal up to encoder noise (exactly equal where the encode is deterministic)
+    assert max(int(np.abs(x - y).max()) for x, y in zip(fa, fb)) <= 3
+    assert info(a)["frames"] == info(b)["frames"] and abs(info(a)["asec"] - info(b)["asec"]) < 1e-3
+    assert np.array_equal(_pcm(a), _pcm(b))
+    # and the check has teeth: a real boom changes pixels far beyond that noise
+    c = _boom_render(clip, tmp_path, "z2.mp4", song, boom=80, decay=180)
+    assert max(int(np.abs(x - y).max()) for x, y in zip(fa, frames(c))) > 30
     assert render.pump_track({"boom": 0, "song": song}, {}, 4.0, FPS, 96) is None
     arr = np.zeros((4, 4, 3), np.uint8)
     assert render.apply_pump(arr, 1.0, 1.0, 0, 0) is arr
