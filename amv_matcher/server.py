@@ -9,6 +9,7 @@ import re
 import urllib.parse
 import shutil
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -77,11 +78,81 @@ def _in_music_dirs(p: Path) -> bool:
     return any(p == Path(d) or Path(d) in p.parents for d in ALLOWED_DIRS)
 
 
+
+# ---- background analysis workers: heavy work runs in a process pool, never on the event loop
+_WP = None
+_WP_LOCK = threading.Lock()
+
+
+def _wp():
+    """The shared WorkerPool (created on first use); None when AMV_WORKERS=0 (inline, for tests)."""
+    global _WP
+    if os.environ.get("AMV_WORKERS") == "0":
+        return None
+    with _WP_LOCK:
+        if _WP is None:
+            from .workers import WorkerPool
+            n = os.environ.get("AMV_WORKERS")
+            _WP = WorkerPool(workers=int(n) if n and n.isdigit() else None)
+        return _WP
+
+
+def shutdown_workers():
+    global _WP
+    with _WP_LOCK:
+        wp, _WP = _WP, None
+    if wp is not None:
+        wp.shutdown()
+
+
+def _wait(kind: str, path, priority: int = 0, **params):
+    """Submit a worker job and block THIS (sync endpoint) thread until it finishes; returns its result."""
+    wp = _wp()
+    jid = wp.submit(kind, str(path), priority, **params)
+    while True:
+        st = wp.status(jid)
+        if st is None or st["state"] in ("error", "cancelled"):
+            raise ValueError((st or {}).get("error") or f"{kind} job {(st or {}).get('state', 'lost')}")
+        if st["state"] == "done":
+            return st["result"]
+        time.sleep(0.03)
+
+
+def _song(path):
+    if _wp() is None:
+        return analyze_song(path)
+    try:
+        res = _wait("song_analysis", path, 0)
+    except ValueError:
+        raise
+    except Exception:
+        return analyze_song(path)
+    try:    # the worker wrote songs.json: drop this process's stale in-memory copy
+        from . import audio as _audio
+        c = get_cache(_audio.CACHE_PATH)
+        with c.lock:
+            c.data = None
+    except Exception:
+        pass
+    return res
+
+
+def _video(path):
+    if _wp() is None:
+        return analyze_video(path)
+    try:
+        return _wait("video_analysis", path, 0)
+    except ValueError:
+        raise
+    except Exception:
+        return analyze_video(path)
+
+
 def _full_video(vp: Path) -> dict:
     """Cached video analysis plus has_audio / original_audio (embedded audio extracted to a wav)."""
     video = VIDEOS.get(str(vp))
     if video is None:
-        video = analyze_video(str(vp))
+        video = _video(str(vp))
         video["has_audio"], video["original_audio"] = False, None
         try:
             wav = media.extract_audio(vp, EXTRACTED)
@@ -94,7 +165,7 @@ def _full_video(vp: Path) -> dict:
         try:
             if _needs_proxy(vp):
                 video["preview_proxy"] = True
-                proxy.build_async(vp, _PROXY_POOL)
+                _proxy_bg(vp)
         except Exception:
             pass
         VIDEOS[str(vp)] = video
@@ -128,7 +199,7 @@ def _score_songs(job: dict, video: dict, songs: list):
     if orig:      # the video's own soundtrack: already aligned, so offset 0 is fixed
         job.update(message="Analyzing original audio")
         try:
-            song = analyze_song(orig["path"])
+            song = _song(orig["path"])
             if song["duration"] >= float(video["duration"]) - ORIGINAL_SLACK_S:
                 sc = score_at(song, video, 0.0)
             else:
@@ -143,7 +214,7 @@ def _score_songs(job: dict, video: dict, songs: list):
     for i, p in enumerate(songs, 1):
         job.update(done=i - 1, message=f"Analyzing song {i}/{len(songs)}: {p.name}")
         try:
-            song = analyze_song(str(p))
+            song = _song(str(p))
             sc = score(song, video, allow_negative=True)
             results.append({"path": str(p), "name": p.name, "source": "song", "bpm": song["bpm"],
                             "duration": song["duration"], **sc, "natural_total_pct": sc.get("total_pct"),
@@ -225,6 +296,20 @@ def scan_status(job_id: str):
     return JSONResponse(job)
 
 
+def allow_path(path) -> str:
+    """Add an existing media file (linked in place, never copied) to the allowed set by its extension."""
+    p = Path(path).expanduser().resolve()
+    if not p.is_file():
+        raise ValueError("not a file")
+    if p.suffix.lower() in VIDEO_EXTS:
+        ALLOWED_VIDEOS.add(str(p))
+    elif p.suffix.lower() in AUDIO_EXTS:
+        ALLOWED_SONGS.add(str(p))
+    else:
+        raise ValueError("not a media file")
+    return str(p)
+
+
 def _safe_song(path: str) -> Path:
     try:
         p = Path(path).expanduser().resolve()
@@ -251,6 +336,14 @@ def audio(path: str):
 
 
 _PROXY_POOL = ThreadPoolExecutor(max_workers=1)
+
+
+def _proxy_bg(vp: Path):
+    wp = _wp()
+    if wp is None:
+        proxy.build_async(vp, _PROXY_POOL)
+    else:
+        wp.submit("proxy", str(vp), 1)
 _NEEDS_PROXY: dict = {}
 
 
@@ -266,10 +359,92 @@ def video_file(path: str):
     vp = _safe_video(path)
     if _needs_proxy(vp):   # browser can't decode this one: serve the cached 540p H.264 proxy
         try:
-            return FileResponse(proxy.build(vp))
+            wp = _wp()
+            return FileResponse(Path(_wait("proxy", vp, 0)["proxy"]) if wp else proxy.build(vp))
         except Exception:
             pass           # last resort: the original (the UI shows its "can't preview" message)
     return FileResponse(vp)  # Starlette FileResponse honours Range -> 206
+
+
+# ---- worker-pool job API (non-blocking; the UI polls /api/jobs?since=)
+class JobRequest(BaseModel):
+    kind: str
+    path: str
+    priority: int = 1
+    params: dict = Field(default_factory=dict)
+
+
+def _need_wp():
+    wp = _wp()
+    if wp is None:
+        raise HTTPException(503, "background workers are disabled")
+    return wp
+
+
+@app.post("/api/jobs", dependencies=[Depends(_origin_guard)])
+def jobs_submit(req: JobRequest):
+    p = Path(req.path).expanduser().resolve()
+    if req.kind == "song_analysis":
+        p = _safe_song(str(p))
+    elif req.kind in ("video_analysis", "probe", "thumbnails", "filmstrip", "proxy"):
+        p = _safe_video(str(p))
+    else:
+        raise HTTPException(400, f"unknown job kind: {req.kind}")
+    params = {k: v for k, v in req.params.items() if k in ("n", "width")}
+    try:
+        jid = _need_wp().submit(req.kind, str(p), req.priority, **params)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"id": jid, **(_need_wp().status(jid) or {})}
+
+
+@app.get("/api/jobs/stats")
+def jobs_stats():
+    return _need_wp().stats()
+
+
+@app.get("/api/jobs")
+def jobs_list(since: int = 0, state: Optional[str] = None):
+    wp = _need_wp()
+    return {"events": wp.events(since), "stats": wp.stats(), **({"jobs": wp.jobs(state)} if state else {})}
+
+
+@app.get("/api/jobs/{job_id}")
+def jobs_get(job_id: str):
+    st = _need_wp().status(job_id)
+    if st is None:
+        raise HTTPException(404, "unknown job")
+    return st
+
+
+@app.post("/api/jobs/{job_id}/cancel", dependencies=[Depends(_origin_guard)])
+def jobs_cancel(job_id: str):
+    return {"cancelled": _need_wp().cancel(job_id)}
+
+
+class BumpRequest(BaseModel):
+    priority: int = 0
+
+
+@app.post("/api/jobs/{job_id}/bump", dependencies=[Depends(_origin_guard)])
+def jobs_bump(job_id: str, req: BumpRequest):
+    try:
+        return {"bumped": _need_wp().bump(job_id, req.priority)}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/prewarm/pause", dependencies=[Depends(_origin_guard)])
+def prewarm_pause():
+    _need_wp().pause_prewarm()
+    return {"paused": True}
+
+
+@app.post("/api/prewarm/resume", dependencies=[Depends(_origin_guard)])
+def prewarm_resume():
+    _need_wp().resume_prewarm()
+    return {"paused": False}
+
 
 
 def _sections_with_stems(path, song: dict) -> list:
@@ -295,7 +470,7 @@ def _sections_with_stems(path, song: dict) -> list:
 @app.get("/api/waveform")
 def waveform(path: str):
     p = _safe_song(path)
-    song = analyze_song(str(p))
+    song = _song(str(p))
     return {"peaks": song_waveform(str(p)), "duration": song["duration"], "bpm": song["bpm"],
             "beat_times": song["beat_times"], "drops": song["drops"], "lulls": song["lulls"],
             "beat_strengths": song.get("beat_strengths", []),
@@ -315,7 +490,7 @@ def score_offset(req: ScoreRequest):
     video = VIDEOS.get(vp)
     if video is None:
         raise HTTPException(404, "Video not scanned yet")
-    song = analyze_song(str(_safe_song(req.song_path)))
+    song = _song(str(_safe_song(req.song_path)))
     off = max(MIN_OFFSET_S, min(req.offset, max(0.0, song["duration"] - video["duration"])))
     return score_at(song, video, off)
 
@@ -323,7 +498,7 @@ def score_offset(req: ScoreRequest):
 @app.get("/api/pump")
 def pump(path: str, boom: float = 40, decay: float = 180, drops_only: bool = False,
          fps: float = 30, shake: bool = False, start: float = 0.0, duration: float = None):
-    song = analyze_song(str(_safe_song(path)))
+    song = _song(str(_safe_song(path)))
     return {"fps": fps, "keyframes": pump_keyframes(song, boom, decay, drops_only, fps,
                                                     duration=duration, shake=shake, start=start)}
 
@@ -523,7 +698,7 @@ def splice(req: SpliceRequest):
     vp, sp = _safe_video(req.video_path), _safe_song(req.song_path)
     key = (str(sp), str(vp), req.max_cuts)
     if key not in SPLICE_CACHE:
-        video, song = _vid_for(vp), analyze_song(str(sp))
+        video, song = _vid_for(vp), _song(str(sp))
         SPLICE_CACHE[key] = plan_splice(song, video, req.max_cuts)
     return SPLICE_CACHE[key]
 
@@ -557,7 +732,7 @@ def render_audio(req: RenderRequest):
         raise HTTPException(422, f"Need 1-{MAX_SEGMENTS} segments")
     video = _vid_for(vp)
     vd = float(video["duration"])
-    sd = analyze_song(str(sp))["duration"]
+    sd = _song(str(sp))["duration"]
     for s in segs:
         if not (0 <= s["src_start"] < s["src_end"] <= sd + 0.05) or s["dst_start"] >= vd:
             raise HTTPException(422, "Segment outside the song or the video")
@@ -630,8 +805,8 @@ def _run_export_resolve(job_id: str, vp: Path, sp: Path, req: ExportResolveReque
     from . import resolve
     job = JOBS[job_id]
     try:
-        song = analyze_song(str(sp))
-        video = analyze_video(str(vp))
+        song = _song(str(sp))
+        video = _video(str(vp))
         res = resolve.export_bundle(
             vp, sp, req.plan or {}, song, video, EXPORTS, boom=req.boom, decay=req.decay,
             drops_only=req.drops_only, shake=req.shake,
@@ -827,7 +1002,7 @@ def _run_autosync(job_id: str, vp: Path, sp: Path, opts: dict, pair):
     job = JOBS[job_id]
     try:
         job.update(stage="analyze", message="Analyzing")
-        song = analyze_song(str(sp))
+        song = _song(str(sp))
         video = _full_video(vp)
         job.update(stage="auto-sync", message="Auto-syncing")
         ev = _AUTOSYNC_CANCEL.setdefault(job_id, threading.Event())

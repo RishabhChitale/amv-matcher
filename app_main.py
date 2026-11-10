@@ -73,6 +73,10 @@ class Server:
     def stop(self):
         self.srv.should_exit = True
         self.t.join(timeout=5)
+        try:
+            srv.shutdown_workers()
+        except Exception:
+            pass
 
 
 def seed_rife_from_dev_cache() -> str:
@@ -371,4 +375,6 @@ def main(argv) -> int:
 
 
 if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()
     sys.exit(main(sys.argv[1:]))

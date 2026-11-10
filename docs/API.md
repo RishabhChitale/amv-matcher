@@ -230,3 +230,19 @@ Validation (`paths.exports_member`): the path is `resolve()`d and must exist and
 ## Auto-sync additions
 `POST /api/auto-sync` accepts `unlock_original: bool` (default false). When `song_path` is the video's own audio (the extracted `original_audio` path) the server passes `original=True` to `auto_sync`, which fixes offset 0 and only allows retime + micro unless `unlock_original` is true. `job.source` is `"original"` or `"song"`.
 `GET /api/auto-sync/{id}` `steps_so_far` grows during the run (events `{step, status: start|end, score_before, score_after, kept, elapsed_s}`). After `POST .../cancel` the job ends `status: "cancelled"` with `result` = best-so-far (`limits_hit` contains `"cancelled"`, never cached), or `null` if none. Arrange is not interruptible (about 5 s worst case).
+
+## Analysis worker jobs (process pool; heavy work never runs on the event loop)
+Analysis, probe, thumbnails and proxy builds run in a process pool (`amv_matcher/workers.py`, cores - 1;
+`AMV_WORKERS=N` sets the size, `AMV_WORKERS=0` runs everything inline, used by the test suite).
+Existing endpoints (`/api/analyze`, `/api/video`, auto-sync...) wait on the pool in their own sync thread, so
+Range requests and polls stay fast during analysis. The non-blocking job API:
+
+- `POST /api/jobs` `{kind, path, priority=1, params={}}` -> `{id, ...}`. Kinds: `song_analysis`, `video_analysis`,
+  `probe`, `thumbnails`, `filmstrip`, `proxy`. Lower priority number runs first. `path` must be an allowed song/video
+  (403 otherwise); `params` accepts only `n` and `width`. Origin-guarded.
+- `GET /api/jobs/stats` -> queue/running/done counts and worker state.
+- `GET /api/jobs?since=<seq>&state=<state>` -> job events since a sequence number (UI polling).
+- `GET /api/jobs/{id}` -> state (`queued|running|done|error|cancelled`), `result`, `error`; 404 if unknown.
+- `POST /api/jobs/{id}/cancel`, `POST /api/jobs/{id}/bump` `{priority}` (Origin-guarded).
+- `POST /api/prewarm/pause`, `POST /api/prewarm/resume` (Origin-guarded).
+A worker crash fails only its job; results land in the normal caches, keyed by (path, size, mtime).
