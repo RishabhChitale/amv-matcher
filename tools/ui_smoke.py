@@ -907,6 +907,14 @@ def main():
                 shotas = os.path.join(os.path.dirname(os.path.abspath(a.shot)), "ui.png")
                 open(shotas, "wb").write(base64.b64decode(c.call("Page.captureScreenshot", format="png")["data"]))
                 check("screenshot saved (auto-synced, bands + steps + headline)", os.path.getsize(shotas) > 10000, shotas)
+                # not-in-path rows + budget note (synthetic result fed to the renderer, then the real one restored)
+                c.ev("AS.finalSteps({steps:[{tool:'splice',params:{not_in_path:true,kept_in_that_path:true,total_in_that_path:91.4},score_before:88,score_after:88,kept:false}],plan:null,limits_hit:['budget: skipped retime','original audio locked']})")
+                nrow = c.ev("(()=>{const l=[...document.querySelectorAll('#as-steps li')].find(x=>/Splice/.test(x.textContent));return l?l.textContent:''})()") or ""
+                lnote = c.ev("(()=>{const n=document.getElementById('as-limits');return n&&!n.classList.contains('hidden')?n.textContent:''})()") or ""
+                check("not-in-path step reads 'tried, not in final path (total X in that path)', never 'skipped'; budget limit shown as note",
+                      "tried, not in final path" in nrow and "91% in that path" in nrow and "skipped" not in nrow and "budget: skipped retime" in lnote and "locked" not in lnote,
+                      f"row={nrow!r} note={lnote!r}")
+                c.ev("(()=>{const r=AS.curRun();if(r&&r.result)AS.finalSteps(r.result)})()")
             # locked original
             if os.path.exists("/tmp/amvfx/orig.mp4"):
                 scan("/tmp/amvfx/orig.mp4")

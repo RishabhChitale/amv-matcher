@@ -8,6 +8,7 @@ const AS = window.AS = {
   mode: 'synced', running: null, cancelled: false, guard: {lead: 60, dev: 15, tempo: 4, cuts: 2, loop: false, unlock: false},
   sort: 'now', all: null, lastReq: null, bands: 0, quality: 'blend', rife: null, rd: null, estSig: '', estTok: 0,
 };
+AS.finalSteps = res => finalSteps(res);
 try { Object.assign(AS.guard, JSON.parse(localStorage.getItem(LS) || '{}')); } catch (e) {}
 const saveGuard = () => { try { localStorage.setItem(LS, JSON.stringify(AS.guard)); } catch (e) {} };
 const sleep = ms => new Promise(z => setTimeout(z, ms));
@@ -17,6 +18,7 @@ const STEPNAME = {offset: 'Start point', tempo: 'Tempo match', splice: 'Splice',
 
 // ---------- current pair / plan ----------
 const curRun = () => (S.videoPath && S.sel) ? AS.runs[pk(S.videoPath, S.sel.path)] : null;
+AS.curRun = () => curRun();
 const synced = () => AS.mode === 'synced' && !!curRun();
 function warp(v) {   // video time -> output time
   const r = curRun(), w = r && r.result.plan && r.result.plan.retime && r.result.plan.retime.warp;
@@ -90,6 +92,10 @@ function stepIdx(stage) { const s = String(stage || '').toLowerCase(); for (let 
 // step's before -> after); a not-kept re-try flagged params.retained is 'kept earlier', never 'skipped'.
 function stepRow(n, list, extra) {
   const ks = list.filter(e => e.kept), last = list[list.length - 1];
+  if (!ks.length && last.params && last.params.not_in_path) {   // tried only in another order: dim, never 'skipped'
+    const t = last.params.total_in_that_path;
+    return `<li class="tried"><b>${STEPNAME[n]}</b><span class="muted">tried, not in final path${t != null ? ' (total ' + Math.round(t) + '% in that path)' : ''}</span></li>`;
+  }
   const s = ks.length ? ks[ks.length - 1] : last;
   const a = Math.round(s.score_before), b = Math.round(s.score_after);
   const retained = ks.length && last !== s && last.params && last.params.retained;
@@ -125,6 +131,8 @@ function finalSteps(res) {
     return stepRow(n, list, n === 'retime' && rt ? rt + ' section' + (rt > 1 ? 's' : '') : '');
   }).join('');
   el('as-steps').classList.remove('hidden');
+  const lim = (res.limits_hit || []).filter(x => /^budget/i.test(x));
+  const ln = el('as-limits'); ln.textContent = lim.join(' · '); ln.classList.toggle('hidden', !lim.length);
 }
 async function runOne(r) {   // returns result or null (cancelled / failed)
   const v = S.videoPath; if (!v || !r || (r.source === 'original' && !AS.guard.unlock)) return null;

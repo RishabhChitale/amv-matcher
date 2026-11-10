@@ -173,6 +173,8 @@ body.dragging #fit,body.dragging .ovwrap{opacity:.5;transition:opacity var(--eas
 .as-steps li{display:flex;gap:8px;align-items:center;padding:5px 8px;border-radius:8px;background:rgba(255,255,255,.04);border-left:3px solid rgba(255,255,255,.15)}
 .as-steps li b{flex:1;font-weight:600}
 .as-steps li.ok{border-left-color:#34d399}.as-steps li.skip{border-left-color:#64748b;opacity:.65}
+.as-steps li.tried{border-left-color:#475569;opacity:.5;font-style:italic}
+.as-limits{margin-top:6px;font-size:11px;color:#fbbf24}
 .as-steps li.act{border-left-color:var(--c);animation:asPulse 1s ease-in-out infinite}
 @keyframes asPulse{50%{background:rgba(34,211,238,.16)}}
 .as-done{margin-top:10px}.as-head{font-weight:800;font-size:15px}.as-total{font-weight:700;color:var(--c);margin-top:2px}
