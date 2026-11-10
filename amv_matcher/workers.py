@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import multiprocessing as mp
 import os
 import sys
@@ -44,6 +45,7 @@ from . import winsafe
 QUEUED, RUNNING, DONE, ERROR, CANCELLED = "queued", "running", "done", "error", "cancelled"
 PRIORITIES = (0, 1, 2)
 DEFAULT_TIMEOUT = 1800.0
+_log = logging.getLogger(__name__)
 DEFAULT_SPAWN_TIMEOUT = 120.0
 
 # ---------------------------------------------------------------- registry
@@ -380,6 +382,7 @@ class WorkerPool:
         self._subs = []
         self._paused = False
         self._closing = False
+        self._stall_t0 = None  # watchdog: since when a dispatchable job sits queued with every slot idle
         self._nid = 0
         self._counts = {DONE: 0, ERROR: 0, CANCELLED: 0}
         self._thread = threading.Thread(target=self._loop, name="amv-workers", daemon=True)
@@ -655,40 +658,94 @@ class WorkerPool:
                 self._finish(j, ERROR, error=why)
 
     def _loop(self):
+        """Crash-proof scheduler: an exception in one tick is logged, never kills the thread; repeated failures error the jobs."""
+        fails = 0
         while True:
-            with self._lock:
-                if self._closing and not any(s.job for s in self._slots):
+            try:
+                if self._tick():
                     return
-                if not self._closing:
-                    self._dispatch()
-                conns = [s.conn for s in self._slots if s.job is not None and s.conn is not None]
-            ready = _mp_wait(conns, timeout=0.02) if conns else []
-            if not conns:
-                time.sleep(0.02)
-            with self._lock:
-                for s in self._slots:
-                    if s.job is None:
-                        continue
-                    if s.conn in ready:
-                        try:
-                            while s.conn.poll():
-                                self._handle(s, s.conn.recv())
-                                if s.job is None:
-                                    break
-                        except (EOFError, OSError):
-                            if s.job is not None:
-                                self._crashed(s, "worker crashed")
-                            continue
-                    if s.job is not None:
-                        if s.proc is not None and not s.proc.is_alive() and not (s.conn and s.conn.poll()):
-                            self._crashed(s, "worker crashed")
-                        elif s.started is None:
-                            if self._spawn_timeout and time.time() - s.t0 > self._spawn_timeout:
-                                self._crashed(s, "worker failed to start")
-                        elif self._timeout and time.time() - s.started > self._timeout:
-                            self._crashed(s, f"timeout after {self._timeout:g}s")
+                fails = 0
+            except Exception as e:  # noqa: BLE001
+                fails += 1
+                _log.exception("amv-workers scheduler tick failed (%d)", fails)
+                if fails >= 3:
+                    fails = 0
+                    try:
+                        self._fail_all(f"scheduler failed: {type(e).__name__}: {e}"[:500])
+                    except Exception:  # noqa: BLE001
+                        _log.exception("amv-workers could not fail jobs")
                 if self._closing:
                     return
+                time.sleep(0.05)
+
+    def _fail_all(self, why):
+        with self._lock:
+            for s in self._slots:
+                if s.job is not None or s.proc is not None:
+                    self._kill(s)
+            for j in list(self._jobs.values()):
+                if j["state"] in (QUEUED, RUNNING):
+                    self._finish(j, ERROR, error=why)
+
+    def _watchdog(self):
+        """A dispatchable job that stays queued with every slot idle for > spawn_timeout is errored, not left hanging."""
+        if not self._spawn_timeout or self._closing:
+            return
+        if any(s.job is not None for s in self._slots):
+            self._stall_t0 = None
+            return
+        j = self._next_job()
+        if j is None:
+            self._stall_t0 = None
+            return
+        now = time.time()
+        if self._stall_t0 is None:
+            self._stall_t0 = now
+        elif now - self._stall_t0 > self._spawn_timeout:
+            self._stall_t0 = None
+            self._finish(j, ERROR, error=f"worker pool stalled: job stayed queued with no worker started for {self._spawn_timeout:g}s")
+
+    def _tick(self):
+        """One scheduler pass; True = exit the thread."""
+        with self._lock:
+            if self._closing and not any(s.job for s in self._slots):
+                return True
+            if not self._closing:
+                self._dispatch()
+                self._watchdog()
+            conns = [s.conn for s in self._slots if s.job is not None and s.conn is not None]
+        try:
+            ready = _mp_wait(conns, timeout=0.02) if conns else []
+        except (OSError, ValueError):
+            # cancel()/_kill() closed a conn after we snapshotted it; on Windows wait() raises WinError 6 (handle invalid) instead of
+            # ignoring it, which used to kill this thread silently and leave every later job 'queued' forever
+            ready = []
+            time.sleep(0.02)
+        if not conns:
+            time.sleep(0.02)
+        with self._lock:
+            for s in self._slots:
+                if s.job is None:
+                    continue
+                if s.conn in ready:
+                    try:
+                        while s.conn.poll():
+                            self._handle(s, s.conn.recv())
+                            if s.job is None:
+                                break
+                    except (EOFError, OSError):
+                        if s.job is not None:
+                            self._crashed(s, "worker crashed")
+                        continue
+                if s.job is not None:
+                    if s.proc is not None and not s.proc.is_alive() and not (s.conn and s.conn.poll()):
+                        self._crashed(s, "worker crashed")
+                    elif s.started is None:
+                        if self._spawn_timeout and time.time() - s.t0 > self._spawn_timeout:
+                            self._crashed(s, "worker failed to start")
+                    elif self._timeout and time.time() - s.started > self._timeout:
+                        self._crashed(s, f"timeout after {self._timeout:g}s")
+        return self._closing
 
     def _handle(self, s, msg):
         tag, jid, val = msg

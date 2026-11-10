@@ -339,3 +339,40 @@ def test_windows_paths_simulated(mkpool, monkeypatch):
     nxt = p.submit("echo", "", value=9)
     wait_for(p, nxt)
     assert p.status(nxt)["result"] == {"value": 9}
+
+
+def test_wait_oserror_winerror6_does_not_kill_scheduler(mkpool, monkeypatch):
+    # Windows: multiprocessing.connection.wait raises OSError [WinError 6] if cancel() closed a conn after the snapshot
+    from amv_matcher import workers
+    real = workers._mp_wait
+    n = {"raised": 0}
+
+    def flaky(conns, timeout=None):
+        if n["raised"] < 5:
+            n["raised"] += 1
+            raise OSError(6, "The handle is invalid")
+        return real(conns, timeout=timeout)
+    monkeypatch.setattr(workers, "_mp_wait", flaky)
+    p = mkpool(1)
+    j = p.submit("echo", "", value=3)
+    wait_for(p, j)
+    assert p.status(j)["state"] == "done" and p._thread.is_alive() and n["raised"] == 5
+
+
+def test_scheduler_exception_is_survived_then_jobs_errored(mkpool, monkeypatch):
+    p = mkpool(1)
+    monkeypatch.setattr(p, "_dispatch", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    j = p.submit("echo", "", value=1)
+    wait_for(p, j, timeout=10)
+    st = p.status(j)
+    assert st["state"] == "error" and "scheduler failed: RuntimeError: boom" in st["error"]
+    assert p._thread.is_alive()
+
+
+def test_watchdog_errors_job_stuck_queued_with_no_worker(mkpool, monkeypatch):
+    p = mkpool(1, spawn_timeout=0.3)
+    monkeypatch.setattr(p, "_dispatch", lambda: None)  # a pool that never starts a worker (silent Windows spawn failure)
+    j = p.submit("echo", "", value=1)
+    wait_for(p, j, timeout=10)
+    st = p.status(j)
+    assert st["state"] == "error" and "stalled" in st["error"]
