@@ -1,9 +1,75 @@
 # AMV Matcher backend API
 
-Base URL `http://127.0.0.1:8765` (local only). All JSON. Errors: `{"detail": "<message>"}` with 400 (bad input), 403 (path not allowed), 404 (unknown job / video not scanned).
+Base URL `http://127.0.0.1:8765` (local only). All JSON. Errors: `{"detail": "<message>"}` with 400 (bad input), 403 (path not allowed, or an Origin header that is not this app), 404 (unknown job / video not scanned / unknown static file), 409 (a render or auto-sync for the same pair is already running, or Demucs missing; the body also carries `job_id` for the running ones), 422 (validation failed), 501 (stems pack missing in a frozen build), 503 (background workers are disabled), 507 (not enough free disk for stems).
 Paths are absolute local paths. `/api/audio`, `/api/waveform`, `/api/pump`, `/api/score` only accept songs inside a music folder that was passed to a scan; `/api/video` only accepts scanned videos.
 
 **Offset convention:** `offset` (seconds) is the song time that sits under video time 0: song time = video time + offset. On the timeline the song clip starts at `-offset`. `trim_start_s = offset`, `trim_end_s = offset + video_duration`.
+
+## Route index
+
+"Guarded" = Origin-checked (403 if an Origin header is present and is not 127.0.0.1/localhost on the app or shell port).
+
+| Method | Path | What it does | Owner |
+|---|---|---|---|
+| GET | `/` | serves `static/index.html` | server.py |
+| GET | `/static/{name}` | static asset, 404 outside `static/` | server.py |
+| POST | `/api/scan` | start scan of songs against a video (guarded) | server.py |
+| GET | `/api/scan/{job_id}` | poll a scan / export job | server.py |
+| GET | `/api/audio` | stream an allowed song | server.py |
+| GET | `/api/video` | stream a scanned video (proxy if needed) | server.py |
+| GET | `/api/waveform` | peaks, beats, drops, sections of a song | server.py |
+| POST | `/api/score` | score one song at a manual offset (guarded) | server.py |
+| GET | `/api/pump` | pump keyframes for a song | server.py |
+| POST | `/api/upload` | upload a video or song (guarded) | server.py |
+| GET | `/api/uploads` | list uploads and cache stats | server.py |
+| DELETE | `/api/uploads` | delete uploads (guarded) | server.py |
+| POST | `/api/register-paths` | allow native-picked files/folders in place (guarded) | server.py |
+| POST | `/api/analyze-video` | analyze an uploaded video (guarded) | server.py |
+| POST | `/api/score-songs` | score a list of songs against a video (guarded) | server.py |
+| POST | `/api/splice` | plan or build a spliced arrangement (guarded) | server.py |
+| POST | `/api/render-audio` | render the spliced wav (guarded) | server.py |
+| GET | `/api/export-file` | download a file from `.exports/` | server.py |
+| POST | `/api/export-mp4` | mux video with exported wav (guarded) | server.py |
+| POST | `/api/export-resolve` | DaVinci Resolve bundle (guarded) | server.py |
+| POST | `/api/render-mp4` | render synced mp4, one at a time (guarded; shadows render.py's) | server.py |
+| POST | `/api/render-estimate` | estimate render time (guarded; shadows render.py's) | server.py |
+| GET | `/api/render-mp4/{job_id}` | render / RIFE install job status | render.py |
+| POST | `/api/render-mp4/{job_id}/cancel` | cancel a render | render.py |
+| GET | `/api/render-tools` | RIFE availability | render.py |
+| POST | `/api/render-tools/rife` | download and install RIFE | render.py |
+| POST | `/api/auto-sync` | start auto-sync job (guarded) | server.py |
+| GET | `/api/auto-sync/{job_id}` | poll auto-sync | server.py |
+| POST | `/api/auto-sync/{job_id}/cancel` | cancel auto-sync (guarded) | server.py |
+| POST | `/api/jobs` | submit a worker job (guarded) | server.py |
+| GET | `/api/jobs` | job events since a sequence number | server.py |
+| GET | `/api/jobs/stats` | worker pool counts | server.py |
+| GET | `/api/jobs/{job_id}` | one worker job | server.py |
+| POST | `/api/jobs/{job_id}/cancel` | cancel a worker job (guarded) | server.py |
+| POST | `/api/jobs/{job_id}/bump` | change a job's priority (guarded) | server.py |
+| POST | `/api/prewarm/pause` | pause background prewarm (guarded) | server.py |
+| POST | `/api/prewarm/resume` | resume background prewarm (guarded) | server.py |
+| POST | `/api/stems` | start stem separation (guarded) | stems_api.py |
+| POST | `/api/stems/cancel` | cancel running separations (guarded) | stems_api.py |
+| GET | `/api/stems/status` | stems state for a song | stems_api.py |
+| GET | `/api/stem-audio` | one stem as wav | stems_api.py |
+| GET | `/api/stem-features` | per-stem features | stems_api.py |
+| POST | `/api/stems/install` | install Demucs (guarded) | stems_api.py |
+| GET | `/api/stems/install` | Demucs install status | stems_api.py |
+| POST | `/api/project/save` | save `.amvproj` (guarded) | project_api.py |
+| POST | `/api/project/load` | load `.amvproj` (guarded) | project_api.py |
+| GET | `/api/project/recent` | recent projects (guarded) | project_api.py |
+| POST | `/api/project/relink` | find moved media (guarded) | project_api.py |
+| POST | `/api/project/autosave` | write an autosave (guarded) | project_api.py |
+| GET | `/api/media/roots` | list media roots (guarded) | medialib_api.py |
+| POST | `/api/media/roots` | add a root (guarded) | medialib_api.py |
+| DELETE | `/api/media/roots` | remove a root (guarded) | medialib_api.py |
+| GET | `/api/fs/list` | list a folder inside a root (guarded) | medialib_api.py |
+| GET | `/api/media/probe` | media metadata (guarded) | medialib_api.py |
+| POST | `/api/media/link` | allow a media file in place (guarded) | medialib_api.py |
+| GET | `/api/thumb` | jpeg thumbnail (guarded) | medialib_api.py |
+| GET | `/api/filmstrip` | thumbnail urls across a video (guarded) | medialib_api.py |
+
+render.py's own `POST /api/render-mp4` and `POST /api/render-estimate` exist but are shadowed by the validated server.py versions; its other routes are included with the Origin guard.
 
 ## POST /api/scan
 Body: `{"video_path": str, "music_dir": str, "recursive": bool=false}`. Video ext: .mp4 .mov .mkv .webm .avi .m4v; songs: .mp3 .wav .m4a .flac.
@@ -264,3 +330,27 @@ Roots persist in `media_roots.json` (defaults: Movies/Videos, Music, Downloads, 
 - `GET /api/media/probe?path=` -> `{duration,width,height,fps,vcodec,acodec,has_audio,download}` (cached by path|size|mtime; `download` = download_source or null).
 - `POST /api/media/link {path}` -> `{path,name,size,kind}`; allows the file via `server.allow_path`.
 - `GET /api/thumb?path=&t=&w=` -> image/jpeg (cached); `GET /api/filmstrip?path=&n=12&w=160` -> `{frames:[{t,url}]}`.
+
+## Static files
+- `GET /` -> `static/index.html` (the single-page UI).
+- `GET /static/{name}` -> the file under `static/` (nested paths allowed). 404 if it is missing or resolves outside `static/` (`..`, symlinks).
+
+## Stems (stems_api.py)
+Separation is one at a time (single worker). Providers: `demucs` (needs the Demucs install) and `hpss` (built in); `auto` picks the best available. Results are cached per song. Song paths go through the song allowlist (403).
+
+- `POST /api/stems` (guarded) body `{"song_path", "provider": "auto"}` -> job: `{id, song_path, provider, status: running|done|error|cancelled, progress 0-1, message, error, stems: {name: wav path}|null, stem_names, started, cached?, seconds?}`. A running job for the same song and provider is returned instead of a new one; a cache hit returns `status: "done", cached: true`. 400 bad provider, 409 `Demucs is not installed`, 507 less than 3 GB free.
+```json
+{"id": "a1b2c3d4e5f6", "song_path": "/abs/music/song.mp3", "provider": "hpss", "status": "running", "progress": 0.0, "message": "Starting", "error": null, "stems": null, "stem_names": ["drums", "harmonic"], "started": 1760000000.0}
+```
+- `POST /api/stems/cancel` (guarded) body `{"song_path", "provider"}` (provider ignored) -> `{"cancelled": <number of running jobs stopped>}`.
+- `GET /api/stems/status?song_path=` -> `{capabilities: {demucs_installed, free_gb, install}, available: {provider: [stem names]}, state: "running"|"ready"|"none", running?, provider?, stems?, last?}`.
+```json
+{"capabilities": {"demucs_installed": false, "free_gb": 120.5, "install": {"status": "idle", "progress": 0.0, "message": "", "error": null}}, "available": {"hpss": ["drums", "harmonic"]}, "state": "ready", "provider": "hpss", "stems": ["drums", "harmonic"]}
+```
+- `GET /api/stem-audio?song_path=&stem=&provider=` -> `audio/wav`. Empty `provider` uses the first cached one (demucs, then hpss); 404 `No stems separated for this song yet` or `Unknown stem`.
+- `GET /api/stem-features?song_path=&provider=` -> per-stem feature curves from `stems.features_for` (same provider rule and 404).
+- `POST /api/stems/install` (guarded) -> install state `{status: idle|running|done|error, progress, message, error}`; starts a background install into the venv, or returns `done` if already installed. 501 in a frozen build with no stems pack and no system Python 3.9-3.12, 507 low disk.
+- `GET /api/stems/install` -> the same state plus `installed: bool` (and `frozen: true` with the pack-missing message in a frozen build).
+
+## Worker job details
+`GET /api/jobs` returns `{"events": [...], "stats": {...}}`, plus `"jobs": [...]` when `state=` is given. `POST /api/jobs/{id}/cancel` -> `{"cancelled": bool}`. `POST /api/jobs/{id}/bump` body `{"priority": 0|1|2}` -> `{"bumped": bool}` (400 for any other priority). `POST /api/prewarm/pause|resume` -> `{"paused": true|false}`. Every `/api/jobs*` and prewarm route returns 503 when workers are disabled.
