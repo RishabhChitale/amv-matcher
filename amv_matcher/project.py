@@ -13,7 +13,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import paths
+from . import paths, winsafe
 
 APP_DATA = getattr(paths, "APP_DATA", paths.DATA)
 EXT = ".amvproj"
@@ -141,6 +141,12 @@ def save(path, data: dict) -> dict:
     d["modified"] = now
     for e in _media_entries(d):
         e.pop("missing", None)
+        if e.get("size") is None or e.get("mtime") is None:  # stamp from disk when the UI sent only a path
+            try:
+                st = os.stat(e["path"])
+                e["size"], e["mtime"] = st.st_size, st.st_mtime
+            except OSError:
+                pass
     p.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=p.name + ".", suffix=".tmp", dir=str(p.parent))
     try:
@@ -148,12 +154,9 @@ def save(path, data: dict) -> dict:
             json.dump(d, f, indent=2, ensure_ascii=False)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, p)
+        winsafe.replace_retry(tmp, p)
     except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
+        winsafe.safe_unlink(tmp)
         raise
     return d
 
@@ -223,19 +226,16 @@ def _atomic_json(path: Path, obj) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(obj, f, indent=2)
-        os.replace(tmp, path)
+        winsafe.replace_retry(tmp, path)
     except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
+        winsafe.safe_unlink(tmp)
         raise
 
 
 def add_recent(path, name: str = "") -> None:
     p = str(_check_ext(path))
     with _lock:
-        items = [x for x in _read_recent() if x["path"] != p]
+        items = [x for x in _read_recent() if winsafe.norm_case_path(x["path"]) != winsafe.norm_case_path(p)]
         items.insert(0, {"path": p, "name": name or Path(p).stem, "opened": time.time()})
         _atomic_json(_recent_file(), items[:MAX_RECENT])
 
@@ -249,9 +249,15 @@ def recent() -> list:
 
 
 # ---- autosave --------------------------------------------------------------------------------
+_WIN_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+
+
 def _safe_name(name: str) -> str:
     s = "".join(c if (c.isalnum() or c in " ._-") else "_" for c in str(name or "")).strip(" .")
-    return s[:80] or "Untitled"
+    s = s[:80].rstrip(" .")
+    if s.split(".")[0].upper() in _WIN_RESERVED:
+        s = "_" + s
+    return s or "Untitled"
 
 
 def autosave_path(name: str) -> Path:

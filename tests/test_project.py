@@ -132,3 +132,42 @@ def test_api(tmp_path, client, app_data):
     assert r.status_code == 200
     ap = r.json()["path"]
     assert os.path.dirname(ap) == str(app_data / "autosave") and ap.endswith(".amvproj") and os.path.isfile(ap)
+
+
+# ---- Windows branches (monkeypatched) ----
+def test_recent_dedupe_case_insensitive_on_windows(tmp_path, monkeypatch):
+    import ntpath
+    from amv_matcher import project as pr
+    monkeypatch.setattr(pr, "APP_DATA", tmp_path)
+    monkeypatch.setattr(pr.winsafe.os.path, "normcase", ntpath.normcase)
+    a = tmp_path / "A.amvproj"
+    a.write_text("{}")
+    pr.add_recent(a)
+    pr.add_recent(a)
+    items = pr._read_recent()
+    assert len(items) == 1
+    assert pr.winsafe.norm_case_path("C:\\Foo\\X") == pr.winsafe.norm_case_path("c:/foo/x")
+
+
+def test_safe_name_windows_reserved():
+    from amv_matcher import project as pr
+    assert pr._safe_name("con") == "_con"
+    assert pr._safe_name("NUL.txt") == "_NUL.txt"
+    assert pr._safe_name("name. ") == "name"
+    assert pr._safe_name("") == "Untitled"
+
+
+def test_atomic_write_retries_permission_error(tmp_path, monkeypatch):
+    import os
+    from amv_matcher import project as pr
+    calls = {"n": 0}
+    real = os.replace
+    def flaky(a, b):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise PermissionError("locked")
+        return real(a, b)
+    monkeypatch.setattr(pr.winsafe.os, "replace", flaky)
+    monkeypatch.setattr(pr.winsafe.time, "sleep", lambda s: None)
+    pr._atomic_json(tmp_path / "x.json", {"a": 1})
+    assert calls["n"] == 3 and (tmp_path / "x.json").exists()
