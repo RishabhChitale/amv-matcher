@@ -24,6 +24,7 @@ from . import media
 from .pump import pump_keyframes
 from .score import MIN_OFFSET_S, score, score_at
 from .splice import plan_splice
+from .tempo import best_tempo
 from .video import VIDEO_EXTS, analyze_video
 from . import paths, proxy, winsafe
 from . import autosync as _autosync
@@ -216,6 +217,8 @@ def _score_songs(job: dict, video: dict, songs: list):
         try:
             song = _song(str(p))
             sc = score(song, video, allow_negative=True)
+            if sc.get("eligible"):
+                sc.update(best_tempo(song, video, sc))
             results.append({"path": str(p), "name": p.name, "source": "song", "bpm": song["bpm"],
                             "duration": song["duration"], **sc, "natural_total_pct": sc.get("total_pct"),
                             "auto_sync_cached": _cached_for(job.get("video_path"), p)})
@@ -962,7 +965,7 @@ if _render.router is not None:
 
 
 # ---- auto-sync (autosync.py): guarded, paths validated, clamped options, one job per pair
-AUTOSYNC_LIMITS = {"max_speed_dev": 0.25, "max_tempo_pct": 8.0, "max_cuts": 3, "budget_s": 60.0, "lead_s": 0.12}
+AUTOSYNC_LIMITS = {"max_speed_dev": 0.25, "max_tempo_pct": 10.0, "max_cuts": 3, "budget_s": 60.0, "lead_s": 0.12}
 _AUTOSYNC_RUNNING: dict = {}      # (video, song) -> job id
 _autosync_cache_file = None       # tests may point this at a tmp file
 _AUTOSYNC_CANCEL: dict = {}       # job id -> threading.Event (set by POST .../cancel)

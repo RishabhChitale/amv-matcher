@@ -53,7 +53,7 @@ def rearranged_fraction(segments) -> float:
     return min(1.0, max(0.0, 1.0 - best / total))
 
 
-def effort_of(plan: dict, video_duration: float, max_speed_dev: float = 0.25, max_tempo_dev: float = 0.08) -> dict:
+def effort_of(plan: dict, video_duration: float, max_speed_dev: float = 0.25, max_tempo_dev: float = 0.10) -> dict:
     """final.effort block + effort_pct for a plan (see the formula above)."""
     rt = (plan or {}).get("retime") or {}
     secs = [s for s in rt.get("sections", []) if abs(float(s["speed"]) - 1.0) > SPEED_EPS]
@@ -505,7 +505,7 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
 
 
 def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20.0,
-              max_speed_dev: float = 0.25, max_tempo_dev: float = 0.08, min_section_s: float = 0.75,
+              max_speed_dev: float = 0.25, max_tempo_dev: float = 0.10, min_section_s: float = 0.75,
               max_cuts: int = 3, min_gain: float = 0.5, max_passes: int = 2, allow_splice: bool = True, lead_s: float | None = None,
               allow_loop: bool = False, original: bool = False, unlock_original: bool = False,
               *, progress_cb=None, should_cancel=None, stem_targets=None, prefer_energy=True) -> dict:

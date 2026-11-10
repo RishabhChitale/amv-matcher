@@ -414,7 +414,7 @@ def test_effort_rearranged_fraction_and_scale():
     # retime term: weighted dev / guardrail * retimed fraction; tempo: |ratio-1| / guardrail
     rt = {"sections": [{"v_start": 0, "v_end": 30, "speed": 1.25}]}
     assert abs(effort_of({"retime": rt}, 30.0)["effort_pct"] - 35.0) < 0.1
-    assert abs(effort_of({"tempo_ratio": 1.08}, 30.0)["effort_pct"] - 20.0) < 0.1
+    assert abs(effort_of({"tempo_ratio": 1.08}, 30.0, max_tempo_dev=0.08)["effort_pct"] - 20.0) < 0.1
     mx = effort_of({"segments": half, "retime": rt, "tempo_ratio": 1.08}, 30.0)["effort_pct"]
     assert 0 < mx <= 100
 
