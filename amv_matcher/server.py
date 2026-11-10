@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import urllib.parse
 import shutil
 import threading
 import uuid
@@ -12,12 +13,13 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .audio import AUDIO_EXTS, analyze_song, song_waveform
 from . import media
 from .pump import pump_keyframes
 from .score import score, score_at
+from .splice import plan_splice
 from .video import VIDEO_EXTS, analyze_video
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -301,30 +303,51 @@ async def upload(request: Request, kind: str, name: str):
     return {"path": str(final.resolve()), "name": clean, "size": size, "kind": kind, "deduped": deduped}
 
 
-def _uploads_files():
-    if not UPLOADS.is_dir():
+def _files_under(base: Path):
+    if not base.is_dir():
         return []
-    return [p for p in UPLOADS.rglob("*") if p.is_file() and not p.is_symlink()]
+    return [p for p in base.rglob("*") if p.is_file() and not p.is_symlink()]
 
 
-@app.get("/api/uploads")
-def uploads_info():
-    files = _uploads_files()
-    return {"count": len(files), "bytes": sum(p.stat().st_size for p in files)}
+def _uploads_files():
+    return _files_under(UPLOADS)
 
 
-@app.delete("/api/uploads", dependencies=[Depends(_origin_guard)])
-def uploads_clear():
-    freed = sum(p.stat().st_size for p in _uploads_files())
-    if UPLOADS.is_dir():
-        for child in UPLOADS.iterdir():
+def _bytes(files):
+    return sum(p.stat().st_size for p in files)
+
+
+def _clear_dir(base: Path) -> int:
+    """Delete everything inside base (never base itself, never anything resolving outside it)."""
+    files = _files_under(base)
+    freed = _bytes(files)
+    if base.is_dir():
+        root = base.resolve()
+        for child in list(base.iterdir()):
+            if not _under(child.resolve(), root):
+                continue
             if child.is_dir() and not child.is_symlink():
                 shutil.rmtree(child, ignore_errors=True)
             else:
                 child.unlink(missing_ok=True)
+    return freed
+
+
+@app.get("/api/uploads")
+def uploads_info():
+    u, e = _uploads_files(), _files_under(EXPORTS)
+    return {"count": len(u) + len(e), "bytes": _bytes(u) + _bytes(e),
+            "uploads_count": len(u), "uploads_bytes": _bytes(u),
+            "exports_count": len(e), "exports_bytes": _bytes(e)}
+
+
+@app.delete("/api/uploads", dependencies=[Depends(_origin_guard)])
+def uploads_clear():
+    uf = _clear_dir(UPLOADS)
+    ef = _clear_dir(EXPORTS)
     for k in [k for k in VIDEOS if _in_uploads(Path(k))]:
         VIDEOS.pop(k, None)
-    return {"freed": freed}
+    return {"freed": uf + ef, "uploads_freed": uf, "exports_freed": ef}
 
 
 class ScoreSongsRequest(BaseModel):
@@ -371,6 +394,119 @@ def score_songs(req: ScoreSongsRequest):
         _run_score_songs(job_id, vp, songs)
         return JSONResponse({"job_id": job_id, **JOBS[job_id]})
     _pool.submit(_run_score_songs, job_id, vp, songs)
+    return {"job_id": job_id, "status": "running"}
+
+
+SPLICE_CACHE: dict = {}
+MAX_SEGMENTS = 8
+
+
+def _vid_for(vp: Path) -> dict:
+    return _full_video(vp)
+
+
+class SpliceRequest(BaseModel):
+    video_path: str
+    song_path: str
+    max_cuts: int = Field(2, ge=0, le=3)
+    crossfade_ms: float = Field(40, ge=0, le=500)
+
+
+@app.post("/api/splice", dependencies=[Depends(_origin_guard)])
+def splice(req: SpliceRequest):
+    vp, sp = _safe_video(req.video_path), _safe_song(req.song_path)
+    key = (str(sp), str(vp), req.max_cuts)
+    if key not in SPLICE_CACHE:
+        video, song = _vid_for(vp), analyze_song(str(sp))
+        SPLICE_CACHE[key] = plan_splice(song, video, req.max_cuts)
+    return SPLICE_CACHE[key]
+
+
+class Segment(BaseModel):
+    src_start: float = Field(ge=0)
+    src_end: float
+    dst_start: float = Field(ge=0)
+
+
+class RenderRequest(BaseModel):
+    video_path: str
+    song_path: str
+    segments: list[Segment]
+    crossfade_ms: float = Field(40, ge=0, le=500)
+
+
+def _stem(p: Path) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", p.stem).strip("._")[:60] or "file"
+
+
+def _export_url(p: Path) -> str:
+    return "/api/export-file?path=" + urllib.parse.quote(str(p), safe="")
+
+
+@app.post("/api/render-audio", dependencies=[Depends(_origin_guard)])
+def render_audio(req: RenderRequest):
+    vp, sp = _safe_video(req.video_path), _safe_song(req.song_path)
+    segs = [s.model_dump() for s in req.segments]
+    if not segs or len(segs) > MAX_SEGMENTS:
+        raise HTTPException(422, f"Need 1-{MAX_SEGMENTS} segments")
+    video = _vid_for(vp)
+    vd = float(video["duration"])
+    sd = analyze_song(str(sp))["duration"]
+    for s in segs:
+        if not (0 <= s["src_start"] < s["src_end"] <= sd + 0.05) or s["dst_start"] >= vd:
+            raise HTTPException(422, "Segment outside the song or the video")
+    h = hashlib.sha256((str(sp) + str(vp) + repr(segs) + str(req.crossfade_ms)).encode()).hexdigest()[:8]
+    out = EXPORTS / f"{_stem(vp)}__{_stem(sp)}__{h}.wav"
+    dur = media.render_audio(sp, segs, vd, out, req.crossfade_ms)
+    out = out.resolve()
+    return {"path": str(out), "url": _export_url(out), "duration": dur}
+
+
+@app.get("/api/export-file")
+def export_file(path: str):
+    try:
+        p = Path(path).expanduser().resolve()
+    except Exception:
+        raise HTTPException(400, "Bad path")
+    if not _under(p, EXPORTS.resolve()) or not p.is_file():
+        raise HTTPException(403, "Not an exported file")
+    return FileResponse(p, filename=p.name)   # attachment disposition
+
+
+class ExportMp4Request(BaseModel):
+    video_path: str
+    audio_path: str
+
+
+def _run_export(job_id: str, vp: Path, ap: Path, out: Path):
+    job = JOBS[job_id]
+    try:
+        media.export_mp4(vp, ap, out, progress=lambda f: job.update(done=int(f * 100)))
+        out = out.resolve()
+        job.update(status="done", done=100, path=str(out), url=_export_url(out),
+                   size=out.stat().st_size, message="Done")
+    except media.ExportError as e:
+        job.update(status="error", error=str(e))
+    except Exception as e:
+        job.update(status="error", error=f"{type(e).__name__}: {e}")
+
+
+@app.post("/api/export-mp4", dependencies=[Depends(_origin_guard)])
+def export_mp4(req: ExportMp4Request):
+    vp = _safe_video(req.video_path)
+    try:
+        ap = Path(req.audio_path).expanduser().resolve()
+    except Exception:
+        raise HTTPException(400, "Bad path")
+    if not _under(ap, EXPORTS.resolve()) or ap.suffix.lower() != ".wav" or not ap.is_file():
+        raise HTTPException(403, "audio_path must be a wav rendered into the exports folder")
+    stem = ap.stem.rsplit("__", 1)[0] if ap.stem.count("__") >= 2 else ap.stem
+    out = EXPORTS / f"{stem}.mp4"
+    job_id = uuid.uuid4().hex[:12]
+    with _jobs_lock:
+        JOBS[job_id] = {"id": job_id, "status": "running", "stage": "export", "done": 0,
+                        "total": 100, "message": "Exporting mp4", "error": None}
+    _pool.submit(_run_export, job_id, vp, ap, out)
     return {"job_id": job_id, "status": "running"}
 
 

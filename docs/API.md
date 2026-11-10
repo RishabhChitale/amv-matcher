@@ -108,15 +108,45 @@ Body: `{"video_path": str, "song_paths": [str, ...]}`. The video must be a scann
 - **One song: synchronous.** The response is the finished job plus `job_id`: `{"job_id": "...", "status": "done", "results": [...], "too_short": [], "skipped": [], "video": {...}, ...}`.
 - **Two or more songs: job + progress.** Response `{"job_id": "a1b2c3d4e5f6", "status": "running"}`; poll `GET /api/scan/{job_id}` (same object as a scan).
 A client can handle both: if `status == "done"` use it, else poll.
-- **Zero songs: video analysis only.** `song_paths: []` is allowed and returns synchronously `{"job_id", "status": "done", "video": {...}, "results": [], "too_short": [], "skipped": []}`.
+- **Zero songs: video analysis only.** `song_paths: []` is allowed and returns synchronously `{"job_id", "status": "done", "video": {...}, "results": [...], "too_short": [], "skipped": []}`; `results` is `[]` for a video without audio, otherwise it holds just the **original audio** entry (see below).
+
+### Original audio (v2)
+If a video has an embedded audio track it is decoded (PyAV, no system ffmpeg) to `.cache/extracted/<sha12>.wav` and offered as a scoring source. `video` gains `has_audio: bool`, `original_audio: {path, name: "Original audio (<video name>)"}` (absent when no audio) and, if decoding failed, `audio_error`. Every entry in `results` / `too_short` / `skipped` carries `source: "original" | "song"`. The original is already aligned to the video, so it is scored at the fixed offset 0 (`best_offset_s: 0`) when its duration >= video duration - 0.5 s, otherwise it lands in `too_short`. It is ranked alongside the songs. Its `path` works in `/api/audio`, `/api/waveform`, `/api/splice`, `/api/render-audio`.
 
 ### POST /api/analyze-video
 Body: `{"video_path": str}`. The video must be under `.uploads/` or a previously scanned video (else 403; bad Origin 403; undecodable video 422). Returns `{"video_path": "<resolved>", "video": {...}}` where `video` is the same object as the `video` section of a scan (`duration`, `fps`, `motion_tempo_bpm`, `cut_times`, `cut_count`, `energy_curve`, `energy_hz`, `segments`, `lulls`, `peak_segments`, `shots`, `peak_count`). Synchronous; the result is cached in memory per video, so repeat calls are instant.
 
 ### GET /api/uploads
+Totals cover `.uploads/` plus `.exports/`:
 ```json
-{"count": 2, "bytes": 5292050}
+{"count": 3, "bytes": 5392050, "uploads_count": 2, "uploads_bytes": 5292050, "exports_count": 1, "exports_bytes": 100000}
 ```
 
 ### DELETE /api/uploads
-Deletes everything inside `.uploads/` only. `{"freed": 5292050}` (bytes).
+Deletes everything inside `.uploads/` and `.exports/` only (nothing else is touched). `{"freed": 5392050, "uploads_freed": 5292050, "exports_freed": 100000}` (bytes).
+
+## Splice, render and export (v2)
+All POSTs are Origin-guarded (403). Paths follow the usual rules (`video_path` scanned/uploaded video, `song_path` in a scanned folder, `.uploads/` or the extracted original audio).
+
+### POST /api/splice
+Body `{"video_path", "song_path", "max_cuts": 0-3 (default 2), "crossfade_ms": 40}` (`max_cuts` outside 0-3 -> 422). Synchronous, cached per (song, video, max_cuts). Returns `plan_splice()` verbatim:
+```json
+{"segments": [{"src_start": 12.0, "src_end": 18.0, "dst_start": 0.0}],
+ "cuts": [{"dst_time": 6.0, "src_from": 18.0, "src_to": 40.0}],
+ "total_pct": 84, "tempo_pct": 100.0, "sync_pct": 90.0, "arc_pct": 70.0,
+ "baseline": {"offset": 20.0, "total_pct": 78}, "improvement_pct": 6,
+ "bar_phase": "...", "objective": "..."}
+```
+`baseline` is the best single trim. If the song is shorter than the video the response is still 200 with `{"eligible": false, "reason": "too_short", ...}` and no `segments`. `bar_phase` and `objective` come straight from splice.py (see its docstring for their exact meaning).
+
+### POST /api/render-audio
+Body `{"video_path", "song_path", "segments": [{src_start, src_end, dst_start}, ...] (1-8), "crossfade_ms": 40}`. `video_path` is needed for the output length and file name. Segments are laid at `dst_start` with an equal-power crossfade centred on each join and 10 ms fades at the ends; the wav is exactly `round(video duration * 44100)` samples, 44.1 kHz stereo 16-bit, written to `.exports/<video>__<song>__<hash8>.wav`. 422 if a segment is outside the song/video or the count is bad.
+```json
+{"path": "/abs/amv-matcher/.exports/clip__song__1a2b3c4d.wav", "url": "/api/export-file?path=%2Fabs%2F...", "duration": 10.0}
+```
+
+### GET /api/export-file?path=
+Serves a file from `.exports/` only (403 for anything else) as a download (`Content-Disposition: attachment`).
+
+### POST /api/export-mp4
+Body `{"video_path", "audio_path"}` where `audio_path` is a `.wav` inside `.exports/` (else 403). Returns `{"job_id", "status": "running"}`; poll `GET /api/scan/{job_id}` (`done` is 0-100 progress). When `status == "done"` the job has `path`, `url` (use with `/api/export-file`) and `size`; on failure `status == "error"` with `error`. The video's own audio is dropped and replaced by the wav (AAC 192k). The video stream is copied untouched when its codec is h264/hevc/mpeg4/av1/vp9 (falling back to a re-encode if the copy fails), otherwise re-encoded to H.264 (yuv420p, crf 20). Output: `.exports/<video>__<song>.mp4`.

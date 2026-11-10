@@ -10,6 +10,9 @@ from tests.synth import make_click_track, make_video
 def env(tmp_path, monkeypatch):
     from amv_matcher import server
     monkeypatch.setattr(server, "UPLOADS", tmp_path / "uploads")
+    monkeypatch.setattr(server, "EXTRACTED", tmp_path / "extracted")
+    monkeypatch.setattr(server, "EXPORTS", tmp_path / "exports")
+    server.SPLICE_CACHE.clear()
     c = TestClient(server.app)
     v = tmp_path / "jump.avi"
     make_video(v)
@@ -33,7 +36,8 @@ def test_upload_roundtrip_and_dedupe(env):
     assert c.get("/api/audio", params={"path": j["path"]}).status_code == 200
     r2 = up(c, "song", "c120.wav", data).json()
     assert r2["deduped"] is True and r2["path"] == j["path"]
-    assert c.get("/api/uploads").json() == {"count": 1, "bytes": len(data)}
+    g = c.get("/api/uploads").json()
+    assert (g["count"], g["bytes"]) == (1, len(data))
     assert not list((tmp / "uploads" / "song").glob(".tmp-*"))
 
 
@@ -128,9 +132,13 @@ def test_delete_clears_only_uploads(env):
     keep.write_text("x")
     up(c, "song", "a.mp3", b"abc")
     up(c, "video", "a.mp4", b"abcdef")
-    assert c.get("/api/uploads").json() == {"count": 2, "bytes": 9}
-    assert c.delete("/api/uploads").json() == {"freed": 9}
-    assert c.get("/api/uploads").json() == {"count": 0, "bytes": 0}
+    server.EXPORTS.mkdir()
+    (server.EXPORTS / "x.wav").write_bytes(b"12")
+    g = c.get("/api/uploads").json()
+    assert g == {"count": 3, "bytes": 11, "uploads_count": 2, "uploads_bytes": 9,
+                 "exports_count": 1, "exports_bytes": 2}
+    assert c.delete("/api/uploads").json() == {"freed": 11, "uploads_freed": 9, "exports_freed": 2}
+    assert c.get("/api/uploads").json()["count"] == 0
     assert keep.exists() and s.exists() and v.exists()
 
 
@@ -158,8 +166,6 @@ def test_analyze_video_and_empty_score_songs(env):
 def avenv(env, monkeypatch):
     from tests.synth import make_video_with_audio
     server, c, v, s, tmp = env
-    monkeypatch.setattr(server, "EXTRACTED", tmp / "extracted")
-    monkeypatch.setattr(server, "EXPORTS", tmp / "exports")
     vm = tmp / "clip.mp4"
     make_video_with_audio(vm, s)
     return server, c, vm, s, tmp
@@ -183,3 +189,82 @@ def test_original_audio_is_a_fixed_offset_source(avenv):
     # a video without audio has no original source
     nv = up(c, "video", "jump.avi", (tmp / "jump.avi").read_bytes()).json()["path"]
     assert c.post("/api/analyze-video", json={"video_path": nv}).json()["video"]["has_audio"] is False
+
+
+def _wait(c, jid, t=120):
+    import time
+    end = time.time() + t
+    while time.time() < end:
+        j = c.get(f"/api/scan/{jid}").json()
+        if j["status"] != "running":
+            return j
+        time.sleep(0.3)
+    raise AssertionError("job timed out")
+
+
+def _pipeline(c, vm, s):
+    uv = up(c, "video", vm.name, vm.read_bytes()).json()["path"]
+    us = up(c, "song", "c120.wav", s.read_bytes()).json()["path"]
+    return uv, us
+
+
+def test_splice_render_export_and_guards(avenv):
+    import av
+    server, c, vm, s, tmp = avenv
+    uv, us = _pipeline(c, vm, s)
+    sp = c.post("/api/splice", json={"video_path": uv, "song_path": us, "max_cuts": 1})
+    assert sp.status_code == 200, sp.text
+    plan = sp.json()
+    assert plan["segments"] and "total_pct" in plan
+    assert c.post("/api/splice", json={"video_path": uv, "song_path": us, "max_cuts": 9}).status_code == 422
+    # render: length == video duration (+-1 frame)
+    r = c.post("/api/render-audio", json={"video_path": uv, "song_path": us,
+                                          "segments": plan["segments"], "crossfade_ms": 40})
+    assert r.status_code == 200, r.text
+    rj = r.json()
+    import soundfile as sf
+    info = sf.info(rj["path"])
+    vdur = c.post("/api/analyze-video", json={"video_path": uv}).json()["video"]["duration"]
+    assert abs(info.frames / info.samplerate - vdur) <= 1 / 30 + 1e-6
+    assert abs(rj["duration"] - vdur) <= 1 / 30 + 1e-6
+    assert c.get(rj["url"]).status_code == 200
+    # bad segments
+    bad = [{"src_start": 0, "src_end": 9999, "dst_start": 0}]
+    assert c.post("/api/render-audio", json={"video_path": uv, "song_path": us, "segments": bad}).status_code == 422
+    # export-file only serves from .exports
+    from urllib.parse import quote
+    assert c.get("/api/export-file", params={"path": us}).status_code == 403
+    assert c.get("/api/export-file", params={"path": str(server.EXPORTS / ".." / "uploads")}).status_code == 403
+    # mp4 export (h264 -> stream copy)
+    j = c.post("/api/export-mp4", json={"video_path": uv, "audio_path": rj["path"]})
+    assert j.status_code == 200, j.text
+    done = _wait(c, j.json()["job_id"])
+    assert done["status"] == "done", done
+    with av.open(done["path"]) as o:
+        assert len(o.streams.video) == 1 and len(o.streams.audio) == 1
+        assert abs(float(o.duration / av.time_base) - vdur) <= 0.1
+    assert c.get(done["url"]).status_code == 200
+    # export-mp4 rejects audio outside exports
+    assert c.post("/api/export-mp4", json={"video_path": uv, "audio_path": us}).status_code == 403
+    # origin guard on every new write endpoint
+    evil = {"Origin": "http://evil.example"}
+    for path, body in [("/api/splice", {"video_path": uv, "song_path": us}),
+                       ("/api/render-audio", {"video_path": uv, "song_path": us, "segments": plan["segments"]}),
+                       ("/api/export-mp4", {"video_path": uv, "audio_path": rj["path"]})]:
+        assert c.post(path, json=body, headers=evil).status_code == 403, path
+
+
+def test_export_mp4_reencodes_mjpeg_avi(env):
+    import av
+    from tests.synth import make_video_with_audio
+    server, c, v, s, tmp = env
+    vm = tmp / "clip.avi"
+    make_video_with_audio(vm, s, seconds=4.0, vcodec="mjpeg", acodec="pcm_s16le")
+    uv, us = _pipeline(c, vm, s)
+    seg = [{"src_start": 0, "src_end": 4.0, "dst_start": 0}]
+    rj = c.post("/api/render-audio", json={"video_path": uv, "song_path": us, "segments": seg}).json()
+    done = _wait(c, c.post("/api/export-mp4", json={"video_path": uv, "audio_path": rj["path"]}).json()["job_id"])
+    assert done["status"] == "done", done
+    with av.open(done["path"]) as o:
+        assert o.streams.video[0].codec_context.name == "h264" and len(o.streams.audio) == 1
+        assert abs(float(o.duration / av.time_base) - 4.0) <= 0.15
