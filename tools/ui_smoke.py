@@ -23,6 +23,11 @@ def serve(d):
     server.UPLOADS = Path(d) / "uploads"
     server.EXPORTS = Path(d) / "exports"
     server.EXTRACTED = Path(d) / "extracted"
+    try:
+        from amv_matcher import stems as _stems
+        _stems.CACHE_DIR = Path(d) / "stems-cache"
+    except Exception:
+        pass
     server.ALLOWED_ORIGINS = {f"http://127.0.0.1:{SRV_PORT}", f"http://localhost:{SRV_PORT}"}
     uvicorn.run(server.app, host="127.0.0.1", port=SRV_PORT, log_level="warning")
     return 0
@@ -727,6 +732,32 @@ def main():
             c.key("z", "KeyZ", vk=90, mods=4); c.pump(0.6)
         else:
             print("SKIP  link checks (no original-audio row)")
+
+        # ---- A1 stems
+        c.ev("(()=>{const r=[...document.querySelectorAll('.res')].find(e=>!/original/i.test(e.innerText))||document.querySelector('.res'); r&&r.click();})()")
+        wait_for(c, "!!(S.sel&&S.wf)", 20)
+        check("A1 stems expander exists, lanes hidden", bool(c.ev("!!document.getElementById('stems-toggle')")) and bool(c.ev("document.getElementById('stems-lanes').classList.contains('hidden')")))
+        c.ev("document.getElementById('stems-toggle').click()")
+        c.ev("document.getElementById('stems-prov').value='hpss'")
+        ok = wait_for(c, "!document.getElementById('stems-go').classList.contains('hidden')", 10)
+        check("stems controls show after expanding", ok)
+        c.ev("document.getElementById('stems-go').click()")
+        ok = wait_for(c, "document.querySelectorAll('.stem-lane').length>=2 && __stems.stems.every(n=>__stems.bufs[n])", 120)
+        check("built-in separation creates stem lanes with decoded audio", ok, str(c.ev("__stems.stems")))
+        check("texture strip + lane canvases drawn", bool(c.ev("!!document.getElementById('stems-tex') && document.querySelectorAll('.stem-lane canvas').length>=2")))
+        c.ev("document.querySelector('.stem-lane .m').click()")
+        check("mute button toggles and dims lane", bool(c.ev("document.querySelector('.stem-lane').classList.contains('dim') && document.querySelector('.stem-lane .m').classList.contains('on')")))
+        c.ev("document.querySelector('.stem-lane .m').click()")
+        c.ev("document.querySelectorAll('.stem-lane .s')[1].click()")
+        check("solo mutes the others", bool(c.ev("document.querySelectorAll('.stem-lane')[0].classList.contains('dim') && !document.querySelectorAll('.stem-lane')[1].classList.contains('dim')")))
+        c.ev("document.querySelectorAll('.stem-lane .s')[1].click()")
+        c.ev("play()")
+        ok = wait_for(c, "__stems.srcs.length>0 && document.getElementById('aud').muted", 10)
+        check("stems mix plays via Web Audio (A1 element muted)", ok)
+        c.ev("pause()")
+        ok = wait_for(c, "__stems.srcs.length===0 && !document.getElementById('aud').muted", 5)
+        check("pause stops the stems mix", ok)
+        check("quiet-detail data loaded", c.ev("Array.isArray(__stems.feats && __stems.feats.quiet_detail)") is True)
 
         # ---- error path
         if os.path.exists(a.bad_video):

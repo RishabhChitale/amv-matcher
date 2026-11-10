@@ -139,3 +139,23 @@ body.dragging #fit,body.dragging .ovwrap{opacity:.5;transition:opacity var(--eas
 .res.nov .ring,.res.nov .pp{color:var(--mut);border-color:var(--mut);background:none}
 .nv{font-size:10px;color:var(--mut);font-style:italic}
 .toast-undo{margin-left:10px;background:none;border:1px solid var(--c);color:var(--c);border-radius:6px;padding:1px 8px;cursor:pointer;font-size:12px}
+
+/* ---- A1 stems ---- */
+.stems{padding:6px 10px}
+.stems-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.stems-bar select{background:rgba(0,0,0,.35);border:1px solid var(--line);color:var(--txt);border-radius:8px;padding:5px 8px;font-size:12px}
+.stems-bar button{font-size:12px;padding:5px 10px}
+.stems-ctl{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+#stems-toggle{font-weight:700;font-size:12px}
+.stems-lanes{display:flex;flex-direction:column;gap:3px;margin-top:6px}
+.stem-lane{display:flex;align-items:stretch;gap:0;height:48px}
+.stem-hd{width:124px;flex:none;display:flex;align-items:center;gap:4px;font-size:11px;color:var(--mut);padding-right:6px}
+.stem-hd b{width:46px;color:var(--txt);font-weight:600;text-transform:capitalize}
+.stem-hd button{padding:1px 6px;font-size:10px;min-width:20px;border-radius:6px}
+.stem-hd button.on.m{background:rgba(255,59,78,.4);border-color:var(--red)}
+.stem-hd button.on.s{background:rgba(250,204,21,.4);border-color:#facc15}
+.stem-hd input[type=range]{width:34px}
+.stem-lane canvas{flex:1;min-width:0;height:48px;display:block;border-radius:6px;background:rgba(0,0,0,.25)}
+.stem-lane.dim{opacity:.4}
+.stems-tex{display:flex;height:6px;margin-left:124px;border-radius:3px;overflow:hidden}
+.stems-tex{display:block}canvas.stems-tex{width:calc(100% - 124px);height:6px;margin-bottom:3px}

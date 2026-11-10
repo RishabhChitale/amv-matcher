@@ -527,3 +527,7 @@ def static_file(name: str):
     if STATIC.resolve() not in p.parents or not p.is_file():
         raise HTTPException(404)
     return FileResponse(p)
+
+
+from . import stems_api  # noqa: E402
+app.include_router(stems_api.router)

@@ -1,0 +1,8 @@
+# Optional Demucs stem separation. Installed into its own venv (.venv-stems) so the base app
+# keeps numpy 2.x: torch 2.2.x (last release for macOS x86_64 / Python 3.9) needs numpy<2.
+# Install: python3 -m venv .venv-stems && .venv-stems/bin/pip install -r requirements-stems.txt
+numpy==1.26.4
+torch==2.2.2
+torchaudio==2.2.2
+demucs==4.0.1
+soundfile==0.13.1

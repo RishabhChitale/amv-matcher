@@ -56,6 +56,22 @@
       <canvas id="tl"></canvas>
       <button id="x-v" class="x" title="Remove video (Delete)">&times;</button><button id="x-a" class="x" title="Remove audio (Delete)">&times;</button>
     </div>
+    <div class="stems glass" id="stems">
+      <div class="stems-bar">
+        <button id="stems-toggle" class="linkbtn" aria-expanded="false">A1 stems &#x25B8;</button>
+        <span id="stems-info" class="muted"></span>
+        <span class="stems-ctl hidden" id="stems-ctl">
+          <select id="stems-prov" title="Separation method"><option value="auto">Auto</option><option value="hpss">Quick (built-in)</option><option value="demucs">Demucs (best)</option></select>
+          <button id="stems-go">Separate stems</button>
+          <button id="stems-cancel" class="hidden">Cancel</button>
+          <button id="stems-install" class="hidden">Install Demucs (~1 GB)</button>
+          <label class="chk"><input type="checkbox" id="stems-mix" checked> play stems mix</label>
+        </span>
+      </div>
+      <div id="stems-prog" class="ex-prog hidden"><i id="stems-bar"></i></div>
+      <div id="stems-msg" class="fit-msg"></div>
+      <div id="stems-lanes" class="stems-lanes hidden"></div>
+    </div>
     <div class="hint" id="tl-hint">Drag the song clip on A1 to set a manual offset. Keys: Space play/pause, &larr;/&rarr; frame, Shift+arrows 1 s, J/K/L shuttle.</div>
   </section>
 
@@ -87,5 +103,6 @@
 <audio id="aud" preload="auto"></audio>
 <script src="/static/app.js"></script>
 <script src="/static/drop.js"></script>
+<script src="/static/stems.js"></script>
 </body>
 </html>
