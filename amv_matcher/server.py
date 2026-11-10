@@ -21,9 +21,10 @@ from .pump import pump_keyframes
 from .score import MIN_OFFSET_S, score, score_at
 from .splice import plan_splice
 from .video import VIDEO_EXTS, analyze_video
+from . import paths, proxy
 
 ROOT = Path(__file__).resolve().parent.parent
-STATIC = ROOT / "static"
+STATIC = paths.resource_root() / "static"
 app = FastAPI(title="AMV Matcher")
 
 JOBS: dict = {}
@@ -32,12 +33,18 @@ ALLOWED_VIDEOS: set = set()  # video files that have been scanned
 VIDEOS: dict = {}           # resolved video path -> analysis (for /api/score)
 _jobs_lock = threading.Lock()
 
-EXTRACTED = ROOT / ".cache" / "extracted"   # embedded audio decoded from videos
-EXPORTS = ROOT / ".exports"                 # rendered wavs / mp4s the user can download
-UPLOADS = ROOT / ".uploads"   # dropped files land here (module var so tests can redirect it)
+EXTRACTED = paths.CACHE / "extracted"   # embedded audio decoded from videos
+EXPORTS = paths.EXPORTS                 # rendered wavs / mp4s the user can download
+UPLOADS = paths.UPLOADS   # dropped files land here (module var so tests can redirect it)
 UPLOAD_LIMITS = {"video": 8 * 1024 ** 3, "song": 300 * 1024 ** 2}
 ORIGINAL_SLACK_S = 0.5
 ALLOWED_ORIGINS = {"http://127.0.0.1:8765", "http://localhost:8765"}
+ALLOWED_SONGS: set = set()   # individually picked/dropped song files (native paths)
+
+
+def allow_port(port: int) -> None:
+    """The desktop shell serves on a free port: accept that origin for POST/DELETE."""
+    ALLOWED_ORIGINS.update({f"http://127.0.0.1:{port}", f"http://localhost:{port}"})
 
 
 def _origin_guard(request: Request):
@@ -79,6 +86,12 @@ def _full_video(vp: Path) -> dict:
                                            "name": f"Original audio ({vp.name})"}
         except Exception as e:   # a broken audio track must not break video analysis
             video["audio_error"] = f"{type(e).__name__}: {e}"
+        try:
+            if _needs_proxy(vp):
+                video["preview_proxy"] = True
+                proxy.build_async(vp, _PROXY_POOL)
+        except Exception:
+            pass
         VIDEOS[str(vp)] = video
     return video
 
@@ -89,6 +102,7 @@ def _video_info(video: dict) -> dict:
                                   "cut_times", "shots")}
     info["has_audio"] = bool(video.get("has_audio"))
     info["original_audio"] = video.get("original_audio")
+    info["preview_proxy"] = bool(video.get("preview_proxy"))
     info["cut_count"] = len(video["cut_times"])
     info["peak_count"] = len(video["motion_peaks"])
     return info
@@ -200,7 +214,7 @@ def _safe_song(path: str) -> Path:
         p = Path(path).expanduser().resolve()
     except Exception:
         raise HTTPException(400, "Bad path")
-    if not (_in_music_dirs(p) or _in_uploads(p) or _under(p, EXTRACTED)) or p.suffix.lower() not in AUDIO_EXTS or not p.is_file():
+    if not (_in_music_dirs(p) or str(p) in ALLOWED_SONGS or _in_uploads(p) or _under(p, EXTRACTED)) or p.suffix.lower() not in AUDIO_EXTS or not p.is_file():
         raise HTTPException(403, "Path is not a song inside a scanned music folder or the uploads folder")
     return p
 
@@ -220,9 +234,26 @@ def audio(path: str):
     return FileResponse(_safe_song(path))  # supports Range requests for seeking
 
 
+_PROXY_POOL = ThreadPoolExecutor(max_workers=1)
+_NEEDS_PROXY: dict = {}
+
+
+def _needs_proxy(vp: Path) -> bool:
+    k = f"{vp}|{vp.stat().st_mtime_ns}"
+    if k not in _NEEDS_PROXY:
+        _NEEDS_PROXY[k] = proxy.needs_proxy(vp)
+    return _NEEDS_PROXY[k]
+
+
 @app.get("/api/video")
 def video_file(path: str):
-    return FileResponse(_safe_video(path))  # Starlette FileResponse honours Range -> 206
+    vp = _safe_video(path)
+    if _needs_proxy(vp):   # browser can't decode this one: serve the cached 540p H.264 proxy
+        try:
+            return FileResponse(proxy.build(vp))
+        except Exception:
+            pass           # last resort: the original (the UI shows its "can't preview" message)
+    return FileResponse(vp)  # Starlette FileResponse honours Range -> 206
 
 
 @app.get("/api/waveform")
@@ -342,7 +373,9 @@ def _clear_dir(base: Path) -> int:
 @app.get("/api/uploads")
 def uploads_info():
     u, e = _uploads_files(), _files_under(EXPORTS)
-    return {"count": len(u) + len(e), "bytes": _bytes(u) + _bytes(e),
+    pc = _files_under(proxy.proxy_dir())
+    return {"proxy_count": len(pc), "proxy_bytes": _bytes(pc), "frozen": paths.FROZEN,
+            "data_dir": str(paths.data_dir()), "count": len(u) + len(e), "bytes": _bytes(u) + _bytes(e),
             "uploads_count": len(u), "uploads_bytes": _bytes(u),
             "exports_count": len(e), "exports_bytes": _bytes(e)}
 
@@ -354,6 +387,36 @@ def uploads_clear():
     for k in [k for k in VIDEOS if _in_uploads(Path(k))]:
         VIDEOS.pop(k, None)
     return {"freed": uf + ef, "uploads_freed": uf, "exports_freed": ef}
+
+
+class RegisterRequest(BaseModel):
+    paths: list = Field(default_factory=list, max_length=5000)
+
+
+@app.post("/api/register-paths", dependencies=[Depends(_origin_guard)])
+def register_paths(req: RegisterRequest):
+    """Native shell: the user picked/dropped real files. Allow them in place (no upload copy);
+    dropped folders are expanded recursively (L8)."""
+    videos, songs = [], []
+
+    def add(p: Path):
+        ext = p.suffix.lower()
+        if ext in VIDEO_EXTS:
+            ALLOWED_VIDEOS.add(str(p)); videos.append(str(p))
+        elif ext in AUDIO_EXTS:
+            ALLOWED_SONGS.add(str(p)); songs.append(str(p))
+    for raw in req.paths:
+        try:
+            p = Path(str(raw)).expanduser().resolve()
+        except Exception:
+            continue
+        if p.is_file():
+            add(p)
+        elif p.is_dir():
+            for q in sorted(p.rglob("*")):
+                if q.is_file() and not any(part.startswith(".") for part in q.relative_to(p).parts):
+                    add(q.resolve())
+    return {"videos": videos, "songs": songs}
 
 
 class ScoreSongsRequest(BaseModel):

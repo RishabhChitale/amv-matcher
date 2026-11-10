@@ -165,3 +165,13 @@ Serves a file from `.exports/` only (403 for anything else) as a download (`Cont
 
 ### POST /api/export-mp4
 Body `{"video_path", "audio_path"}` where `audio_path` is a `.wav` inside `.exports/` (else 403). Returns `{"job_id", "status": "running"}`; poll `GET /api/scan/{job_id}` (`done` is 0-100 progress). When `status == "done"` the job has `path`, `url` (use with `/api/export-file`) and `size`; on failure `status == "error"` with `error`. The video's own audio is dropped and replaced by the wav (AAC 192k). The video stream is copied untouched when its codec is h264/hevc/mpeg4/av1/vp9 (falling back to a re-encode if the copy fails), otherwise re-encoded to H.264 (yuv420p, crf 20). Output: `.exports/<video>__<song>.mp4`.
+
+## Native app shell (app_main.py)
+
+### POST /api/register-paths
+Body `{"paths": [...]}` (Origin-guarded). Native drops/picks: files are allowed in place (no copy into uploads); folders are expanded recursively, skipping dot-folders. Returns `{"videos": [...], "songs": [...]}` (resolved paths, by extension).
+
+### Preview proxy
+Videos a `<video>` tag cannot decode (mkv, MJPG avi, ...) get `preview_proxy: true` in the video info and are served by `GET /api/video` from a cached 540p H.264 mp4 (`proxy.py`, built in the background). Scoring/export always use the original file. `GET /api/uploads` also reports `proxy_count`, `proxy_bytes`, `frozen`.
+
+Env (dev aids): `AMV_DATA_DIR` data folder; `AMV_SNAPSHOT=<png>`, `AMV_TEST_DROP=<paths>`, `AMV_EXIT_AFTER_SNAPSHOT=1`. `python app_main.py --selftest` runs a headless end-to-end check.

@@ -20,14 +20,20 @@ import numpy as np
 import soundfile as sf
 
 ROOT = Path(__file__).resolve().parent.parent
-CACHE_DIR = ROOT / ".cache" / "stems"           # module var so tests can redirect it
-VENV_DIR = ROOT / ".venv-stems"
-TORCH_HOME = ROOT / ".cache" / "torch"
+from . import paths as _paths
+CACHE_DIR = _paths.CACHE / "stems"           # module var so tests can redirect it
+VENV_DIR = _paths.STEMS_PACK if _paths.FROZEN else ROOT / ".venv-stems"
+PACK_MISSING_MSG = "Stems pack not installed: quick split only"
+TORCH_HOME = _paths.CACHE / "torch"
 SR = 44100
 ENERGY_HZ = 10
 MIN_FREE_BYTES = 3 * 1024 ** 3
 STEM_NAMES = {"hpss": ["drums", "music"], "demucs": ["drums", "bass", "vocals", "other"]}
 FEATURES_VERSION = 1
+
+
+def paths_frozen() -> bool:
+    return _paths.FROZEN
 
 
 class Cancelled(Exception):
@@ -45,12 +51,14 @@ def stem_dir(path, provider: str) -> Path:
 
 
 def demucs_python() -> Path:
-    return VENV_DIR / "bin" / "python"
+    win = VENV_DIR / "Scripts" / "python.exe"
+    return win if win.is_file() else VENV_DIR / "bin" / "python"
 
 
 def demucs_installed() -> bool:
     py = demucs_python()
-    return py.is_file() and any((VENV_DIR / "lib").glob("python*/site-packages/demucs/__init__.py"))
+    return py.is_file() and (any((VENV_DIR / "lib").glob("python*/site-packages/demucs/__init__.py"))
+                                or (VENV_DIR / "Lib" / "site-packages" / "demucs" / "__init__.py").is_file())
 
 
 def free_bytes(path=None) -> int:

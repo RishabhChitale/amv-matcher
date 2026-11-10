@@ -180,6 +180,8 @@ def install_demucs():
     if S.demucs_installed():
         INSTALL.update(status="done", progress=1.0, message="Demucs already installed")
         return _public(INSTALL)
+    if S.paths_frozen():
+        raise HTTPException(501, S.PACK_MISSING_MSG + f" (drop a stems pack into {S.VENV_DIR})")
     free = S.free_bytes(S.ROOT)
     if free < S.MIN_FREE_BYTES:
         raise HTTPException(507, f"Not enough free disk space: {free / 1024 ** 3:.1f} GB free, 3 GB needed")
@@ -195,4 +197,7 @@ def install_demucs():
 def install_status():
     d = _public(INSTALL)
     d["installed"] = S.demucs_installed()
+    if S.paths_frozen() and not d["installed"]:
+        d["message"] = S.PACK_MISSING_MSG
+        d["frozen"] = True
     return d

@@ -12,6 +12,8 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "UPLOADS", tmp_path / "uploads")
     monkeypatch.setattr(server, "EXTRACTED", tmp_path / "extracted")
     monkeypatch.setattr(server, "EXPORTS", tmp_path / "exports")
+    from amv_matcher import paths
+    monkeypatch.setattr(paths, "CACHE", tmp_path / "cache")   # proxy cache stays out of the real data dir
     server.SPLICE_CACHE.clear()
     c = TestClient(server.app)
     v = tmp_path / "jump.avi"
@@ -135,8 +137,10 @@ def test_delete_clears_only_uploads(env):
     server.EXPORTS.mkdir()
     (server.EXPORTS / "x.wav").write_bytes(b"12")
     g = c.get("/api/uploads").json()
-    assert g == {"count": 3, "bytes": 11, "uploads_count": 2, "uploads_bytes": 9,
-                 "exports_count": 1, "exports_bytes": 2}
+    base = {k: g[k] for k in ("count", "bytes", "uploads_count", "uploads_bytes", "exports_count", "exports_bytes")}
+    assert base == {"count": 3, "bytes": 11, "uploads_count": 2, "uploads_bytes": 9,
+                    "exports_count": 1, "exports_bytes": 2}
+    assert g["proxy_count"] == 0
     assert c.delete("/api/uploads").json() == {"freed": 11, "uploads_freed": 9, "exports_freed": 2}
     assert c.get("/api/uploads").json()["count"] == 0
     assert keep.exists() and s.exists() and v.exists()

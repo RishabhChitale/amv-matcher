@@ -16,7 +16,8 @@ from .cache import get_cache
 SR = 22050
 HOP = 512
 AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".flac", ".ogg", ".aac"}
-CACHE_PATH = Path(__file__).resolve().parent.parent / ".cache" / "songs.json"
+from . import paths as _paths
+CACHE_PATH = _paths.CACHE / "songs.json"
 WF_DIR = CACHE_PATH.parent / "wf"
 WF_POINTS = 4000
 CACHE_VERSION = "v4"
