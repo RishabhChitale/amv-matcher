@@ -227,6 +227,30 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
     vd = float(video["duration"])
     fps = float(video.get("fps", 30) or 30)
 
+    def mm(key, objs, fn):                  # pure-function memo shared by all orders of one auto_sync call
+        if memo is None:
+            return fn()
+        hit = memo.get(key)
+        if hit is None:
+            hit = memo[key] = (fn(), objs)  # objs keep the id()-keyed arguments alive
+        return hit[0]
+
+    def sa(s_, v_, o_):
+        return mm(("sa", id(s_), id(v_), float(o_), lead_s), (s_, v_), lambda: S.score_at(s_, v_, o_, lead_s=lead_s))
+
+    def bo(s_, v_, **kw):
+        return mm(("bo", id(s_), id(v_), tuple(sorted(kw.items())), lead_s), (s_, v_),
+                  lambda: _best_offset(s_, v_, lead_s=lead_s, **kw))
+
+    def at(rt):
+        return mm(("at", id(song), rt), (song,), lambda: apply_tempo(song, rt))
+
+    def aw(w_):
+        return mm(("aw", id(w_["warp"])), (w_,), lambda: apply_warp(video, w_["warp"]))
+
+    def asm_(s_, segs_, dur_):
+        return mm(("as", id(s_), id(segs_), dur_), (s_, segs_), lambda: _assemble(s_, segs_, dur_))
+
     def left():
         return budget_s - (time.perf_counter() - t0)
 
@@ -275,21 +299,21 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
     cur_video = video                       # original video + retime (nudges are applied on top)
     tempo_ratio, segs, retime, nudges = 1.0, None, None, []
     loop_segs_given = loop_segs
-    r0 = S.score_at(song, video, 0.0, lead_s=lead_s)
+    r0 = sa(song, video, 0.0)
     begin("offset", _tot(r0))
     if loop_segs_given:                     # looped song: segments fixed, offset locked at 0, no tempo/splice
         segs = loop_segs_given
     elif lock_original:                     # video's own audio: offset 0, one plain trim, no tempo/splice/arrange
         segs = [{"src_start": 0.0, "src_end": vd, "dst_start": 0.0}]
     elif float(song["duration"]) >= vd:
-        offset = _best_offset(song, video, lead_s=lead_s)
+        offset = bo(song, video)
     else:
         limits.append("song_shorter_than_video")
-    cur = S.score_at(cur_song, cur_video, offset, lead_s=lead_s)
+    cur = sa(cur_song, cur_video, offset)
     rec("offset", {"offset": round(offset, 2)}, _tot(r0), _tot(cur), True, r0, cur)
 
     def src_video():                        # video the song-side tools see (retimed, no nudges)
-        return apply_warp(video, retime["warp"]) if retime else video
+        return aw(retime) if retime else video
 
     for ps in range(max_passes):
         state["pass"] = ps
@@ -308,19 +332,19 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
                 for rt in ratios:
                     if abs(rt - tempo_ratio) < 1e-9 or left() <= 0 or cancel():
                         continue
-                    st = apply_tempo(song, rt) if abs(rt - 1.0) > 1e-9 else song
-                    o2 = _best_offset(st, sv, center=offset * tempo_ratio / rt, half=1.0, step=0.05, lead_s=lead_s)
-                    sc = _tot(S.score_at(st, sv, o2, lead_s=lead_s))
+                    st = at(rt) if abs(rt - 1.0) > 1e-9 else song
+                    o2 = bo(st, sv, center=offset * tempo_ratio / rt, half=1.0, step=0.05)
+                    sc = _tot(sa(st, sv, o2))
                     if sc > best[0]:
                         best = (sc, rt, st, o2)
                 if best[1] != tempo_ratio:
                     st = best[2]
-                    o3 = _best_offset(st, sv, center=best[3], half=0.06, step=0.01, lead_s=lead_s)
-                    sc3 = _tot(S.score_at(st, sv, o3, lead_s=lead_s))
+                    o3 = bo(st, sv, center=best[3], half=0.06, step=0.01)
+                    sc3 = _tot(sa(st, sv, o3))
                     if sc3 >= best[0]:
                         best = (sc3, best[1], st, o3)
                 kept = best[0] >= _tot(cur) + min_gain
-                newr = S.score_at(best[2], sv, best[3], lead_s=lead_s) if kept else cur
+                newr = sa(best[2], sv, best[3]) if kept else cur
                 rec("tempo", {"ratio": best[1], "bpm_from": pt["bpm_from"], "bpm_to": round(song["bpm"] * best[1], 2)},
                     _tot(cur), best[0] if kept else _tot(cur), kept, cur, newr)
                 if kept:
@@ -333,13 +357,14 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
                     and float(cur_song["duration"]) >= svd:
                 begin("splice", _tot(cur))
                 try:
-                    sp = plan_splice(cur_song, sv, max_cuts, allow_negative=True, lead_s=lead_s,
-                                     should_cancel=cancel)
+                    sp = mm(("sp", id(cur_song), id(sv), max_cuts, lead_s), (cur_song, sv),
+                            lambda: plan_splice(cur_song, sv, max_cuts, allow_negative=True, lead_s=lead_s,
+                                                should_cancel=cancel))
                 except Cancelled:
                     break
                 if sp.get("eligible") and len(sp["segments"]) > 1:
-                    asm = _assemble(cur_song, sp["segments"], svd)
-                    asm_r = S.score_at(asm, sv, 0.0, lead_s=lead_s)
+                    asm = asm_(cur_song, sp["segments"], svd)
+                    asm_r = sa(asm, sv, 0.0)
                     kept = _gain(asm_r, cur, min_gain)
                     rec("splice", {"max_cuts": max_cuts, "cuts": sp["cuts"]}, _tot(cur),
                         _tot(asm_r) if kept else _tot(cur), kept, cur, asm_r)
@@ -359,8 +384,8 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
                         memo[key] = (cur_song, sv, ap)       # keep the objects alive so ids stay unique
                 cancel()                    # arrange is not interruptible: poll again once it returns
                 if ap.get("eligible") and len(ap.get("segments") or []) > 1:
-                    asm = _assemble(cur_song, ap["segments"], svd)
-                    asm_r = S.score_at(asm, sv, 0.0, lead_s=lead_s)
+                    asm = asm_(cur_song, ap["segments"], svd)
+                    asm_r = sa(asm, sv, 0.0)
                     kept = _gain(asm_r, cur, min_gain)
                     rec("arrange", {"moves": ap["moves"], "sections_used": ap["sections_used"]}, _tot(cur),
                         _tot(asm_r) if kept else _tot(cur), kept, cur, asm_r)
@@ -372,28 +397,31 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
                 begin("retime", _tot(cur))
                 alt_off = None
                 try:
-                    rp = plan_retime(cur_song, video, offset, max_speed_dev, min_section_s, lead_s=lead_s,
-                                     should_cancel=cancel)
+                    rp = mm(("rt", id(cur_song), id(video), float(offset), max_speed_dev, min_section_s, lead_s), (cur_song, video),
+                            lambda: plan_retime(cur_song, video, offset, max_speed_dev, min_section_s, lead_s=lead_s,
+                                                should_cancel=cancel))
                 except Cancelled:
                     break
-                wv = apply_warp(video, rp["warp"])
-                rr = S.score_at(cur_song, wv, offset, lead_s=lead_s)
-                base = S.score_at(cur_song, sv, offset, lead_s=lead_s)       # current retime state, no nudges
+                wv = aw(rp)
+                rr = sa(cur_song, wv, offset)
+                base = sa(cur_song, sv, offset)       # current retime state, no nudges
                 ref = base if (nudges or _tot(base) > _tot(cur)) else cur
                 kept = bool(rp["sections"]) and rp["speed_jump_ok"] and _gain(rr, ref, min_gain)
                 if not kept and segs is None and not lock_original and not retime:
                     # the plain-trim best offset can sit where the retime planner finds nothing: try the
                     # other plausible offsets (plain trim only: segments / looped songs fix the offset at 0)
                     try:
-                        for o2 in _alt_offsets(cur_song, video, [offset], lead_s=lead_s):
+                        for o2 in mm(("alt", id(cur_song), id(video), float(offset), lead_s), (cur_song, video),
+                                     lambda: _alt_offsets(cur_song, video, [offset], lead_s=lead_s)):
                             if cancel() or left() <= 0:
                                 break
-                            rp2 = plan_retime(cur_song, video, o2, max_speed_dev, min_section_s, lead_s=lead_s,
-                                              should_cancel=cancel)
+                            rp2 = mm(("rt", id(cur_song), id(video), float(o2), max_speed_dev, min_section_s, lead_s), (cur_song, video),
+                                     lambda: plan_retime(cur_song, video, o2, max_speed_dev, min_section_s, lead_s=lead_s,
+                                                         should_cancel=cancel))
                             if not rp2["sections"] or not rp2["speed_jump_ok"]:
                                 continue
-                            wv2 = apply_warp(video, rp2["warp"])
-                            rr2 = S.score_at(cur_song, wv2, o2, lead_s=lead_s)
+                            wv2 = aw(rp2)
+                            rr2 = sa(cur_song, wv2, o2)
                             if _gain(rr2, ref, min_gain) and (not kept or _rank(rr2) > _rank(rr)):
                                 rp, wv, rr, kept, alt_off = rp2, wv2, rr2, True, o2
                     except Cancelled:
@@ -411,23 +439,24 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
                         # events moved: re-splice against the retimed video (one extra pass)
                         begin("splice", _tot(cur))
                         try:
-                            sp = plan_splice(song if tempo_ratio == 1.0 else apply_tempo(song, tempo_ratio),
+                            sp = plan_splice(song if tempo_ratio == 1.0 else at(tempo_ratio),
                                              wv, max_cuts, allow_negative=True, lead_s=lead_s,
                                              should_cancel=cancel)
                         except Cancelled:
                             sp = {}
                         if sp.get("eligible") and len(sp["segments"]) > 1:
-                            base_s = song if tempo_ratio == 1.0 else apply_tempo(song, tempo_ratio)
-                            asm = _assemble(base_s, sp["segments"], float(wv["duration"]))
-                            ar = S.score_at(asm, wv, 0.0, lead_s=lead_s)
+                            base_s = song if tempo_ratio == 1.0 else at(tempo_ratio)
+                            asm = asm_(base_s, sp["segments"], float(wv["duration"]))
+                            ar = sa(asm, wv, 0.0)
                             if _gain(ar, cur, min_gain):
                                 rec("splice", {"max_cuts": max_cuts, "cuts": sp["cuts"], "after_retime": True},
                                     _tot(cur), _tot(ar), True, cur, ar)
                                 segs, cur_song, offset, cur = sp["segments"], asm, 0.0, ar
             elif tool == "micro" and not nudges:
                 begin("micro", _tot(cur))
-                nv, nl = _nudge(cur_song, cur_video, offset, 1.0 / fps, lead_s)
-                nr = S.score_at(cur_song, nv, offset, lead_s=lead_s)
+                nv, nl = mm(("nd", id(cur_song), id(cur_video), float(offset), fps, lead_s), (cur_song, cur_video),
+                            lambda: _nudge(cur_song, cur_video, offset, 1.0 / fps, lead_s))
+                nr = sa(cur_song, nv, offset)
                 kept = bool(nl) and _gain(nr, cur, min_gain)
                 rec("micro", {"nudges": len(nl), "max_shift_s": round(1.0 / fps, 4)}, _tot(cur),
                     _tot(nr) if kept else _tot(cur), kept, cur, nr)
