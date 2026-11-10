@@ -98,6 +98,7 @@ def main():
     ap.add_argument("--url", default="http://127.0.0.1:8765")
     ap.add_argument("--video", default="/tmp/amvfx/clip.mp4")
     ap.add_argument("--music", default="/tmp/amvfx/music")
+    ap.add_argument("--allow-clear", action="store_true")
     ap.add_argument("--bad-video", default="/tmp/amvfx/clip.mkv")
     ap.add_argument("--shot", default=os.path.join(os.path.dirname(__file__), "..", "docs", "ui.png"))
     a = ap.parse_args()
@@ -147,7 +148,7 @@ def main():
         check("'Too short' group lists short.wav", "short" in short.lower(), short[:60].replace("\n", " "))
         vc = c.ev("document.getElementById('vcard') ? document.getElementById('vcard').innerText : ''") or ""
         check("video info card filled", "BPM" in vc.upper() or any(ch.isdigit() for ch in vc), vc[:60].replace("\n", " "))
-        check("rings and bars rendered", bool(c.ev("document.querySelectorAll('.res .ring').length>0 && document.querySelectorAll('.res .bar i').length>=3")))
+        check("rings and percent pills rendered", bool(c.ev("document.querySelectorAll('.res .ring').length>0 && document.querySelectorAll('.res .pill .pp').length>=3")))
 
         # ---- load song
         c.ev("document.querySelector('.res').click()")
@@ -365,6 +366,80 @@ def main():
         else:
             print("SKIP  drop checks (no drop.wav in", a.music + ")")
 
+        # ---- v2: original audio, Use this audio, overview, splice, export
+        orig_vid = "/tmp/amvfx/orig.mp4"
+        try:
+            if not os.path.exists(orig_vid):
+                sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+                from tests.synth import make_click_track, make_video_with_audio
+                make_click_track("/tmp/amvfx/orig_audio.wav", 110, 10, 0.0)
+                make_video_with_audio(orig_vid, "/tmp/amvfx/orig_audio.wav", seconds=10)
+        except Exception as e:
+            print("SKIP  v2 fixture:", e)
+        if os.path.exists(orig_vid):
+            scan(orig_vid)
+            wait_for(c, "document.querySelectorAll('.res').length>0 && !document.getElementById('scan').disabled", 90)
+            first = c.ev("(document.querySelector('.res')||{innerText:''}).innerText") or ""
+            check("original audio row pinned first with 'from video' chip",
+                  bool(c.ev("!!document.querySelector('.res.orig')")) and "from video" in first.lower(), first[:50].replace("\n", " "))
+            ub = c.ev("document.querySelectorAll('.res button.use').length")
+            check("every row has a 'Use this audio' button", ub == c.ev("document.querySelectorAll('.res').length") and ub > 1, f"{ub}")
+            pct = c.ev("(document.querySelector('.res.orig .pp')||{}).textContent")
+            check("percent shown next to the button", bool(pct) and "%" in pct, str(pct))
+            c.ev("document.querySelector('.res.orig button.use').click()")
+            wait_for(c, "/Original audio/.test(document.getElementById('a1-lbl').textContent)", 20)
+            lbl = c.ev("document.getElementById('a1-lbl').textContent") or ""
+            check("Use this audio on original -> 'In use' + A1 label", "Original audio" in lbl and "In use" in (c.ev("document.querySelector('.res.orig button.use').textContent") or ""), lbl)
+            check("original: splice switch disabled", bool(c.ev("document.getElementById('sp-on').disabled")))
+            o0 = c.ev("S.offset")
+            g = c.ev("(()=>{const r=document.getElementById('tl').getBoundingClientRect();return {l:r.left,t:r.top,w:r.width}})()")
+            c.mouse("mousePressed", g["l"] + g["w"] * 0.4, g["t"] + 26 + 84 + 40)
+            c.mouse("mouseMoved", g["l"] + g["w"] * 0.6, g["t"] + 26 + 84 + 40)
+            c.mouse("mouseReleased", g["l"] + g["w"] * 0.6, g["t"] + 26 + 84 + 40)
+            c.pump(0.3)
+            check("original: offset drag locked", c.ev("S.offset") == o0)
+            # a song row
+            c.ev("[...document.querySelectorAll('.res:not(.orig) button.use')][0].click()")
+            wait_for(c, "/Song /.test(document.getElementById('a1-lbl').textContent) && !document.querySelector('.res.sel.orig')", 30)
+            lbl = c.ev("document.getElementById('a1-lbl').textContent") or ""
+            check("song in use -> A1 label '(auto start)'", "auto start" in lbl, lbl)
+            ow = c.ev("(()=>{const r=document.getElementById('ov').getBoundingClientRect();return {l:r.left,t:r.top,w:r.width,h:r.height}})()")
+            check("song overview canvas has size", ow["w"] > 100 and ow["h"] > 20, str(ow))
+            c.mouse("mousePressed", ow["l"] + ow["w"] * 0.05, ow["t"] + ow["h"] / 2)
+            c.mouse("mouseReleased", ow["l"] + ow["w"] * 0.05, ow["t"] + ow["h"] / 2)
+            c.pump(0.8)
+            lbl = c.ev("document.getElementById('a1-lbl').textContent") or ""
+            check("overview click sets manual start; Reset button shown", "manual start" in lbl and not c.ev("document.getElementById('vc-reset').classList.contains('hidden')"), lbl)
+            c.ev("document.getElementById('vc-reset').click()")
+            c.pump(0.8)
+            lbl = c.ev("document.getElementById('a1-lbl').textContent") or ""
+            check("Reset to best start restores auto", "auto start" in lbl, lbl)
+            if not c.ev("document.getElementById('sp-on').disabled"):
+                c.ev("document.getElementById('sp-on').click()")
+                wait_for(c, "S.sp.plan || /No splice|Fit:/.test(document.getElementById('fit-msg').textContent)", 40)
+                fm = c.ev("document.getElementById('fit-msg').textContent") or ""
+                check("splice on -> fit message (percentages only)", ("Fit:" in fm or "No splice" in fm) and "objective" not in fm.lower(), fm)
+                lbl = c.ev("document.getElementById('a1-lbl').textContent") or ""
+                check("A1 label reflects splice or single trim", "Spliced" in lbl or "Song" in lbl, lbl)
+            c.ev("document.getElementById('ex-wav').click()")
+            ok = wait_for(c, "!!document.querySelector('#ex-link')", 90)
+            href = c.ev("(document.querySelector('#ex-link')||{}).href")
+            st = c.ev(f"fetch({json.dumps(href or '')}).then(r=>r.status)") if href else None
+            check("Export .wav -> download link works", ok and st == 200, f"{href} {st}")
+            c.ev("document.getElementById('ex-mp4').click()")
+            ok = wait_for(c, "/\\.mp4/.test((document.querySelector('#ex-link')||{}).href||'')", 180)
+            href = c.ev("(document.querySelector('#ex-link')||{}).href")
+            st = c.ev(f"fetch({json.dumps(href or '')}).then(r=>r.status)") if href else None
+            check("Export .mp4 -> job completes, download works", ok and st == 200, f"{href} {st}")
+            import base64
+            shotv2 = os.path.join(os.path.dirname(os.path.abspath(a.shot)), "ui.png")
+            open(shotv2, "wb").write(base64.b64decode(c.call("Page.captureScreenshot", format="png")["data"]))
+            # restore the main fixture for the following checks
+            scan(a.video)
+            wait_for(c, "document.querySelectorAll('.res').length>0 && !document.getElementById('scan').disabled", 90)
+            c.ev("document.querySelector('.res').click()")
+            wait_for(c, "!!(S.sel && S.wf) && document.getElementById('vid').readyState>=2", 30)
+
         # ---- drag-and-drop / Browse uploads
         mus = lambda n: os.path.join(a.music, n)
         have = [n for n in ("click120.wav", "click140.wav", "click97.wav") if os.path.exists(mus(n))]
@@ -422,23 +497,27 @@ def main():
             check("screenshot saved (drag highlight)", os.path.getsize(shot2) > 10000, shot2)
             c.ev("window.dispatchEvent(new DragEvent('dragend'))")
 
-            c.ev("document.getElementById('up-clear').click()")
-            check("Clear opens the in-page confirm popover", c.ev("!document.getElementById('up-pop').classList.contains('hidden')"))
-            c.ev("document.getElementById('up-yes').click()")
-            ok = wait_for(c, "document.getElementById('up-clear').disabled && document.querySelectorAll('.res .chip').length===0", 20)
-            up = c.ev("fetch('/api/uploads').then(r=>r.json())")
-            check("Clear deletes uploads and dropped rows vanish", ok and up["count"] == 0, str(up))
+            if not a.allow_clear:
+                print("SKIP  Clear-uploads + queue checks (shared server; pass --allow-clear on a tmp instance)")
+                c.ev("document.getElementById('__scratch').remove()")
+            else:
+              c.ev("document.getElementById('up-clear').click()")
+              check("Clear opens the in-page confirm popover", c.ev("!document.getElementById('up-pop').classList.contains('hidden')"))
+              c.ev("document.getElementById('up-yes').click()")
+              ok = wait_for(c, "document.getElementById('up-clear').disabled && document.querySelectorAll('.res .chip').length===0", 20)
+              up = c.ev("fetch('/api/uploads').then(r=>r.json())")
+              check("Clear deletes uploads and dropped rows vanish", ok and up["count"] == 0, str(up))
 
-            c.ev("document.getElementById('video-path').value='';S.videoPath='';D.videoPath=''")
-            c.ev("__drop('#results-panel', __aud.slice(0,2))")
-            ok = wait_for(c, "/Drop a video first/.test(__toasts()+document.getElementById('status').innerText)", 30)
-            check("songs dropped before a video are queued with a hint", ok and c.ev("D.queue.length") == 2, f"queue={c.ev('D.queue.length')}")
-            c.ev("__drop('#stage', __vid)")
-            ok = wait_for(c, "document.querySelectorAll('.res .chip').length>=2 && document.getElementById('up-ring').classList.contains('hidden')", 120)
-            check("queued songs are scored once the video arrives", ok and c.ev("D.queue.length") == 0)
-            c.ev("document.getElementById('up-clear').click();document.getElementById('up-yes').click()")
-            wait_for(c, "document.getElementById('up-clear').disabled", 20)
-            c.ev("document.getElementById('__scratch').remove()")
+              c.ev("document.getElementById('video-path').value='';S.videoPath='';D.videoPath=''")
+              c.ev("__drop('#results-panel', __aud.slice(0,2))")
+              ok = wait_for(c, "/Drop a video first/.test(__toasts()+document.getElementById('status').innerText)", 30)
+              check("songs dropped before a video are queued with a hint", ok and c.ev("D.queue.length") == 2, f"queue={c.ev('D.queue.length')}")
+              c.ev("__drop('#stage', __vid)")
+              ok = wait_for(c, "document.querySelectorAll('.res .chip').length>=2 && document.getElementById('up-ring').classList.contains('hidden')", 120)
+              check("queued songs are scored once the video arrives", ok and c.ev("D.queue.length") == 0)
+              c.ev("document.getElementById('up-clear').click();document.getElementById('up-yes').click()")
+              wait_for(c, "document.getElementById('up-clear').disabled", 20)
+              c.ev("document.getElementById('__scratch').remove()")
         else:
             print("SKIP  drag-and-drop checks (fixtures missing)")
 

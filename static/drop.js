@@ -190,10 +190,11 @@ $('f-songs').onchange = e => { const f = [...e.target.files]; e.target.value = '
 let upInfo = {count: 0, bytes: 0};
 async function refreshUploads() {
   try { upInfo = await (await fetch('/api/uploads')).json(); } catch (e) { return; }
-  $('up-size').textContent = fmtB(upInfo.bytes); $('up-clear').disabled = !upInfo.count;
+  const ub = upInfo.uploads_bytes ?? upInfo.bytes ?? 0, eb = upInfo.exports_bytes ?? 0;
+  $('up-size').textContent = fmtB(ub); $('ex-size').textContent = fmtB(eb); $('up-clear').disabled = !upInfo.count;
 }
 $('up-clear').onclick = () => {
-  $('up-pop-t').textContent = `Delete ${upInfo.count} uploaded file${upInfo.count === 1 ? '' : 's'} (${fmtB(upInfo.bytes)})? Dropped videos and songs will be removed from this page.`;
+  $('up-pop-t').textContent = `Delete ${upInfo.count} uploaded/exported file${upInfo.count === 1 ? '' : 's'} (${fmtB(upInfo.bytes)})? Dropped videos and songs will be removed from this page.`;
   $('up-pop').classList.remove('hidden');
 };
 $('up-no').onclick = () => $('up-pop').classList.add('hidden');

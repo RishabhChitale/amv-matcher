@@ -3,7 +3,9 @@ const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const vid = $('vid'), aud = $('aud'), cv = $('tl'), ctx = cv.getContext('2d');
 const S = {video: null, videoPath: '', results: [], sel: null, wf: null, offset: 0, fps: 30, dur: 0,
-           playing: false, rate: 1, loop: false, vidOk: false, score: null};
+           playing: false, rate: 1, loop: false, vidOk: false, score: null,
+           inUse: null, sp: {on: false, max: 2, plan: null, url: '', path: '', seq: 0, busy: false, cache: {}}, a1label: '', cutMarks: 0};
+const jpost = (u, b) => fetch(u, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(b)});
 const fmtMS = s => { s = Math.max(0, Math.round(s)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
 
 // ---------- timecode / transport ----------
@@ -17,7 +19,10 @@ function seek(t) {
   t = Math.min(Math.max(0, t), S.dur || 0);
   vid.currentTime = t; syncAudio(true); update();
 }
-function songTime() { return vid.currentTime + S.offset; }  // song clock = video clock + offset
+function spliceActive() {  // spliced audio (rendered wav) is playing in place of the single trim
+  const p = S.sp.plan; return !!(S.sp.on && p && p.segments && p.cuts && p.cuts.length && p.improvement_pct >= 1 && S.sp.url && S.sel && S.sel === S.inUse && S.sp.path === S.sel.path);
+}
+function songTime() { return spliceActive() ? vid.currentTime : vid.currentTime + S.offset; }  // song clock = video clock + offset (spliced wav starts at video time 0)
 function syncAudio(force) {
   if (!S.sel) return;
   const st = songTime();
@@ -87,7 +92,7 @@ function poll(id) {
       if (j.status === 'done') {
         clearInterval(timer); $('scan').disabled = false; $('progress').classList.add('hidden');
         if (!S.video) loadVideo(j);
-        S.results = j.results || []; renderResults(j); if (S.results[0]) selectSong(S.results[0]);
+        S.results = j.results || []; S.inUse = null; renderResults(j); if (S.results[0]) selectSong(S.results[0]);
       }
     } catch (e) { fail(e.message); }
   };
@@ -109,38 +114,140 @@ function ring(p) {
   return `<div class="ring"><svg width="52" height="52"><defs><linearGradient id="g"><stop offset="0" stop-color="#8b5cf6"/><stop offset="1" stop-color="#22d3ee"/></linearGradient></defs>
   <circle class="bg" cx="26" cy="26" r="22"/><circle class="fg" cx="26" cy="26" r="22" stroke-dasharray="${C}" stroke-dashoffset="${C}" data-p="${p}"/></svg><b>${Math.round(p)}%</b></div>`;
 }
-function bars(r) {
-  return `<div class="bars"><span>Tempo</span><div class="bar"><i style="width:${r.tempo_pct}%"></i></div>
-  <span>Sync</span><div class="bar"><i style="width:${r.sync_pct}%"></i></div>
-  <span>Arc %</span><div class="bar"><i style="width:${r.arc_pct}%"></i></div></div>`;
-}
+const metaText = r => (r.bpm ? r.bpm.toFixed(0) + ' BPM · ' : '') + (r.source === 'original' ? 'original, no shift' : 'starts at ' + fmtMS(r.trim_start_s));
 function renderResults(j) {
+  if (S.inUse) S.inUse = S.results.find(r => r.path === S.inUse.path) || null;
   S.short = j.too_short || []; S.skipped = j.skipped || [];
   const box = $('results'); box.innerHTML = '';
-  if (!S.results.length) box.innerHTML = '<div class="muted pad">No eligible songs (all shorter than the video, or unreadable).</div>';
-  S.results.forEach((r, i) => {
-    const d = document.createElement('div'); d.className = 'res'; d.dataset.i = i;
-    d.innerHTML = ring(r.total_pct) + `<div><div class="rname" title="${esc(r.name)}">${i + 1}. ${esc(r.name)}</div>
-      <div class="rmeta">${r.bpm.toFixed(0)} BPM | Use ${fmtMS(r.trim_start_s)} to ${fmtMS(r.trim_end_s)}${r.dropped ? ' <span class="chip">dropped</span>' : ''}</div>${bars(r)}</div>`;
-    d.onclick = () => selectSong(r); box.appendChild(d);
+  if (!S.results.length) box.innerHTML = '<div class="muted pad">No eligible audio (all shorter than the video, or unreadable).</div>';
+  const order = S.results.map((r, i) => i).sort((a, b) => (S.results[b].source === 'original') - (S.results[a].source === 'original'));
+  let rank = 0;
+  order.forEach(i => {
+    const r = S.results[i], orig = r.source === 'original';
+    const d = document.createElement('div'); d.className = 'res' + (orig ? ' orig' : ''); d.dataset.i = i;
+    d.innerHTML = ring(r.total_pct) + `<div class="rtxt"><div class="rname" title="${esc(r.name)}">${orig ? '' : (++rank) + '. '}${esc(r.name)}${orig ? '<span class="chip">from video</span>' : ''}${r.dropped ? '<span class="chip">dropped</span>' : ''}</div>
+      <div class="rmeta">${metaText(r)}</div></div><div class="pill"><span class="pp">${Math.round(r.total_pct)}%</span><button class="use" title="Use this audio for playback, splice and export">Use this audio</button></div>`;
+    d.onclick = () => selectSong(r);
+    d.querySelector('.use').onclick = e => { e.stopPropagation(); useAudio(r); };
+    box.appendChild(d);
   });
   requestAnimationFrame(() => box.querySelectorAll('.fg').forEach(c => { c.style.strokeDashoffset = C * (1 - c.dataset.p / 100); }));
-  document.querySelectorAll('.res').forEach(e => e.classList.toggle('sel', S.results[e.dataset.i] === S.sel));
+  markRows();
   const sh = j.too_short || [];
   $('short-wrap').classList.toggle('hidden', !sh.length); $('short-n').textContent = sh.length;
   $('short').innerHTML = sh.map(r => `<div>${esc(r.name)} <span class="muted">(${fmtMS(r.song_duration)} vs video ${fmtMS(r.video_duration)})</span></div>`).join('');
   const sk = j.skipped || [];
   $('skipped-wrap').classList.toggle('hidden', !sk.length); $('skip-n').textContent = sk.length;
   $('skipped').innerHTML = sk.map(r => `<div>${esc(r.name || r.path || r)} <span class="muted">${esc(r.reason || '')}</span></div>`).join('');
+  updateFit();
+}
+function markRows() {
+  document.querySelectorAll('.res').forEach(e => {
+    const r = S.results[e.dataset.i], u = r === S.inUse;
+    e.classList.toggle('sel', r === S.sel); e.classList.toggle('use', u);
+    const b = e.querySelector('.use'); if (b) b.textContent = u ? '✓ In use' : 'Use this audio';
+  });
 }
 async function selectSong(r) {
   pause(); S.sel = r; S.score = r;
-  document.querySelectorAll('.res').forEach(e => e.classList.toggle('sel', S.results[e.dataset.i] === r));
-  S.offset = r.best_offset_s || 0;
-  aud.src = '/api/audio?path=' + encodeURIComponent(r.path);
+  S.offset = r.best_offset_s || 0; S.manual = false;
+  markRows(); applyAudioSrc();
   try { S.wf = await (await fetch('/api/waveform?path=' + encodeURIComponent(r.path))).json(); } catch (e) { S.wf = null; }
-  buildPump(); readout(); seek(0); draw();
+  if (S.sel !== r) return;
+  buildPump(); readout(); seek(0); draw(); drawOv(); updateFit();
 }
+function useAudio(r) {
+  S.inUse = r; S.sp.plan = null; S.sp.url = ''; markRows();
+  const go = () => { updateFit(); if (S.sp.on && r.source !== 'original') runSplice(); };
+  if (S.sel !== r) selectSong(r).then(go); else go();
+}
+function applyAudioSrc() {
+  if (!S.sel) return;
+  const t = spliceActive() ? S.sp.url : '/api/audio?path=' + encodeURIComponent(S.sel.path);
+  if (aud.dataset.cur !== t) { aud.dataset.cur = t; aud.src = t; }
+}
+
+// ---------- smart splice / export ----------
+const segKey = (path, segs) => path + '|' + JSON.stringify(segs.map(s => [s.src_start, s.src_end, s.dst_start]));
+async function renderAudio(path, segs) {
+  const key = segKey(path, segs); if (S.sp.cache[key]) return S.sp.cache[key];
+  const r = await jpost('/api/render-audio', {video_path: S.videoPath, song_path: path, segments: segs, crossfade_ms: 40});
+  const j = await r.json(); if (!r.ok) throw new Error(j.detail || r.statusText);
+  return S.sp.cache[key] = j;
+}
+async function runSplice() {
+  const u = S.inUse, my = ++S.sp.seq; S.sp.plan = null; S.sp.url = '';
+  if (!S.sp.on || !u || u.source === 'original' || !S.videoPath) { applyAfterSplice(); return; }
+  S.sp.busy = true; updateFit(); $('fit-msg').textContent = 'Finding the best cuts...';
+  try {
+    const r = await jpost('/api/splice', {video_path: S.videoPath, song_path: u.path, max_cuts: S.sp.max, crossfade_ms: 40});
+    const j = await r.json(); if (!r.ok) throw new Error(j.detail || r.statusText);
+    if (my !== S.sp.seq) return;
+    S.sp.plan = j; S.sp.path = u.path;
+    if (j.eligible !== false && j.segments && j.cuts && j.cuts.length && j.improvement_pct >= 1) {
+      const rd = await renderAudio(u.path, j.segments); if (my !== S.sp.seq) return;
+      S.sp.url = rd.url;
+    }
+  } catch (e) { if (my !== S.sp.seq) return; S.sp.plan = null; note(e.message, true); }
+  S.sp.busy = false; applyAfterSplice();
+}
+function applyAfterSplice() {
+  const was = !aud.paused; pause(); applyAudioSrc(); buildPump(); readout(); seek(vid.currentTime); draw(); drawOv(); updateFit();
+  if (was) play();
+}
+function updateFit() {
+  const u = S.inUse, orig = !!u && u.source === 'original', off = !u || orig;
+  $('sp-on').disabled = off; $('sp-on').checked = S.sp.on && !off;
+  $('fit-src').textContent = u ? u.name : '';
+  const tip = orig ? 'Original audio is already aligned, nothing to splice' : (!u ? 'Press "Use this audio" on a source first' : '');
+  $('sp-sw').title = tip; $('sp-max').title = tip;
+  document.querySelectorAll('#sp-max button').forEach(b => { b.disabled = off || !S.sp.on; b.classList.toggle('on', +b.dataset.n === S.sp.max); });
+  $('ex-wav').disabled = $('ex-mp4').disabled = !u || S.exporting;
+  const m = $('fit-msg'), p = S.sp.plan; let t;
+  if (!u) t = 'Press "Use this audio" on a source to fit and export it.';
+  else if (orig) t = 'Original audio is already aligned: no shift or splice needed.';
+  else if (S.sp.busy) t = 'Finding the best cuts...';
+  else if (!S.sp.on || !p) t = `Single trim: ${fmtMS(S.offset)} to ${fmtMS(S.offset + S.dur)} (${Math.round(u.total_pct)}%)`;
+  else if (p.eligible === false) t = 'This song is too short to splice.';
+  else if (!(p.improvement_pct >= 1) || !p.cuts || !p.cuts.length) t = 'No splice needed: a single trim is already best';
+  else t = `Fit: ${Math.round(p.baseline.total_pct)}% → ${Math.round(p.total_pct)}% with ${p.cuts.length} cut${p.cuts.length === 1 ? '' : 's'} (+${Math.round(p.improvement_pct)})`;
+  m.textContent = t;
+}
+$('sp-on').onchange = () => { S.sp.on = $('sp-on').checked; runSplice(); };
+document.querySelectorAll('#sp-max button').forEach(b => b.onclick = () => { S.sp.max = +b.dataset.n; if (S.sp.on) runSplice(); else updateFit(); });
+function exportSegs() {
+  if (spliceActive()) return S.sp.plan.segments;
+  return [{src_start: S.offset, src_end: S.offset + S.dur, dst_start: 0}];
+}
+const baseName = p => String(p).split('/').pop();
+function exLink(j, what) {
+  $('ex-out').innerHTML = `<a class="dl" id="ex-link" href="${esc(j.url)}" download>Download ${esc(baseName(j.path))}</a><div class="muted">Saved to .exports/${esc(baseName(j.path))}</div>`;
+  $('ex-out').dataset.kind = what;
+}
+async function doExport(kind) {
+  const u = S.inUse; if (!u || S.exporting) return;
+  S.exporting = true; updateFit(); $('ex-out').textContent = ''; $('ex-prog').classList.remove('hidden'); $('ex-bar').style.width = '8%';
+  try {
+    const rd = await renderAudio(u.path, exportSegs());
+    if (kind === 'wav') { $('ex-bar').style.width = '100%'; exLink(rd, 'wav'); }
+    else {
+      const r = await jpost('/api/export-mp4', {video_path: S.videoPath, audio_path: rd.path});
+      let j = await r.json(); if (!r.ok) throw new Error(j.detail || r.statusText);
+      const id = j.job_id;
+      while (j.status === 'running') {
+        await new Promise(z => setTimeout(z, 400)); j = await (await fetch('/api/scan/' + id)).json();
+        $('ex-bar').style.width = Math.max(10, j.done || 0) + '%';
+      }
+      if (j.status === 'error') throw new Error(j.error || 'Export failed');
+      $('ex-bar').style.width = '100%'; exLink(j, 'mp4');
+    }
+  } catch (e) { $('ex-out').textContent = e.message; note(e.message, true); }
+  S.exporting = false; updateFit();
+  setTimeout(() => $('ex-prog').classList.add('hidden'), 900);
+  if (typeof refreshUploads === 'function') refreshUploads();
+}
+$('ex-wav').onclick = () => doExport('wav');
+$('ex-mp4').onclick = () => doExport('mp4');
 
 // ---------- effects (pump) ----------
 let reduce = false; try { reduce = matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) {}
@@ -165,6 +272,9 @@ function buildPump() {
   const dr = w.drops || [], bt = w.beat_times || [], st = w.beat_strengths || [];
   bt.forEach((b, i) => { const d = dr.some(x => Math.abs(x - b) <= 0.15); if (d || !FX.drops) EV.push({t: b, s: d ? 1 : (st[i] ?? 1), d}); });
   dr.forEach(x => { if (!EV.some(e => Math.abs(e.t - x) <= 0.15)) EV.push({t: x, s: 1, d: true}); });
+  if (spliceActive()) {  // map song-time events onto the assembled (video-time) clock
+    const out = []; S.sp.plan.segments.forEach(g => EV.forEach(e => { if (e.t >= g.src_start && e.t < g.src_end) out.push({...e, t: g.dst_start + e.t - g.src_start}); })); EV = out;
+  }
   EV.sort((a, b) => a.t - b.t);
 }
 function pumpAt(st) {
@@ -237,27 +347,41 @@ function draw() {
   // A1
   const a0 = RULER + V1H + 4, mid = a0 + (A1H - 8) / 2, w = S.wf;
   if (w) {
-    const off = S.offset, x0 = t2x(-off), x1 = t2x(w.duration - off);
-    ctx.save(); ctx.beginPath(); ctx.rect(0, a0, W, A1H - 8); ctx.clip();
-    ctx.fillStyle = 'rgba(34,211,238,.07)'; ctx.fillRect(x0, a0, x1 - x0, A1H - 8);
+    const sp = spliceActive(), off = S.offset, eo = sp ? 0 : off;
+    const segs = sp ? S.sp.plan.segments : [{src_start: off, src_end: off + D, dst_start: 0}];
     const g = ctx.createLinearGradient(0, a0, 0, a0 + A1H); g.addColorStop(0, '#34d399'); g.addColorStop(1, '#0f766e');
-    ctx.fillStyle = g; const pk = w.peaks, n = pk.length / 2, amp = (A1H - 12) / 2;
-    for (let px = 0; px < W; px++) {
-      const st = x2t(px) + off; if (st < 0 || st > w.duration) continue;
-      const i0 = Math.floor(st / w.duration * n), i1 = Math.max(i0 + 1, Math.floor((x2t(px + 1) + off) / w.duration * n));
-      let mn = 1, mx = -1; for (let i = i0; i < i1 && i < n; i++) { mn = Math.min(mn, pk[2 * i]); mx = Math.max(mx, pk[2 * i + 1]); }
-      if (mx >= mn) ctx.fillRect(px, mid - mx * amp, 1, Math.max(1, (mx - mn) * amp));
-    }
-    ctx.strokeStyle = 'rgba(255,255,255,.28)'; (w.beat_times || []).forEach(b => { const x = t2x(b - off); if (x < 0 || x > W) return; ctx.beginPath(); ctx.moveTo(x, a0 + A1H - 18); ctx.lineTo(x, a0 + A1H - 8); ctx.stroke(); });
+    const pk = w.peaks, n = pk.length / 2, amp = (A1H - 12) / 2;
+    ctx.save(); ctx.beginPath(); ctx.rect(0, a0, W, A1H - 8); ctx.clip();
+    if (!sp) { const x0 = t2x(-off), x1 = t2x(w.duration - off); ctx.fillStyle = 'rgba(34,211,238,.07)'; ctx.fillRect(x0, a0, x1 - x0, A1H - 8); }
+    segs.forEach((sg, k) => {
+      const len = sg.src_end - sg.src_start, xa = t2x(sg.dst_start), xb = t2x(sg.dst_start + len);
+      if (sp) { ctx.fillStyle = k % 2 ? 'rgba(139,92,246,.20)' : 'rgba(34,211,238,.12)'; ctx.fillRect(xa, a0, xb - xa, A1H - 8); }
+      ctx.fillStyle = g;
+      for (let px = Math.max(0, Math.floor(xa)); px < Math.min(W, xb); px++) {
+        const st = sg.src_start + (x2t(px) - sg.dst_start), st2 = sg.src_start + (x2t(px + 1) - sg.dst_start);
+        if (st < 0 || st > w.duration) continue;
+        const i0 = Math.floor(st / w.duration * n), i1 = Math.max(i0 + 1, Math.floor(st2 / w.duration * n));
+        let mn = 1, mx = -1; for (let i = i0; i < i1 && i < n; i++) { mn = Math.min(mn, pk[2 * i]); mx = Math.max(mx, pk[2 * i + 1]); }
+        if (mx >= mn) ctx.fillRect(px, mid - mx * amp, 1, Math.max(1, (mx - mn) * amp));
+      }
+      ctx.strokeStyle = 'rgba(255,255,255,.28)';
+      (w.beat_times || []).forEach(bt => { if (bt < sg.src_start || bt >= sg.src_end) return; const x = t2x(sg.dst_start + bt - sg.src_start); ctx.beginPath(); ctx.moveTo(x, a0 + A1H - 18); ctx.lineTo(x, a0 + A1H - 8); ctx.stroke(); });
+      ctx.strokeStyle = 'rgba(139,92,246,.8)'; ctx.strokeRect(xa + .5, a0 + .5, xb - xa - 1, A1H - 9);
+    });
     ctx.restore();
     ctx.shadowColor = '#22d3ee'; ctx.shadowBlur = 12; ctx.fillStyle = '#e0faff';
-    (w.drops || []).forEach(d => { const x = t2x(d - off); if (x < 0 || x > W) return; ctx.beginPath(); ctx.moveTo(x, mid - 7); ctx.lineTo(x + 6, mid); ctx.lineTo(x, mid + 7); ctx.lineTo(x - 6, mid); ctx.fill(); });
+    segs.forEach(sg => (w.drops || []).forEach(d => { if (d < sg.src_start || d >= sg.src_end) return; const x = t2x(sg.dst_start + d - sg.src_start); ctx.beginPath(); ctx.moveTo(x, mid - 7); ctx.lineTo(x + 6, mid); ctx.lineTo(x, mid + 7); ctx.lineTo(x - 6, mid); ctx.fill(); }));
     ctx.shadowBlur = 0;
-    ctx.strokeStyle = 'rgba(139,92,246,.8)'; ctx.strokeRect(x0 + .5, a0 + .5, x1 - x0 - 1, A1H - 9);
+    if (sp) (S.sp.plan.cuts || []).forEach(c => {  // crossfade wedge + scissors at each cut
+      const x = t2x(c.dst_time), ww = Math.max(6, t2x(0.04 * 2));
+      ctx.fillStyle = 'rgba(255,255,255,.55)'; ctx.beginPath(); ctx.moveTo(x - ww / 2, a0 + A1H - 8); ctx.lineTo(x + ww / 2, a0 + A1H - 8); ctx.lineTo(x, a0 + A1H - 22); ctx.fill();
+      ctx.strokeStyle = '#fff'; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(x, a0); ctx.lineTo(x, a0 + A1H - 8); ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle = '#fff'; ctx.font = '13px sans-serif'; ctx.fillText('\u2702', x - 6, a0 + 13);
+    });
     // pump lane
     const p0 = RULER + V1H + A1H + 2, ph = PUMPH - 6; ctx.fillStyle = '#8b8f9c'; ctx.font = '9px sans-serif'; ctx.fillText('pump', 4, p0 + 9);
     const maxA = 0.12 * FX.boom / 100 || 1;
-    EV.forEach(e => { const x = t2x(e.t - off); if (x < 0 || x > W || FX.boom === 0) return;
+    EV.forEach(e => { const x = t2x(e.t - eo); if (x < 0 || x > W || FX.boom === 0) return;
       const h = ph * Math.min(1, (0.03 * FX.boom / 100 * e.s * (e.d ? 4 : 1)) / maxA);
       ctx.fillStyle = e.d ? '#22d3ee' : '#8b5cf6'; ctx.fillRect(x - 1, p0 + ph - h, 2, h); });
   }
@@ -268,35 +392,82 @@ function draw() {
 }
 // drag: ruler/V1 = seek; A1 clip = offset
 let drag = null, scoreTimer = null;
+const locked = () => !S.sel || S.sel.source === 'original' || spliceActive();
+function setOffset(o) {
+  S.offset = clampOff(o); S.manual = Math.abs(S.offset - (S.sel.best_offset_s || 0)) > 0.005;
+  syncAudio(true); readout(); draw(); drawOv();
+  clearTimeout(scoreTimer); scoreTimer = setTimeout(rescore, 120);
+}
 cv.addEventListener('pointerdown', e => {
   const r = cv.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
-  if (y > RULER + V1H && y < RULER + V1H + A1H && S.wf) drag = {kind: 'clip', x, off: S.offset};
+  if (y > RULER + V1H && y < RULER + V1H + A1H && S.wf && !locked()) drag = {kind: 'clip', x, off: S.offset};
   else { drag = {kind: 'seek'}; seek(x2t(x)); }
   cv.setPointerCapture(e.pointerId);
 });
 cv.addEventListener('pointermove', e => {
   if (!drag) return; const x = e.clientX - cv.getBoundingClientRect().left;
   if (drag.kind === 'seek') return seek(x2t(x));
-  S.offset = clampOff(drag.off - x2t(x - drag.x)); syncAudio(true); readout(); draw();
-  clearTimeout(scoreTimer); scoreTimer = setTimeout(rescore, 120);
+  setOffset(drag.off - x2t(x - drag.x));
 });
 cv.addEventListener('pointerup', () => { drag = null; });
 function clampOff(o) { const mx = S.wf ? Math.max(0, S.wf.duration - S.dur) : 0; return Math.min(mx, Math.max(0, o)); }
 function readout() {
-  $('vc-off').textContent = S.sel ? S.offset.toFixed(2) + ' s' : '--';
-  $('vc-trim').textContent = S.sel ? 'Use ' + fmtMS(S.offset) + ' to ' + fmtMS(S.offset + S.dur) : '--';
+  const r = S.sel, orig = r && r.source === 'original';
+  $('vc-off').textContent = !r ? '--' : orig ? 'Original audio, no shift' : spliceActive() ? 'Spliced from ' + (S.sp.plan.cuts.length + 1) + ' clips' : 'Song starts at ' + fmtMS(S.offset) + (S.manual ? ', set manually' : ', auto-picked for best fit');
+  $('vc-reset').classList.toggle('hidden', !r || orig || !S.manual);
+  $('vc-trim').textContent = !r ? '--' : orig ? 'Whole track' : 'Use ' + fmtMS(S.offset) + ' to ' + fmtMS(S.offset + S.dur);
+  let l = ''; if (r) l = orig ? 'Original audio (from video)' : spliceActive() ? 'Spliced song, ' + (S.sp.plan.cuts.length + 1) + ' clips' : `Song ${fmtMS(S.offset)} to ${fmtMS(S.offset + S.dur)} (${S.manual ? 'manual' : 'auto'} start)`;
+  $('a1-lbl').textContent = l; $('a1-lbl').classList.toggle('hidden', !l);
+  $('tl-hint').textContent = orig ? 'Original audio is already aligned, so there is no offset to drag.' : spliceActive() ? 'Smart splice is on: turn it off in Fit to drag the start.' : 'Drag the song clip on A1 (or the bracket in Song overview) to set a manual start. Keys: Space play/pause, \u2190/\u2192 frame, Shift+arrows 1 s, J/K/L shuttle.';
 }
+$('vc-reset').onclick = () => { if (!S.sel) return; S.manual = false; S.offset = S.sel.best_offset_s || 0; syncAudio(true); readout(); draw(); drawOv(); rescore(); };
 async function rescore() {
   if (!S.sel || !S.videoPath) return;
+  const r0 = S.sel;
   try {
-    const r = await fetch('/api/score', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({video_path: S.videoPath, song_path: S.sel.path, offset: S.offset})});
-    const j = await r.json(); if (!r.ok) return; Object.assign(S.sel, j, {best_offset_s: S.sel.best_offset_s});
-    const el0 = document.querySelector('.res.sel'); if (el0) { const b = el0.querySelectorAll('.bar i'); [j.tempo_pct, j.sync_pct, j.arc_pct].forEach((v, k) => { if (b[k]) b[k].style.width = v + '%'; }); }
-    const el = document.querySelector('.res.sel'); if (el) { const i = el.dataset.i; el.querySelector('.rmeta').innerHTML = `${S.sel.bpm.toFixed(0)} BPM | Use ${fmtMS(j.trim_start_s)} to ${fmtMS(j.trim_end_s)} (manual)`; el.querySelector('.ring b').textContent = Math.round(j.total_pct) + '%'; }
+    const r = await jpost('/api/score', {video_path: S.videoPath, song_path: r0.path, offset: S.offset});
+    const j = await r.json(); if (!r.ok) return; Object.assign(r0, j, {best_offset_s: r0.best_offset_s});
+    const el = [...document.querySelectorAll('.res')].find(e => S.results[e.dataset.i] === r0);
+    if (el) { const sp = el.querySelector('.pp'); if (sp) sp.textContent = Math.round(j.total_pct) + '%'; el.querySelector('.rmeta').textContent = `${r0.bpm ? r0.bpm.toFixed(0) + ' BPM \u00b7 ' : ''}starts at ${fmtMS(j.trim_start_s)}${S.manual ? ' (manual)' : ''}`; el.querySelector('.ring b').textContent = Math.round(j.total_pct) + '%'; const c = el.querySelector('.fg'); if (c) c.style.strokeDashoffset = C * (1 - j.total_pct / 100); }
+    updateFit();
   } catch (e) {}
 }
+
+// ---------- song overview lane ----------
+const ov = $('ov'), octx = ov.getContext('2d'); let OW = 0, OH = 0, odrag = null;
+function resizeOv() { const r = ov.getBoundingClientRect(), dpr = window.devicePixelRatio || 1; OW = r.width; OH = r.height; ov.width = OW * dpr; ov.height = OH * dpr; octx.setTransform(dpr, 0, 0, dpr, 0, 0); drawOv(); }
+window.addEventListener('resize', resizeOv);
+function drawOv() {
+  if (!OW) return; octx.clearRect(0, 0, OW, OH); const w = S.wf; if (!w || !S.dur) return;
+  const T = w.duration, tx = t => t / T * OW, mid = OH / 2, amp = OH / 2 - 4, pk = w.peaks, n = pk.length / 2;
+  const sp = spliceActive(), segs = sp ? S.sp.plan.segments : [{src_start: S.offset, src_end: S.offset + S.dur}];
+  const inWin = x => { const t = x / OW * T; return segs.some(g => t >= g.src_start && t <= g.src_end); };
+  for (let px = 0; px < OW; px++) {
+    const i0 = Math.floor(px / OW * n), i1 = Math.max(i0 + 1, Math.floor((px + 1) / OW * n));
+    let mn = 1, mx = -1; for (let i = i0; i < i1 && i < n; i++) { mn = Math.min(mn, pk[2 * i]); mx = Math.max(mx, pk[2 * i + 1]); }
+    if (mx < mn) continue; octx.fillStyle = inWin(px) ? '#34d399' : 'rgba(150,160,180,.28)';
+    octx.fillRect(px, mid - mx * amp, 1, Math.max(1, (mx - mn) * amp));
+  }
+  octx.fillStyle = '#e0faff'; (w.drops || []).forEach(d => { const x = tx(d); octx.beginPath(); octx.moveTo(x, 2); octx.lineTo(x + 4, 6); octx.lineTo(x, 10); octx.lineTo(x - 4, 6); octx.fill(); });
+  segs.forEach((g, k) => {
+    const xa = tx(g.src_start), xb = tx(g.src_end);
+    octx.fillStyle = 'rgba(34,211,238,.10)'; octx.fillRect(xa, 0, xb - xa, OH);
+    octx.strokeStyle = sp ? (k % 2 ? '#8b5cf6' : '#22d3ee') : '#22d3ee'; octx.lineWidth = 2;
+    octx.beginPath(); octx.moveTo(xa + 4, 1); octx.lineTo(xa + 1, 1); octx.lineTo(xa + 1, OH - 1); octx.lineTo(xa + 4, OH - 1); octx.moveTo(xb - 4, 1); octx.lineTo(xb - 1, 1); octx.lineTo(xb - 1, OH - 1); octx.lineTo(xb - 4, OH - 1); octx.stroke(); octx.lineWidth = 1;
+    if (sp) { octx.fillStyle = '#fff'; octx.font = 'bold 10px sans-serif'; octx.fillText(String(k + 1), xa + 5, 12); }
+  });
+}
+const ovX = e => e.clientX - ov.getBoundingClientRect().left;
+ov.addEventListener('pointerdown', e => {
+  if (!S.wf || locked()) return; const T = S.wf.duration, t = ovX(e) / OW * T;
+  const inside = t >= S.offset && t <= S.offset + S.dur;
+  odrag = {x: ovX(e), off: S.offset, jump: !inside}; if (!inside) setOffset(t - S.dur / 2), odrag.off = S.offset;
+  ov.setPointerCapture(e.pointerId);
+});
+ov.addEventListener('pointermove', e => { if (!odrag) return; setOffset(odrag.off + (ovX(e) - odrag.x) / OW * S.wf.duration); });
+ov.addEventListener('pointerup', () => { odrag = null; });
 const scrubTo = e => { const r = $('scrub').getBoundingClientRect(); seek((e.clientX - r.left) / r.width * S.dur); };
 $('scrub').addEventListener('pointerdown', e => { $('scrub').setPointerCapture(e.pointerId); $('scrub').dragging = true; scrubTo(e); });
 $('scrub').addEventListener('pointermove', e => { if ($('scrub').dragging) scrubTo(e); });
 $('scrub').addEventListener('pointerup', () => { $('scrub').dragging = false; });
-resize();
+resize(); resizeOv();
