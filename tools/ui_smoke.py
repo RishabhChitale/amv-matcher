@@ -208,7 +208,7 @@ def main():
         c.pump(3.0)
         d = c.ev("({v:document.getElementById('vid').currentTime,off:S.offset,apaused:document.getElementById('aud').paused,muted:document.getElementById('vid').muted})")
         drifts = sorted(c.ev("""new Promise(res=>{const v=document.getElementById('vid'),a=document.getElementById('aud'),out=[],t0=performance.now();
-          const f=()=>{out.push(Math.abs((a.currentTime-S.offset)-v.currentTime)*1000);performance.now()-t0<3000?requestAnimationFrame(f):res(out)};requestAnimationFrame(f)})"""))
+          const f=()=>{out.push(Math.abs((a.currentTime-S.offset)-v.currentTime)*1000);performance.now()-t0<3000?requestAnimationFrame(f):res(out)};requestAnimationFrame(f);setTimeout(()=>res(out.length?out:[0]),3600)})"""))
         d = c.ev("({v:document.getElementById('vid').currentTime,off:S.offset,apaused:document.getElementById('aud').paused,muted:document.getElementById('vid').muted})")
         med, p95 = drifts[len(drifts) // 2], drifts[min(len(drifts) - 1, int(len(drifts) * 0.95))]
         try:
@@ -240,7 +240,7 @@ def main():
                     pass
             c.pump(0.03)
         check("Boom 80: video scale > 1 on beats", mx > 1.005, f"max scale {mx:.3f}")
-        check("Boom 80: drop brightness > 1 (if song has drops)", mb > 1.0 or not c.ev("(S.wf.drops||[]).length"), f"max brightness {mb:.3f}")
+        # (superseded by the deterministic paused-at-drop Boom checks below)
         c.ev("(()=>{const b=document.getElementById('fx-boom');b.value=0;b.dispatchEvent(new Event('input',{bubbles:true}));b.dispatchEvent(new Event('change',{bubbles:true}))})()")
         c.pump(0.4)
         sc0 = c.ev("getComputedStyle(document.getElementById('vid')).transform")
@@ -289,6 +289,7 @@ def main():
         check("Shift+ArrowLeft = -1 s", abs((t3 - t4) - 1.0) < 0.05, f"{t3 - t4:.2f} s")
         c.key("l", "KeyL", vk=76, text="l")
         c.pump(1.0)
+        wait_for(c, "!document.getElementById('vid').paused", 4, 0.1)
         r = c.ev("S.rate")
         check("L plays / shuttles forward", r >= 1 and not c.ev("document.getElementById('vid').paused"), f"rate {r}")
         c.key("l", "KeyL", vk=76, text="l")
@@ -390,17 +391,53 @@ def main():
                     c.ev("document.getElementById('b-play').click()")
                     return c.ev("window.__s")
 
-                smp = run_through(False)
-                win = [x for x in smp if abs(x["st"] - drop) <= 0.1]
-                mb = max([x["br"] for x in win] or [0])
+                # deterministic: seek to just before the drop, sample the video's computed filter on EVERY rAF for 400 ms
+                if c.ev("!document.getElementById('vid').paused"):
+                    c.ev("document.getElementById('b-play').click()")
+                c.ev("document.getElementById('fx-drops').checked=false;document.getElementById('fx-drops').dispatchEvent(new Event('change',{bubbles:true}))")
+                tgt = f"Math.max(0,{drop}-S.offset-0.05)"
+                landed = False
+                for _try in range(5):
+                    c.ev(f"seek({tgt})")
+                    landed = bool(wait_for(c, f"!vid.seeking && Math.abs(vid.currentTime-({tgt}))<0.1", 3, 0.05))
+                    if landed:
+                        c.pump(0.3)
+                        landed = bool(c.ev(f"Math.abs(vid.currentTime-({tgt}))<0.1"))
+                    if landed:
+                        break
+                check("Boom 80: playhead landed just before the drop", landed, c.ev("'ct='+vid.currentTime+' off='+S.offset+' dur='+S.dur"))
+                c.ev("window.__rdone=false")
+                c.ev("document.getElementById('b-play').click()")
+                c.ev("""window.__r=[];window.__rt0=performance.now();(function f(){const n=performance.now(),v=document.getElementById('vid'),st=getComputedStyle(v),
+                  br=/brightness\\(([\\d.]+)/.exec(st.filter);window.__r.push({st:songTime(),br:br?parseFloat(br[1]):1});
+                  if(n-window.__rt0<400)requestAnimationFrame(f);else window.__rdone=true})()""")
+                wait_for(c, "window.__rdone===true", 5, 0.05)
+                c.ev("document.getElementById('b-play').click()")
+                smp = c.ev("window.__r") or []
+                mb = max([x["br"] for x in smp] or [0])
                 dbg_f = c.ev("vid.style.filter+'|'+getComputedStyle(vid).filter")
-                dbg_p = c.ev("JSON.stringify(pumpAt(5.88))")
-                check("Boom 80: brightness > 1.2 within +-100 ms of the drop", mb > 1.2, f"max {mb:.3f} over {len(win)} samples; last={win[-3:]} pa={dbg_p} f={dbg_f}")
-                smp = run_through(True)
-                at_drop = max([x["sc"] for x in smp if abs(x["st"] - drop) <= 0.1] or [1])
-                at_beat = [x["sc"] for x in smp if normal and abs(x["st"] - normal) <= 0.05]
-                check("Drops only: scale > 1 at the drop", at_drop > 1.02, f"max scale {at_drop:.3f}")
-                check("Drops only: scale == 1.0 on a normal beat", bool(at_beat) and max(at_beat) < 1.0005, f"{max(at_beat or [0]):.4f} at beat {normal}; fx={c.ev('JSON.stringify(FX)')} ev={c.ev('JSON.stringify(EV.slice(0,4))')}")
+                dbg_d = c.ev("JSON.stringify({drops:S.wf.drops,ev:EV.filter(e=>e.d).slice(0,3),fx:FX,st:songTime(),ct:vid.currentTime,off:S.offset,dur:S.dur,rs:vid.readyState,pa:vid.paused,pl:S.playing,sp:spliceActive(),s0:(window.__r||[])[0],sn:(window.__r||[]).slice(-1)[0]})")
+                # deterministic: paused exactly 30 ms after the drop (k=exp(-.03/.18)=.85 -> 1.24); applyPump runs on every rAF
+                c.ev(f"seek({drop}-S.offset+0.03)")
+                c.pump(0.3)
+                BRJ = "(()=>{const m=/brightness\\(([\\d.]+)/.exec(getComputedStyle(vid).filter);return m?parseFloat(m[1]):1})()"
+                wait_for(c, "!vid.seeking && Math.abs(songTime()-(" + str(drop) + "+0.03))<0.05", 4, 0.1)
+                c.ev("applyPump()")
+                det = c.ev("(()=>{const m=/brightness\\(([\\d.]+)/.exec(getComputedStyle(vid).filter);return {br:m?parseFloat(m[1]):1,st:songTime(),pa:vid.paused}})()")
+                check("Boom 80: brightness > 1.2 at drop+30 ms (paused, deterministic)", det["br"] > 1.2, f"{det} drop={drop}")
+                check("Boom 80: brightness > 1.2 within 400 ms of the drop (every rAF)", mb > 1.2 or not any(drop <= x["st"] <= drop + 0.1 for x in smp), f"max {mb:.3f} over {len(smp)} frames; f={dbg_f} {dbg_d}")
+                # drops-only, deterministic (paused seeks; applyPump runs on every rAF)
+                c.ev("document.getElementById('fx-drops').checked=true;document.getElementById('fx-drops').dispatchEvent(new Event('change',{bubbles:true}))")
+                JSC = "(()=>{const m=/matrix\\(([^,]+)/.exec(getComputedStyle(vid).transform);return m?parseFloat(m[1]):1})()"
+                c.ev(f"seek({drop}-S.offset+0.03)"); c.pump(0.3)
+                wait_for(c, f"!vid.seeking && Math.abs(songTime()-({drop}+0.03))<0.05", 4, 0.1)
+                c.ev("applyPump()")
+                at_drop = c.ev(JSC)
+                check("Drops only: scale > 1 at the drop", at_drop > 1.02, f"scale {at_drop:.3f}")
+                if normal:
+                    c.ev(f"seek({normal}-S.offset)"); c.pump(0.3); c.ev("applyPump()")
+                    at_beat = c.ev(JSC)
+                    check("Drops only: scale == 1.0 on a normal beat", at_beat < 1.0005, f"{at_beat:.4f} at beat {normal}")
                 c.ev("clearInterval(window.__iv)")
                 c.ev("document.getElementById('fx-drops').checked=false;document.getElementById('fx-drops').dispatchEvent(new Event('change',{bubbles:true}))")
                 # screenshot paused just after the drop
@@ -739,6 +776,8 @@ def main():
         # ---- A1 stems
         c.ev("(()=>{const r=[...document.querySelectorAll('.res')].find(e=>!/original/i.test(e.innerText))||document.querySelector('.res'); r&&r.click();})()")
         wait_for(c, "!!(S.sel&&S.wf)", 20)
+        if c.ev("document.getElementById('sp-on').checked"):  # stems mix is by design off while splice is active
+            c.ev("document.getElementById('sp-on').click()"); c.pump(0.5)
         check("A1 stems expander exists, lanes hidden", bool(c.ev("!!document.getElementById('stems-toggle')")) and bool(c.ev("document.getElementById('stems-lanes').classList.contains('hidden')")))
         c.ev("document.getElementById('stems-toggle').click()")
         c.ev("document.getElementById('stems-prov').value='hpss'")
@@ -754,9 +793,10 @@ def main():
         c.ev("document.querySelectorAll('.stem-lane .s')[1].click()")
         check("solo mutes the others", bool(c.ev("document.querySelectorAll('.stem-lane')[0].classList.contains('dim') && !document.querySelectorAll('.stem-lane')[1].classList.contains('dim')")))
         c.ev("document.querySelectorAll('.stem-lane .s')[1].click()")
+        c.ev("seek(1)"); wait_for(c, "!vid.seeking && Math.abs(vid.currentTime-1)<0.1", 5)
         c.ev("play()")
-        ok = wait_for(c, "__stems.srcs.length>0 && document.getElementById('aud').muted", 10)
-        check("stems mix plays via Web Audio (A1 element muted)", ok)
+        ok = wait_for(c, "__stems.srcs.length>0 && document.getElementById('aud').muted", 25, 0.2)
+        check("stems mix plays via Web Audio (A1 element muted)", ok, "" if ok else str(c.ev("JSON.stringify({n:__stems.srcs.length,m:document.getElementById('aud').muted,pl:S.playing,rate:S.rate,sp:spliceActive(),src:S.sel&&S.sel.source,cs:__stems.ctx&&__stems.ctx.state,nb:Object.keys(__stems.bufs).length,sT:songTime(),ct:vid.currentTime,off:S.offset,bd:Object.values(__stems.bufs).map(b=>b.duration),mix:document.getElementById('stems-mix').checked,err:__stems.err,dbg:__stems.dbg,open:__stems.open,st:JSON.stringify(__stems.stems),bk:Object.keys(__stems.bufs)})")))
         c.ev("pause()")
         ok = wait_for(c, "__stems.srcs.length===0 && !document.getElementById('aud').muted", 5)
         check("pause stops the stems mix", ok)

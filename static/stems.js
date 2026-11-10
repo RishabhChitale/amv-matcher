@@ -170,7 +170,7 @@ function startSrcs(songT) {
   }
   st.srcT0 = st.ctx.currentTime; st.srcS0 = songT; applyMuting(); applyAudMute();
 }
-function tick() {
+function sync() {
   try {
     const on = mixOn() && S.playing && S.rate > 0 && !spliceActive() && S.sel && S.sel.source !== undefined;
     if (on) {
@@ -178,8 +178,13 @@ function tick() {
       if (!st.srcs.length || st.srcRate !== S.rate) startSrcs(sT);
       else { const pos = st.srcS0 + (st.ctx.currentTime - st.srcT0) * st.srcRate; if (Math.abs(pos - sT) > 0.08) startSrcs(sT); }
     } else if (st.srcs.length) stopSrcs();
-    if (st.open) draw();
-  } catch (e) {}
+  } catch (e) { st.err = String(e && e.stack || e).slice(0, 300); }
+}
+// rAF is throttled or paused in background/occluded tabs, so the audio sync also runs on a timer
+setInterval(sync, 60);
+function tick() {
+  sync();
+  try { if (st.open) draw(); } catch (e) {}
   requestAnimationFrame(tick);
 }
 requestAnimationFrame(tick);
