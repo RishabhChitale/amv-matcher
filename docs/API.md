@@ -45,7 +45,7 @@ Response: `{"job_id": "ae64f08cef79"}`
   "skipped": [{"path": "/abs/music/broken.mp3", "name": "broken.mp3", "reason": "NoBackendError: ..."}]
 }
 ```
-Notes: `results` = eligible songs only, ranked by `total_pct` (ties: `sync_pct`). `segments[].label` is calm | build | peak. `energy_curve` is 0-1 at `energy_hz`. `segments`/`lulls`/`peak_segments`/`shots` times are seconds. Segments overlap (1 s smoothing window); draw by `label`. `total_pct = round(0.20*tempo + 0.60*sync + 0.20*arc)` (constants in score.py). Higher `arc_pct` also counts peak-on-drop (±0.5 s) and lull-overlap bonuses.
+Notes: `results` = eligible songs only, ranked by the NATURAL total, `natural_total_pct` (the plain trim at the best offset, no auto-sync edits; equals `total_pct` here), ties by `sync_pct`. Each result also carries `auto_sync_cached` whose `natural_total_pct` is the same key after auto-sync. Same for `/api/score-songs`. `segments[].label` is calm | build | peak. `energy_curve` is 0-1 at `energy_hz`. `segments`/`lulls`/`peak_segments`/`shots` times are seconds. Segments overlap (1 s smoothing window); draw by `label`. `total_pct = round(0.20*tempo + 0.60*sync + 0.20*arc)` (constants in score.py). Higher `arc_pct` also counts peak-on-drop (±0.5 s) and lull-overlap bonuses.
 
 **`tightness`** (every score output, same shape in scan results, `/api/score`, splice/autosync scoring; pure and cheap, `score.tightness(song, video, offset)`): non-saturating alignment of the video's locked events (cuts + motion peaks, same cut/peak weights as the sync score) to the song's beat grid at the reported offset. Unlike `sync_pct` it does not saturate near the top, so use it to see fine improvements in auto-sync.
 - Main numbers are measured against the lead-compensated grid `beat_time - PERCEPTUAL_LEAD_S` (`lead_ms`, 60 ms: the median amount human editors cut before the beat, measured on two ground-truth AMVs). `tightness.raw` has the same fields (`tight_pct`, errors, `grid`, `chance_pct`) against the bare beat grid.
@@ -225,3 +225,8 @@ Desktop shell only (`window.pywebview.api`; `static/native.js` wraps them as `na
 - `reveal_path(path)`: show it in the file manager (macOS `open -R`, Windows `explorer /select,<path>`, Linux opens the parent folder).
 
 Validation (`paths.exports_member`): the path is `resolve()`d and must exist and be strictly inside the exports dir (`.exports/`), so `..` and symlinks leading out are rejected; the exports dir itself and anything else return `false` without running a command.
+
+
+## Auto-sync additions
+`POST /api/auto-sync` accepts `unlock_original: bool` (default false). When `song_path` is the video's own audio (the extracted `original_audio` path) the server passes `original=True` to `auto_sync`, which fixes offset 0 and only allows retime + micro unless `unlock_original` is true. `job.source` is `"original"` or `"song"`.
+`GET /api/auto-sync/{id}` `steps_so_far` grows during the run (events `{step, status: start|end, score_before, score_after, kept, elapsed_s}`). After `POST .../cancel` the job ends `status: "cancelled"` with `result` = best-so-far (`limits_hit` contains `"cancelled"`, never cached), or `null` if none. Arrange is not interruptible (about 5 s worst case).

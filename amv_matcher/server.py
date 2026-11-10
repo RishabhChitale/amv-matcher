@@ -135,6 +135,7 @@ def _score_songs(job: dict, video: dict, songs: list):
                 sc = score(song, video, allow_negative=True)       # clearly shorter than the video: too_short
             results.append({"path": orig["path"], "name": orig["name"], "source": "original",
                             "bpm": song["bpm"], "duration": song["duration"], **sc,
+                            "natural_total_pct": sc.get("total_pct"),
                             "auto_sync_cached": _cached_for(job.get("video_path"), orig["path"])})
         except Exception as e:
             skipped.append({"path": orig["path"], "name": orig["name"], "source": "original",
@@ -145,7 +146,7 @@ def _score_songs(job: dict, video: dict, songs: list):
             song = analyze_song(str(p))
             sc = score(song, video, allow_negative=True)
             results.append({"path": str(p), "name": p.name, "source": "song", "bpm": song["bpm"],
-                            "duration": song["duration"], **sc,
+                            "duration": song["duration"], **sc, "natural_total_pct": sc.get("total_pct"),
                             "auto_sync_cached": _cached_for(job.get("video_path"), p)})
         except Exception as e:  # reported, never silently skipped
             skipped.append({"path": str(p), "name": p.name, "reason": f"{type(e).__name__}: {e}"})
@@ -157,7 +158,8 @@ def _score_songs(job: dict, video: dict, songs: list):
             r["vs_original"] = {"total": r["total_pct"] - reference["original_total"],
                                 "sync": round(r["sync_pct"] - reference["original_sync"], 1)}
     short = [r for r in results if not r["eligible"]]
-    ok.sort(key=lambda r: (r["total_pct"], r["sync_pct"]), reverse=True)
+    # primary ranking = natural total (plain trim at the best offset, no auto-sync edits); sync_pct breaks ties
+    ok.sort(key=lambda r: (r["natural_total_pct"], r["sync_pct"]), reverse=True)
     for rank, r in enumerate(ok, 1):
         r["rank"] = rank
     short.sort(key=lambda r: r["duration"], reverse=True)
@@ -800,6 +802,7 @@ class AutoSyncRequest(BaseModel):
     allow_loop: bool = False
     guardrails: Optional[AutoSyncGuardrails] = None
     budget_s: Optional[float] = None
+    unlock_original: bool = False      # only matters when song_path is the video's own audio
 
 
 def _clamp(v, lo, hi, default):
@@ -816,7 +819,8 @@ def _autosync_options(req: AutoSyncRequest) -> dict:
             "max_speed_dev": _clamp(g.max_speed_dev, 0.0, L["max_speed_dev"], L["max_speed_dev"]),
             "max_tempo_pct": _clamp(g.max_tempo_pct, 0.0, L["max_tempo_pct"], L["max_tempo_pct"]),
             "max_cuts": int(_clamp(g.max_cuts, 0, L["max_cuts"], L["max_cuts"])),
-            "budget_s": _clamp(req.budget_s, 1.0, L["budget_s"], 20.0)}
+            "budget_s": _clamp(req.budget_s, 1.0, L["budget_s"], 20.0),
+            "unlock_original": bool(req.unlock_original)}
 
 
 def _run_autosync(job_id: str, vp: Path, sp: Path, opts: dict, pair):
@@ -830,7 +834,17 @@ def _run_autosync(job_id: str, vp: Path, sp: Path, opts: dict, pair):
         if ev.is_set():
             raise _Cancelled()
         kw = {}
+        orig = video.get("original_audio") or {}
+        is_orig = False
+        try:
+            is_orig = bool(orig.get("path")) and Path(orig["path"]).resolve() == sp.resolve()
+        except OSError:
+            pass
+        job["source"] = "original" if is_orig else "song"
         sup = _autosync_hooks_supported()
+        if "original" in inspect.signature(_autosync.auto_sync).parameters:
+            kw["original"] = is_orig
+            kw["unlock_original"] = bool(opts.get("unlock_original"))
         if sup["progress_cb"]:
             def _progress(*a, **k):
                 st = _jsonable(a[0] if len(a) == 1 and not k else (list(a) if a else k))
@@ -842,8 +856,12 @@ def _run_autosync(job_id: str, vp: Path, sp: Path, opts: dict, pair):
         res = _autosync.auto_sync(song, video, budget_s=opts["budget_s"], max_speed_dev=opts["max_speed_dev"],
                                   max_tempo_dev=opts["max_tempo_pct"] / 100.0, max_cuts=opts["max_cuts"],
                                   lead_s=opts["lead_s"], allow_loop=opts["allow_loop"], **kw)
-        if ev.is_set() or job.get("status") == "cancelled" or (isinstance(res, dict) and res.get("cancelled")):
-            raise _Cancelled()
+        hit = isinstance(res, dict) and (res.get("cancelled") or "cancelled" in (res.get("limits_hit") or []))
+        if ev.is_set() or job.get("status") == "cancelled" or hit:
+            # the real hook returns the best-so-far result with 'cancelled' in limits_hit: keep it (never cached)
+            keep = res if isinstance(res, dict) and res.get("final") and job.get("status") != "cancelled" else None
+            job.update(status="cancelled", result=keep, message="Cancelled", current_step="")
+            return
         try:
             c = _as_cache()
             entry = {"final": res.get("final"), "options": opts}

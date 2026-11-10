@@ -172,9 +172,9 @@ def run_pair(case: dict, token: str, args) -> dict:
             row["sections"] = len(song.get("sections") or [])
         t2 = time.time()
         try:
-            r = auto_sync(song, video, target=100, budget_s=args.budget)
+            r = auto_sync(song, video, target=100, budget_s=args.budget, original=(kind == "own"))
             f = r["final"]
-            row.update(after=f["total_pct"], after_tight=f.get("tight_pct"), sync_s=round(time.time() - t2, 1))
+            row.update(natural=f.get("natural_total_pct"), after=f["total_pct"], after_tight=f.get("tight_pct"), sync_s=round(time.time() - t2, 1))
             if args.render:
                 try:
                     row["render"] = do_render(vpath, sp, r["plan"])

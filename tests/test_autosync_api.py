@@ -31,7 +31,7 @@ def test_guard_paths_and_clamp(tmp_path, monkeypatch):
     o = _autosync_options(AutoSyncRequest(video_path="a", song_path="b", lead_s=5, budget_s=9999,
                                           guardrails={"max_speed_dev": 3, "max_tempo_pct": 50, "max_cuts": 99}))
     assert o == {"lead_s": 0.12, "allow_loop": False, "max_speed_dev": 0.25, "max_tempo_pct": 8.0,
-                 "max_cuts": 3, "budget_s": 60.0}
+                 "max_cuts": 3, "budget_s": 60.0, "unlock_original": False}
     o = _autosync_options(AutoSyncRequest(video_path="a", song_path="b", guardrails={"max_cuts": -2, "max_speed_dev": -1}))
     assert o["max_cuts"] == 0 and o["max_speed_dev"] == 0.0
 
@@ -175,3 +175,32 @@ def test_native_open_reveal_only_inside_exports(tmp_path, monkeypatch):
     assert api.open_path("/etc/passwd") is False and api.reveal_path(str(tmp_path / "x")) is False
     assert api.open_path(str(ex / ".." / "exports" / ".." / "a.mp4")) is False
     assert len(calls) == n
+
+
+def test_original_flag_and_cancel_returns_best_so_far(tmp_path, monkeypatch):
+    import threading
+    v, s = _setup(tmp_path, monkeypatch)
+    seen = {}
+    started = threading.Event()
+
+    def fake_auto(song, video, original=False, unlock_original=False, progress_cb=None, should_cancel=None, **kw):
+        seen.update(original=original, unlock=unlock_original)
+        for i in range(3):
+            progress_cb({"step": f"s{i}", "status": "start"})
+            progress_cb({"step": f"s{i}", "status": "end", "kept": True})
+        started.set()
+        while not should_cancel():
+            time.sleep(0.02)
+        return {"final": {"total_pct": 70, "natural_total_pct": 60}, "limits_hit": ["cancelled"]}
+    monkeypatch.setattr(server._autosync, "auto_sync", fake_auto)
+    c = TestClient(server.app)
+    body = {**_body(v, s), "unlock_original": True}
+    jid = c.post("/api/auto-sync", json=body).json()["job_id"]
+    assert started.wait(10)
+    assert len(c.get(f"/api/auto-sync/{jid}").json()["steps_so_far"]) == 6
+    c.post(f"/api/auto-sync/{jid}/cancel")
+    j = _wait(c, jid)
+    assert j["status"] == "cancelled" and "cancelled" in j["result"]["limits_hit"]
+    assert j["result"]["final"]["natural_total_pct"] == 60
+    assert seen == {"original": False, "unlock": True}            # a normal song is not 'original'
+    assert server._autosync_cached(v.resolve(), s.resolve()) is None
