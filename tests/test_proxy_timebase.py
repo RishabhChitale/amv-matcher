@@ -1,18 +1,37 @@
-"""Regression: proxy.build / export_mp4 on a cv2-written MJPG .mp4 (yuvj420p, stream time_base 1/600).
+"""Regression: proxy.build / export_mp4 on a MJPG mp4 (yuvj420p, stream time_base 1/600).
 The old proxy._encode set f.pts=None, leaving frames in the source base -> mux ValueError(22)."""
+from fractions import Fraction
+
 import av
 import numpy as np
 import soundfile as sf
 
 from amv_matcher import media, proxy
-from tests import synth
 
 SECONDS, FPS = 24.0, 30
 
 
 def _fixture(tmp_path):
+    """MJPG video whose stream time_base is 1/600, written with PyAV directly. The muxer picks the final
+    time_base when the header is written and by default rewrites it (mp4 1/19200, mkv 1/1000); the mov/mp4
+    muxer option video_track_timescale=600 pins it to 1/600. That is libavformat logic (same bundled
+    ffmpeg in the PyAV wheel on every OS), unlike a cv2/helper-written file."""
     p = tmp_path / "slow.mp4"
-    synth.make_video_jumps(p, synth.slow_section_jump_times(SECONDS), seconds=SECONDS, fps=FPS)
+    tb = Fraction(1, 600)
+    n = int(SECONDS * FPS)
+    with av.open(str(p), "w", options={"video_track_timescale": "600"}) as c:
+        s = c.add_stream("mjpeg", rate=FPS)
+        s.width, s.height, s.pix_fmt = 64, 48, "yuvj420p"
+        s.time_base = tb
+        s.codec_context.time_base = tb
+        for i in range(n):
+            arr = np.full((48, 64, 3), (i * 7) % 256, np.uint8)
+            f = av.VideoFrame.from_ndarray(arr, format="rgb24").reformat(format="yuvj420p")
+            f.pts, f.time_base = i * (600 // FPS), tb
+            for pk in s.encode(f):
+                c.mux(pk)
+        for pk in s.encode():
+            c.mux(pk)
     return p
 
 
