@@ -24,8 +24,8 @@ function syncAudio(force) {
   if (st < 0 || st > (aud.duration || 1e9)) { if (!aud.paused) aud.pause(); return; }
   const d = aud.currentTime - st, ad = Math.abs(d);   // d > 0: audio ahead of video
   if (force || ad > 0.08) { aud.currentTime = st; aud.playbackRate = S.rate; }
-  else if (S.playing && S.rate === 1 && ad > 0.015) aud.playbackRate = 1 - Math.sign(d) * Math.min(0.03, Math.max(0.01, ad * 0.5));
-  else if (aud.playbackRate !== S.rate && ad <= 0.015) aud.playbackRate = S.rate;
+  else if (S.playing && S.rate === 1 && ad > 0.012) aud.playbackRate = 1 - Math.sign(d) * Math.min(0.03, Math.max(0.015, ad * 0.8));
+  else if (aud.playbackRate !== S.rate && ad <= 0.008) aud.playbackRate = S.rate;
   if (S.playing && aud.paused) aud.play().catch(() => {});
 }
 function play() {
@@ -70,7 +70,7 @@ $('scan').onclick = async () => {
   $('status').textContent = 'Starting...';
   try {
     const r = await fetch('/api/scan', {method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({video_path: ($('video-path').dataset.real || $('video-path').value).trim(), music_dir: $('music-dir').value.trim(), recursive: $('recursive').checked})});
+      body: JSON.stringify({video_path: (/ \(uploaded\)$/.test($('video-path').value) && $('video-path').dataset.real || $('video-path').value).trim(), music_dir: $('music-dir').value.trim(), recursive: $('recursive').checked})});
     const j = await r.json(); if (!r.ok) throw new Error(j.detail || r.statusText);
     poll(j.job_id);
   } catch (e) { fail(e.message); }

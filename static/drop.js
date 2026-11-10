@@ -94,8 +94,16 @@ async function doVideo(file) {
     const known = [...new Set([...S.results, ...(S.short || [])].map(r => r.path).concat(D.queue))];
     if (known.length) { S.video = null; await scoreAndShow(known, true); D.queue = []; }
     else {
-      vid.src = '/api/video?path=' + encodeURIComponent(up.path);
-      note('Video ready. Drop songs to score them.');
+      try {
+        const r = await fetch('/api/analyze-video', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({video_path: up.path})});
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || j.detail || `analyze-video ${r.status}`);
+        applyVideo(j); S.video = j.video; S.videoPath = j.video_path;
+        note('Video analyzed. Drop songs to score them.');
+      } catch (e) {
+        vid.src = '/api/video?path=' + encodeURIComponent(up.path);
+        note(e.message + ' (video loaded without analysis)', true);
+      }
     }
   } catch (e) { note(e.message, true); }
   ring.classList.add('hidden');
