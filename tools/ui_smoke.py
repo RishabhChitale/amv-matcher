@@ -614,7 +614,8 @@ def main():
             # layout at 1440x900: transport, overview, V1 and A1 all visible without scrolling
             bot = c.ev("(()=>{const e=document.getElementById('tl');return e.getBoundingClientRect().bottom})()")
             sy = c.ev("document.scrollingElement.scrollHeight")
-            check("layout 1440x900: A1/pump lane fully visible without scrolling", bot <= 900.5, f"tl bottom={bot} scrollHeight={sy}")
+            dbg = "" if bot <= 900.5 else c.ev("(()=>{const o=[];let e=document.getElementById('tl');while(e&&e!==document.body){const p=e.parentElement;if(!p)break;[...p.children].forEach(k=>{const r=k.getBoundingClientRect();if(r.height>40&&k.offsetParent)o.push((k.id||k.className||k.tagName).toString().slice(0,18)+':'+Math.round(r.top)+'+'+Math.round(r.height))});e=p}return o.join(' ')})()")
+            check("layout 1440x900: A1/pump lane fully visible without scrolling", bot <= 900.5, f"tl bottom={bot} scrollHeight={sy} {dbg}")
             import base64
             shotv2 = os.path.join(os.path.dirname(os.path.abspath(a.shot)), "ui.png")
             open(shotv2, "wb").write(base64.b64decode(c.call("Page.captureScreenshot", format="png")["data"]))
@@ -625,91 +626,120 @@ def main():
             c.ev("document.querySelector('.res').click()")
             wait_for(c, "!!(S.sel && S.wf) && document.getElementById('vid').readyState>=2", 30)
 
-        # ---- drag-and-drop / Browse uploads
+        # ---- native drop / path-based flow (media used in place, nothing copied)
         mus = lambda n: os.path.join(a.music, n)
         have = [n for n in ("click120.wav", "click140.wav", "click97.wav") if os.path.exists(mus(n))]
         if not ro and os.path.exists(a.video) and len(have) >= 2:
-            c.ev("""(()=>{const i=document.createElement('input');i.type='file';i.multiple=true;i.id='__scratch';document.body.appendChild(i)})()""")
-            root = c.call("DOM.getDocument")["root"]["nodeId"]
-            nid = c.call("DOM.querySelector", nodeId=root, selector="#__scratch")["nodeId"]
-            c.call("DOM.setFileInputFiles", files=[os.path.abspath(a.video)] + [mus(n) for n in have], nodeId=nid)
-            c.ev("""(()=>{window.__F=[...document.getElementById('__scratch').files];
-              window.__vid=__F.filter(f=>/\\.mp4$/.test(f.name));window.__aud=__F.filter(f=>/\\.wav$/.test(f.name));
-              window.__drop=(sel,files)=>{const dt=new DataTransfer();files.forEach(f=>dt.items.add(f));
-                document.querySelector(sel).dispatchEvent(new DragEvent('drop',{dataTransfer:dt,bubbles:true,cancelable:true}))};
+            vpath = os.path.abspath(a.video); apaths = [mus(n) for n in have]
+            up0 = c.ev("fetch('/api/uploads').then(r=>r.json())").get("uploads_count", c.ev("fetch('/api/uploads').then(r=>r.json())").get("count", 0))
+            c.ev("""(()=>{window.__drop=(sel,paths)=>{document.querySelector(sel).dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true}));return nativeDrop(paths)};
               window.__toasts=()=>[...document.querySelectorAll('.toast')].map(t=>t.innerText).join(' | ')})()""")
+            idle = "document.getElementById('up-ring').classList.contains('hidden')"
+            c.ev("__drop('#stage', %s)" % json.dumps(apaths[:1]))
+            check("audio dropped on the video zone is ignored with a toast", wait_for(c, "/Nothing usable|Not a video/.test(__toasts())", 5), (c.ev("__toasts()") or "")[:60])
 
-            c.ev("__drop('#stage', __aud.slice(0,1))")
-            check("audio dropped on the video zone -> 'Not a video' toast", wait_for(c, "/Not a video/.test(__toasts())", 5), (c.ev("__toasts()") or "")[:60])
-
-            c.ev("__drop('#stage', __vid)")
-            ok = wait_for(c, "/\\/uploads\\/video\\//.test(decodeURIComponent(document.getElementById('vid').src||'')) && document.getElementById('up-ring').classList.contains('hidden')", 90)
-            check("dropping a video uploads it and the player switches to it", ok, (c.ev("document.getElementById('vid').src") or "")[-50:])
+            c.ev("__drop('#stage', %s)" % json.dumps([vpath]))
+            ok = wait_for(c, "document.getElementById('vid').src.includes('/api/') && " + idle, 90)
+            check("dropping a video path switches the player (served in place)", ok, (c.ev("document.getElementById('vid').src") or "")[-50:])
             wait_for(c, "!document.getElementById('scan').disabled && document.querySelectorAll('.res').length>0", 60)
 
-            c.ev("__drop('#results-panel', __aud.slice(0,2))")
-            ok = wait_for(c, "document.querySelectorAll('.res .chip').length>=2 && document.getElementById('up-ring').classList.contains('hidden')", 120)
+            c.ev("__drop('#results-panel', %s)" % json.dumps(apaths[:2]))
+            ok = wait_for(c, "document.querySelectorAll('.res .chip').length>=2 && " + idle, 120)
             chips = c.ev("document.querySelectorAll('.res .chip').length")
-            check("dropping 2 songs adds scored rows with a 'dropped' chip", ok and chips >= 2, f"chips={chips}")
+            check("dropping 2 song paths adds scored rows with a 'dropped' chip", ok and chips >= 2, f"chips={chips}")
             check("a row stays selected after dropped songs merge", bool(c.ev("!!document.querySelector('.res.sel')")))
             up = c.ev("fetch('/api/uploads').then(r=>r.json())")
-            check("uploads control shows the dropped files", up["count"] >= 3 and c.ev("document.getElementById('up-clear').disabled") is False, str(up))
+            check("link-in-place: nothing was copied into uploads", up.get("uploads_count", up.get("count", 0)) == up0, f"{up0} -> {str(up)}")
+            check("exports control present (no uploads counter)", c.ev("!!document.getElementById('ex-clear') && !document.getElementById('up-clear')"))
 
             if len(have) > 2:
-                nid2 = c.call("DOM.querySelector", nodeId=root, selector="#f-songs")["nodeId"]
-                c.call("DOM.setFileInputFiles", files=[mus(have[2])], nodeId=nid2)
-                ok = wait_for(c, "document.querySelectorAll('.res .chip').length>=3 && document.getElementById('up-ring').classList.contains('hidden')", 120)
-                check("Browse... (file input) uploads and scores a song", ok)
+                c.ev("__drop('#results-panel', %s)" % json.dumps(apaths[2:3]))
+                ok = wait_for(c, "document.querySelectorAll('.res .chip').length>=3 && " + idle, 120)
+                check("a third dropped song path is scored", ok)
 
-            c.ev("""(()=>{const mk=f=>({isFile:true,isDirectory:false,name:f.name,file:cb=>cb(f)});
-              const dir={isFile:false,isDirectory:true,createReader:()=>{let n=0;return{readEntries:cb=>cb(n++?[]:[mk(__aud[0]),mk(__aud[1]),mk(new File(['x'],'notes.txt'))])}}};
-              const e=new Event('drop',{bubbles:true,cancelable:true});
-              Object.defineProperty(e,'dataTransfer',{value:{types:['Files'],files:[],items:[{kind:'file',webkitGetAsEntry:()=>dir}]}});
-              document.querySelector('#results-panel').dispatchEvent(e)})()""")
-            wait_for(c, "/2\\/2/.test(__toasts())", 20)
-            wait_for(c, "document.getElementById('up-ring').classList.contains('hidden') && !document.querySelector('.toast')", 40)
-            check("dropping a folder walks it and picks up its audio files (non-audio ignored)", not c.errors)
-
-            c.ev("""(()=>{const dt=new DataTransfer();dt.items.add(new File([''],'a.mp4',{type:'video/mp4'}));
-              window.dispatchEvent(new DragEvent('dragenter',{dataTransfer:dt,bubbles:true,cancelable:true}));
-              document.querySelector('#stage').dispatchEvent(new DragEvent('dragover',{dataTransfer:dt,bubbles:true,cancelable:true}))})()""")
-            c.pump(0.5)
-            check("dragging files over the page highlights the drop zones",
-                  bool(c.ev("document.body.classList.contains('dragging') && document.querySelector('#stage').classList.contains('dz')")))
             import base64
             shot2 = os.path.join(os.path.dirname(os.path.abspath(a.shot)), "ui-drop.png")
             open(shot2, "wb").write(base64.b64decode(c.call("Page.captureScreenshot", format="png")["data"]))
-            check("screenshot saved (drag highlight)", os.path.getsize(shot2) > 10000, shot2)
-            c.ev("window.dispatchEvent(new DragEvent('dragend'))")
+            check("screenshot saved (after drops)", os.path.getsize(shot2) > 10000, shot2)
 
             if not a.allow_clear:
-                print("SKIP  Clear-uploads + queue checks (shared server; pass --allow-clear on a tmp instance)")
-                c.ev("document.getElementById('__scratch').remove()")
+                print("SKIP  Clear-exports + queue checks (shared server; pass --allow-clear on a tmp instance)")
             else:
-              c.ev("document.getElementById('up-clear').click()")
-              check("Clear opens the in-page confirm popover", c.ev("!document.getElementById('up-pop').classList.contains('hidden')"))
-              c.ev("document.getElementById('up-yes').click()")
-              ok = wait_for(c, "document.getElementById('up-clear').disabled && document.querySelectorAll('.res .chip').length===0", 20)
-              up = c.ev("fetch('/api/uploads').then(r=>r.json())")
-              check("Clear deletes uploads and dropped rows vanish", ok and up["count"] == 0, str(up))
-
               c.ev("document.getElementById('video-path').value='';S.videoPath='';D.videoPath=''")
-              c.ev("__drop('#results-panel', __aud.slice(0,2))")
-              ok = wait_for(c, "/Drop a video first/.test(__toasts()+document.getElementById('status').innerText)", 30)
+              c.ev("__drop('#results-panel', %s)" % json.dumps(apaths[:2]))
+              ok = wait_for(c, "/(Drop|Pick) a video first/.test(__toasts()+document.getElementById('status').innerText)", 30)
               check("songs dropped before a video are queued with a hint", ok and c.ev("D.queue.length") == 2, f"queue={c.ev('D.queue.length')}")
-              c.ev("__drop('#stage', __vid)")
-              ok = wait_for(c, "document.querySelectorAll('.res .chip').length>=2 && document.getElementById('up-ring').classList.contains('hidden')", 120)
+              c.ev("__drop('#stage', %s)" % json.dumps([vpath]))
+              ok = wait_for(c, "document.querySelectorAll('.res .chip').length>=2 && " + idle, 120)
               check("queued songs are scored once the video arrives", ok and c.ev("D.queue.length") == 0)
               c.ev("S.selClip='v';deleteSel()"); c.pump(0.4)
               check("video removed: scores grey out", c.ev("document.querySelectorAll('.res.nov').length") > 0)
-              c.ev("__drop('#stage', __vid)")
-              ok = wait_for(c, "document.querySelectorAll('.res .chip').length>=2 && document.querySelectorAll('.res.nov').length==0 && document.getElementById('up-ring').classList.contains('hidden')", 120)
+              c.ev("__drop('#stage', %s)" % json.dumps([vpath]))
+              ok = wait_for(c, "document.querySelectorAll('.res .chip').length>=2 && document.querySelectorAll('.res.nov').length==0 && " + idle, 120)
               check("dropping a new video rescores all songs", ok and bool(c.ev("!!S.video")))
-              c.ev("document.getElementById('up-clear').click();document.getElementById('up-yes').click()")
-              wait_for(c, "document.getElementById('up-clear').disabled", 20)
-              c.ev("document.getElementById('__scratch').remove()")
         else:
-            print("SKIP  drag-and-drop checks (read-only server or fixtures missing)")
+            print("SKIP  drop checks (read-only server or fixtures missing)")
+
+        # ---- New match + Match results popups
+        if not ro and os.path.exists(a.video) and os.path.isdir(a.music):
+            vpath = os.path.abspath(a.video); mdir = os.path.abspath(a.music)
+            c.ev("MATCH.openNew()")
+            check("New match popup opens with two drop targets and a disabled Find button",
+                  c.ev("!document.getElementById('nm').classList.contains('hidden') && !!document.getElementById('nm-dv') && !!document.getElementById('nm-dm') && document.getElementById('nm-go').disabled && document.getElementById('nm-sub').checked") is True)
+            c.ev("(()=>{const f=(id,v)=>{const e=document.getElementById(id);e.value=v;e.dispatchEvent(new Event('change'))};f('nm-v',%s);f('nm-d',%s)})()" % (json.dumps(vpath), json.dumps(mdir)))
+            check("Find best songs enables once video + folder are set", c.ev("!document.getElementById('nm-go').disabled") is True)
+            c.ev("document.getElementById('nm-go').click()")
+            check("results popup opens at once with every song listed", wait_for(c, "!document.getElementById('mr').classList.contains('hidden') && document.querySelectorAll('#mr-list .mr-row').length>=3", 60))
+            seen_pending = c.ev("document.querySelectorAll('#mr-list .mr-row.pending').length")
+            check("rows fill in live (some done, header shows analyzed count)", wait_for(c, "document.querySelectorAll('#mr-list .mr-row.done').length>=1", 120) and "analyzed" in (c.ev("document.getElementById('mr-head').textContent") or ""), f"pending at open={seen_pending}")
+            wait_for(c, "document.querySelectorAll('#mr-list .mr-row.pending').length==0", 180)
+            sc = c.ev("[...document.querySelectorAll('#mr-list .mr-row.done .ring b')].map(b=>parseInt(b.textContent))")
+            check("scores sorted best first", len(sc) >= 2 and sc == sorted(sc, reverse=True), str(sc))
+            check("short songs sit greyed at the bottom with lengths", c.ev("(()=>{const r=document.querySelector('#mr-list .mr-row.short');return !r || /Too short.*vs video/.test(r.innerText)})()") is True)
+            check("sidebar list is filled too", c.ev("document.querySelectorAll('#results .res').length") >= 2)
+            c.ev("document.getElementById('mr-sort').value='after';document.getElementById('mr-sort').dispatchEvent(new Event('change'))"); c.pump(0.5)
+            check("sort 'After auto-sync' works without errors", not c.errors)
+            c.ev("document.getElementById('mr-sort').value='now';document.getElementById('mr-sort').dispatchEvent(new Event('change'))")
+            c.ev("(()=>{const q=document.getElementById('mr-q');q.value='click1';q.dispatchEvent(new Event('input'))})()"); c.pump(0.4)
+            nq = c.ev("document.querySelectorAll('#mr-list .mr-row').length")
+            check("search filters rows", 1 <= nq < c.ev("MATCH.M.rows.size"), str(nq))
+            c.ev("(()=>{const q=document.getElementById('mr-q');q.value='';q.dispatchEvent(new Event('input'))})()"); c.pump(0.3)
+            c.ev("document.getElementById('mr-list').focus()")
+            for k in ("ArrowDown", "ArrowDown", "ArrowUp"):
+                c.ev("window.dispatchEvent(new KeyboardEvent('keydown',{key:%s,bubbles:true}))" % json.dumps(k))
+            check("arrow keys move the highlighted row", c.ev("MATCH.M.kb") == 0 and c.ev("!!document.querySelector('#mr-list .mr-row.kb')") is True, str(c.ev("MATCH.M.kb")))
+            c.ev("window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))")
+            check("Esc closes the popup, results stay in the sidebar", c.ev("document.getElementById('mr').classList.contains('hidden')") is True and c.ev("document.querySelectorAll('#results .res').length") >= 2)
+            c.ev("document.getElementById('b-mres').click()")
+            check("Match results button reopens it", c.ev("!document.getElementById('mr').classList.contains('hidden')") is True)
+            want = c.ev("document.querySelector('#mr-list .mr-row.kb').dataset.path")
+            c.ev("window.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}))")
+            ok = wait_for(c, "document.getElementById('mr').classList.contains('hidden') && !!S.inUse", 10) and wait_for(c, "!!(S.sel && S.wf)", 30)
+            check("Enter = Use this audio: popup closes, A1 loads the highlighted song", ok and c.ev("S.inUse.path") == want, f"{want} vs {c.ev('S.inUse && S.inUse.path')}")
+            c.ev("document.getElementById('b-mres').click()")
+            c.ev("document.querySelector('#mr-list .mr-row.done .mr-use').click()")
+            check("Use this audio button closes the popup and loads A1", c.ev("document.getElementById('mr').classList.contains('hidden')") is True and wait_for(c, "!!(S.sel && S.wf)", 30))
+            check("New match button opens the picker again", c.ev("(()=>{document.getElementById('b-new').click();return !document.getElementById('nm').classList.contains('hidden')})()") is True)
+            c.ev("document.getElementById('nm-close').click()")
+            check("no console errors after the popups", not c.errors, "; ".join(c.errors[:3]))
+        else:
+            print("SKIP  match popup checks (read-only server or fixtures missing)")
+
+        # ---- media panel (mock layer when the endpoints 404, real otherwise)
+        check("media panel present", bool(c.ev("!!document.getElementById('media')")))
+        wait_for(c, "document.querySelectorAll('.m-item').length>0 || /No media/.test(document.getElementById('m-list').innerText)", 10)
+        n_items = c.ev("document.querySelectorAll('.m-item').length")
+        if n_items:
+            c.ev("document.getElementById('m-view').click()")
+            check("grid toggle switches the pool layout", c.ev("document.getElementById('m-list').classList.contains('grid')"))
+            c.ev("document.getElementById('m-view').click()")
+            c.ev("(()=>{const q=document.getElementById('m-q');q.value='zzzz-nomatch';q.dispatchEvent(new Event('input'))})()")
+            check("search filters the pool", c.ev("document.querySelectorAll('.m-item').length") == 0)
+            c.ev("(()=>{const q=document.getElementById('m-q');q.value='';q.dispatchEvent(new Event('input'))})()")
+            check("sort by duration reorders without errors", not c.errors and c.ev("(()=>{const s=document.getElementById('m-sort');s.value='duration';s.dispatchEvent(new Event('change'));return document.querySelectorAll('.m-item').length})()") == n_items)
+            check("download-source badge shows a domain", bool(c.ev("!![...document.querySelectorAll('.m-src')].find(e=>/\\./.test(e.textContent))")) or c.ev("!document.querySelector('.m-src')"))
+        else:
+            print("SKIP  media panel item checks (no media roots configured)")
 
         # ---- select / delete / undo / link
         sel_vid = "/tmp/amvfx/orig.mp4" if os.path.exists("/tmp/amvfx/orig.mp4") else a.video
@@ -954,6 +984,25 @@ def main():
             print("SKIP  error-message check (no", a.bad_video + ")")
 
         c.pump(0.5)
+        # ---- native menu actions (shell.js dispatches 'amv-menu')
+        def menu(a): c.ev("document.dispatchEvent(new CustomEvent('amv-menu',{detail:{action:%s}}))" % json.dumps(a)); c.pump(0.2)
+        hid = lambda i: c.ev("document.getElementById(%s).classList.contains('hidden')" % json.dumps(i))
+        menu("new"); check("menu new opens New match", hid("nm") is False); c.ev("document.getElementById('nm-close').click()")
+        h0 = hid("media"); menu("toggle_media"); check("menu toggle_media toggles the Media panel", hid("media") != h0); menu("toggle_media")
+        h0 = hid("fx"); menu("toggle_effects"); check("menu toggle_effects toggles the Effects panel", hid("fx") != h0); menu("toggle_effects")
+        menu("export"); check("menu export reveals the Export panel", hid("export") is False)
+        menu("help"); check("menu help opens the help modal", hid("help-modal") is False); menu("help")
+        check("menu help toggles closed", hid("help-modal") is True)
+        s0 = c.ev("document.getElementById('stems-toggle').getAttribute('aria-expanded')+'|'+document.body.innerHTML.length")
+        c.ev("window.__t=0;document.getElementById('stems-toggle').addEventListener('click',()=>window.__t++)"); menu("toggle_stems")
+        check("menu toggle_stems clicks the stems toggle", c.ev("window.__t") == 1)
+        c.ev("window.__t=0;document.getElementById('b-play').addEventListener('click',()=>window.__t++)"); menu("play_pause")
+        check("menu play_pause clicks play", c.ev("window.__t") == 1)
+        c.ev("window.__t=0;document.getElementById('m-add').addEventListener('click',e=>{window.__t++;e.stopImmediatePropagation()},true)"); menu("add_folder")
+        check("menu add_folder clicks Add folder", c.ev("window.__t") == 1)
+        menu("redo"); menu("undo"); menu("delete")
+        check("menu undo/redo/delete run without errors", not c.errors, "; ".join(c.errors[:3]))
+
         check("no console errors / exceptions", not c.errors, "; ".join(c.errors[:5]))
         return 0 if all(results) else 1
     finally:

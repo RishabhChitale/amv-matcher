@@ -90,7 +90,7 @@ $('scan').onclick = async () => {
   $('status').textContent = 'Starting...';
   try {
     const r = await fetch('/api/scan', {method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({video_path: (/ \(uploaded\)$/.test($('video-path').value) && $('video-path').dataset.real || $('video-path').value).trim(), music_dir: $('music-dir').value.trim(), recursive: $('recursive').checked})});
+      body: JSON.stringify({video_path: $('video-path').value.trim(), music_dir: $('music-dir').value.trim(), recursive: $('recursive').checked})});
     const j = await r.json(); if (!r.ok) throw new Error(j.detail || r.statusText);
     poll(j.job_id);
   } catch (e) { fail(e.message); }
@@ -245,7 +245,7 @@ function exLink(j, what) {
 }
 function exSig() {
   const u = S.inUse; if (!u) return '';
-  return [S.videoPath, u.path, JSON.stringify(spliceActive() ? S.sp.plan.segments : [S.offset, S.dur])].join('|');
+  return [S.videoPath, u.path, JSON.stringify(spliceActive() ? S.sp.plan.segments : [S.offset, S.dur]), JSON.stringify(fxBody())].join('|');
 }
 let EXSIG = '';
 function staleExport() {
@@ -259,7 +259,7 @@ async function doExport(kind) {
     const rd = await renderAudio(u.path, exportSegs());
     if (kind === 'wav') { $('ex-bar').style.width = '100%'; exLink(rd, 'wav'); }
     else {
-      const r = await jpost('/api/export-mp4', {video_path: S.videoPath, audio_path: rd.path});
+      const r = await jpost('/api/export-mp4', {video_path: S.videoPath, audio_path: rd.path, ...fxBody()});
       let j = await r.json(); if (!r.ok) throw new Error(j.detail || r.statusText);
       const id = j.job_id;
       while (j.status === 'running') {
@@ -272,13 +272,14 @@ async function doExport(kind) {
   } catch (e) { $('ex-out').textContent = e.message; note(e.message, true); }
   S.exporting = false; updateFit();
   setTimeout(() => $('ex-prog').classList.add('hidden'), 900);
-  if (typeof refreshUploads === 'function') refreshUploads();
+  if (typeof refreshExports === 'function') refreshExports();
 }
 $('ex-wav').onclick = () => doExport('wav');
 $('ex-mp4').onclick = () => doExport('mp4');
 
 // ---------- effects (pump) ----------
 let reduce = false; try { reduce = matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) {}
+const fxBody = () => FX.boom > 0 ? {boom: FX.boom, decay: FX.decay, drops_only: FX.drops, shake: FX.shake} : {};   // baked into exports only when Boom is on
 const FX = {boom: reduce ? 0 : 40, decay: 180, drops: false, shake: false};
 try { const s = JSON.parse(localStorage.getItem('amv-fx') || 'null'); if (s) Object.assign(FX, s); } catch (e) {}
 function saveFx() { try { localStorage.setItem('amv-fx', JSON.stringify(FX)); } catch (e) {} }

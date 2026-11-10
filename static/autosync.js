@@ -158,6 +158,7 @@ async function runOne(r) {   // returns result or null (cancelled / failed)
     if (AS.cancelled || j.status === 'cancelled') return null;
     if (j.status === 'error') throw new Error(j.error || 'Auto-sync failed');
     const res = j.result; AS.runs[key] = {result: res, audioUrl: ''};
+    if (window.nativeNotify) nativeNotify('Auto-sync finished', (r.name || 'Song') + ' is ready');
     r.auto_sync_cached = res.final || null;
     const segs = res.plan && res.plan.segments;
     if (res.eligible !== false && segs && segs.length && S.videoPath === v) {
@@ -311,12 +312,12 @@ el('rd-go').onclick = async () => {
   el('rd-out').textContent = ''; el('rd-prog').classList.remove('hidden'); el('rd-bar').style.width = '4%'; el('rd-stage').textContent = 'Starting...';
   AS.rd = {running: true}; rdUI();
   try {
-    const rs = await post('/api/render-mp4', {video_path: S.videoPath, song_path: r.path, plan: p, interp: AS.quality});
+    const rs = await post('/api/render-mp4', {video_path: S.videoPath, song_path: r.path, plan: p, interp: AS.quality, ...fxBody()});
     const j0 = await rs.json(); if (!rs.ok && rs.status !== 409) throw new Error(j0.detail || rs.statusText);
     AS.rd.id = j0.job_id; const j = await pollRender(j0.job_id);
     if (j.status === 'error') throw new Error(j.error || 'Render failed');
     if (j.status === 'cancelled' || j.stage === 'cancelled') el('rd-stage').textContent = 'Cancelled.';
-    else { el('rd-bar').style.width = '100%'; el('rd-stage').textContent = 'Done'; openLinks(j, el('rd-out')); }
+    else { el('rd-bar').style.width = '100%'; el('rd-stage').textContent = 'Done'; openLinks(j, el('rd-out')); if (window.nativeNotify) nativeNotify('Render finished', 'Your retimed video is ready'); }
   } catch (e) { el('rd-stage').textContent = /cancel/i.test(e.message) ? 'Cancelled.' : 'Render failed: ' + e.message; }
   AS.rd = null; if (!/Done/.test(el('rd-stage').textContent)) el('rd-prog').classList.add('hidden'); rdUI();
 };

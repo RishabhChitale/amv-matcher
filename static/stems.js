@@ -105,7 +105,7 @@ async function pollJob() {
     const eta = left > 90 ? 'about ' + Math.max(1, Math.round(left / 60)) + ' min left' : 'under 2 min left';
     msg((j.message || 'Separating...') + ' · ' + (pr > 0.08 || !dem ? eta : 'about 12 min on this Mac')); render(); st.poll = setTimeout(pollJob, 500); return; }
   el('stems-prog').classList.add('hidden'); st.job = null; st.t0 = 0;
-  if (s.state === 'ready') { msg(''); await loadStems(s.provider, s.stems, p); }
+  if (s.state === 'ready') { msg(''); await loadStems(s.provider, s.stems, p); if (window.nativeNotify) nativeNotify('Stems ready', 'Separation finished'); }
   else msg(j && j.status === 'error' ? 'Separation failed: ' + j.error : j && j.status === 'cancelled' ? 'Cancelled.' : '');
   render();
 }

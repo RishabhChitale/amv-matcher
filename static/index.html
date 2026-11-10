@@ -17,16 +17,23 @@
   <button id="b-songs" class="mini" title="Choose song files">Browse...</button>
   <label class="chk"><input type="checkbox" id="recursive"> subfolders</label>
   <button id="scan" class="primary">Scan</button>
+  <button id="b-new" class="mini primary" title="New match (Cmd/Ctrl+N)">New match</button>
+  <button id="b-mres" class="mini hidden" title="Reopen the match results">Match results</button>
   <span id="status" class="status"></span>
-  <span id="uploads" class="uploads">Uploads <b id="up-size">0 B</b> &middot; Exports <b id="ex-size">0 B</b> <button id="up-clear" class="linkbtn" disabled>Clear</button>
-    <div id="up-pop" class="pop hidden"><div id="up-pop-t"></div><div class="pop-b"><button id="up-yes" class="danger">Delete</button><button id="up-no">Cancel</button></div></div></span>
+  <span id="uploads" class="uploads">Exports <b id="ex-size">0 B</b> <button id="ex-clear" class="linkbtn" disabled>Clear exports</button>
+    <div id="ex-pop" class="pop hidden"><div id="ex-pop-t"></div><div class="pop-b"><button id="ex-yes" class="danger">Delete</button><button id="ex-no">Cancel</button></div></div></span>
 </header>
-<input type="file" id="f-video" class="hidden" accept="video/*,.mkv,.avi,.m4v">
-<input type="file" id="f-songs" class="hidden" multiple accept="audio/*,.mp3,.wav,.m4a,.flac,.ogg,.aac">
 <div id="toasts" class="toasts"></div>
 <div id="progress" class="progress hidden"><div id="progress-bar"></div></div>
 
 <main class="layout">
+  <aside class="glass panel media" id="media">
+    <h3>Media <span id="m-mock" class="muted hidden">(sample data)</span></h3>
+    <div class="m-bar"><button id="m-add" title="Add a folder to the pool">Add folder</button><button id="m-view" title="List / grid">Grid</button></div>
+    <div class="m-bar"><input type="text" id="m-q" placeholder="Search"><select id="m-sort"><option value="name">Name</option><option value="date">Date</option><option value="duration">Duration</option></select></div>
+    <div id="m-roots" class="m-roots"></div>
+    <div id="m-list" class="m-list list"></div>
+  </aside>
   <section class="editor">
     <div class="vcard glass" id="vcard"><div><span>Duration</span><b id="vc-dur">--</b></div><div><span>Motion tempo</span><b id="vc-bpm">--</b></div><div><span>Cuts</span><b id="vc-cuts">--</b></div><div class="vc-start"><span>Song start</span><b id="vc-off">--</b><i id="vc-chip" class="chip hidden"></i><button id="vc-reset" class="linkbtn hidden">Reset to best start</button></div><div><span>Trim window</span><b id="vc-trim">--</b></div></div>
     <div class="stage glass" id="stage">
@@ -138,11 +145,36 @@
   </aside>
 </main>
 <audio id="aud" preload="auto"></audio>
+<div id="nm" class="mm hidden"><div class="mm-box glass nm-box">
+  <button id="nm-close" class="mm-x hidden" title="Close (Esc)">&times;</button>
+  <h2>New match</h2><p class="muted">Pick a video and a folder of songs. Every song gets a fit score.</p>
+  <div class="nm-zones">
+    <div id="nm-dv" class="nm-z"><div class="nm-i">1 · Video</div><b id="nm-vn">Drop a video here</b><input id="nm-v" placeholder="or paste a video path" spellcheck="false"><button id="nm-bv" class="mini">Choose video…</button></div>
+    <div id="nm-dm" class="nm-z"><div class="nm-i">2 · Music folder</div><b id="nm-dn">Drop a music folder here</b><input id="nm-d" placeholder="or paste a folder path" spellcheck="false"><button id="nm-bd" class="mini">Choose folder…</button></div>
+  </div>
+  <label class="chk"><input type="checkbox" id="nm-sub" checked> include subfolders</label>
+  <div class="nm-go"><button id="nm-go" class="primary" disabled>Find best songs</button></div>
+</div></div>
+<div id="mr" class="mm hidden"><div class="mm-box glass mr-box">
+  <div class="mr-top"><b id="mr-head" class="mr-head"></b>
+    <input id="mr-q" placeholder="Search songs" spellcheck="false">
+    <select id="mr-sort" title="Sort"><option value="now">Fit now</option><option value="after">After auto-sync</option></select>
+    <button id="mr-new" class="mini">New match</button><button id="mr-close" class="mini" title="Close (Esc)">Close</button></div>
+  <div id="mr-list" class="mr-list" tabindex="0"></div>
+  <div id="mr-empty" class="muted pad hidden">No songs match.</div>
+  <div class="mr-foot muted">&uarr;&darr; move · Enter use this audio · Space preview · Esc close</div>
+</div></div>
 <script src="/static/app.js"></script>
 <script src="/static/drop.js"></script>
+<script src="/static/js/mock-media.js"></script>
+<script src="/static/media.js"></script>
 <script src="/static/stems.js"></script>
+<script src="/static/js/stems-install.js"></script>
 <script src="/static/autosync.js"></script>
 <script src="/static/native.js"></script>
+<script src="/static/shell.js"></script>
+<script src="/static/js/menu.js"></script>
+<script src="/static/match.js"></script>
 <script src="/static/js/project-ui.js"></script>
 </body>
 </html>
