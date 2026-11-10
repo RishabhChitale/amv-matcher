@@ -90,6 +90,26 @@ def _unsafe_zip_member(m: str) -> bool:
     return False
 
 
+def _long_path(p) -> str:
+    """Windows: \\?\\-prefixed absolute path when it exceeds the 260-char MAX_PATH (len > 240 leaves room for
+    a file name); unchanged elsewhere / when short."""
+    s = os.path.abspath(str(p))
+    if not winsafe._is_win() or len(s) <= 240 or s.startswith("\\\\?\\"):
+        return s
+    return "\\\\?\\UNC\\" + s[2:] if s.startswith("\\\\") else "\\\\?\\" + s
+
+
+def _extract_member(z, m: str, dest) -> None:
+    """Extract one zip member under dest (members were checked by _unsafe_zip_member); long-path safe on Windows."""
+    if m.endswith("/"):
+        os.makedirs(_long_path(Path(dest) / m), exist_ok=True)
+        return
+    target = Path(dest) / m
+    os.makedirs(_long_path(target.parent), exist_ok=True)
+    with z.open(m) as src, open(_long_path(target), "wb") as out:
+        shutil.copyfileobj(src, out)
+
+
 def _cleanup_dir(d, root=None) -> bool:
     """Remove a temp dir with retries; if files stay locked, record and warn instead of leaking silently (W-09)."""
     d = Path(d)
@@ -238,14 +258,14 @@ def install_rife(progress_cb: Optional[Callable[[float], None]] = None) -> Path:
         if got != a["size"] or h.hexdigest() != a["sha256"]:          # verify BEFORE anything else
             raise RenderError("RIFE download failed verification (size/sha256 mismatch)")
         dest = rife_dir()
-        shutil.rmtree(dest, ignore_errors=True)
+        _cleanup_dir(dest, dest.parent)
         with zipfile.ZipFile(tmp) as z:
             for m in z.namelist():                         # no path escapes
                 if _unsafe_zip_member(m):
                     raise RenderError("Unsafe path in RIFE archive")
             for m in z.namelist():
                 if _wanted_member(m, a["exe"]):
-                    z.extract(m, dest)
+                    _extract_member(z, m, dest)
         (dest / _MARKER).write_text(json.dumps({"tag": RIFE_TAG, "name": a["name"], "sha256": a["sha256"],
                                                 "size": a["size"], "verified": True}))
     finally:
@@ -385,7 +405,7 @@ class RifeRunner:
                "-m", str(self.exe.parent / RIFE_MODEL), "-s", f"{t:.4f}", "-j", self.j]
         if gid is not None:
             cmd += ["-g", str(gid)]
-        (d / "o.png").unlink(missing_ok=True)
+        _cleanup_file(d / "o.png", d)
         kw = {} if winsafe._is_win() else {"start_new_session": True}   # POSIX: own group so the tree can be killed
         p = winsafe.popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **kw)
         with self.lock:
@@ -745,7 +765,7 @@ def build_audio(song_path, plan: dict, out_duration: float, out_wav: Path) -> No
         render_audio(src, segs, out_duration, out_wav)
     finally:
         if tmp:
-            tmp.unlink(missing_ok=True)
+            _cleanup_file(tmp)
 
 
 # --------------------------------------------------------------------------- boom / pump effect
@@ -1056,7 +1076,7 @@ def _run_render(job, video_path, song_path, plan, interp, out, gpu_id=None, pump
              interp=info["interp"], seconds=info["seconds"], gpu=info["gpu"],
              url=f"/api/export-file?path={out}")
     except RenderCancelled:
-        Path(out).with_name(Path(out).stem + ".tmp.mp4").unlink(missing_ok=True)
+        _cleanup_file(Path(out).with_name(Path(out).stem + ".tmp.mp4"))
         _upd(job, status="cancelled", error=None)
     except Exception as e:                                # noqa: BLE001
         _upd(job, status="error", error=str(e))

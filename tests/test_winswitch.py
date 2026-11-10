@@ -130,3 +130,45 @@ def test_lower_priority_guarded(monkeypatch):
     workers._lower_priority()        # no os.nice: must not raise
     monkeypatch.setattr(winsafe, "_is_win", lambda: True)
     workers._lower_priority()        # win path: ctypes.windll missing here -> swallowed
+
+
+# ---------------------------------------------------------------- B1 leftovers: long paths, safe cleanup
+def test_long_path_prefix_only_on_windows_when_long(monkeypatch):
+    short, long_ = "/a/b", "/a/" + "x" * 250
+    monkeypatch.setattr(winsafe, "_is_win", lambda: True)
+    assert render._long_path(short) == os.path.abspath(short)
+    assert render._long_path(long_).startswith("\\\\?\\")
+    monkeypatch.setattr(os.path, "abspath", lambda p: "\\\\srv\\share\\" + "y" * 250)
+    assert render._long_path("z").startswith("\\\\?\\UNC\\srv")
+    monkeypatch.setattr(winsafe, "_is_win", lambda: False)
+    assert not render._long_path(long_).startswith("\\\\?\\")
+
+
+def test_extract_member_writes_file_and_uses_long_path(monkeypatch, tmp_path):
+    import io
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("d/e/f.bin", b"hi")
+    seen = []
+    orig = render._long_path
+    monkeypatch.setattr(render, "_long_path", lambda p: seen.append(str(p)) or orig(p))
+    with zipfile.ZipFile(buf) as z:
+        render._extract_member(z, "d/e/f.bin", tmp_path)
+    assert (tmp_path / "d" / "e" / "f.bin").read_bytes() == b"hi" and seen
+
+
+def test_cancel_and_tempo_cleanup_use_cleanup_file(monkeypatch, tmp_path):
+    f = tmp_path / "o.png"
+    f.write_bytes(b"x")
+    render.LEAKED_TEMP.clear()
+    monkeypatch.setattr(winsafe, "safe_unlink", lambda *a, **k: False)
+    assert render._cleanup_file(f) is False and str(f) in render.LEAKED_TEMP
+
+
+def test_rife_once_clears_stale_output_via_cleanup(monkeypatch, tmp_path):
+    called = []
+    monkeypatch.setattr(render, "_cleanup_file", lambda p, root=None: called.append(Path(p).name) or True)
+    monkeypatch.setattr(subprocess, "Popen", _FakeProc)
+    _runner(tmp_path)._once(tmp_path, 0.5, None)
+    assert "o.png" in called

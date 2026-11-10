@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -19,8 +20,10 @@ import librosa
 import numpy as np
 import soundfile as sf
 
+log = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parent.parent
 from . import paths as _paths
+from . import winsafe
 CACHE_DIR = _paths.CACHE / "stems"           # module var so tests can redirect it
 VENV_DIR = _paths.STEMS_PACK if _paths.FROZEN else ROOT / ".venv-stems"
 PACK_MISSING_MSG = "Stems pack not installed: quick split only"
@@ -30,6 +33,7 @@ ENERGY_HZ = 10
 MIN_FREE_BYTES = 3 * 1024 ** 3
 STEM_NAMES = {"hpss": ["drums", "music"], "demucs": ["drums", "bass", "vocals", "other"]}
 FEATURES_VERSION = 1
+LEAKED_TEMP: list = []     # temp paths that could not be removed (locked on Windows); reported, not silent
 
 
 def paths_frozen() -> bool:
@@ -43,7 +47,24 @@ class Cancelled(Exception):
 def song_key(path) -> str:
     p = Path(path).resolve()
     st = p.stat()
-    return hashlib.sha1(f"{p}|{st.st_size}|{int(st.st_mtime)}".encode()).hexdigest()[:12]
+    # W-15: case/separator-normalised on Windows (identical to str(p) on POSIX; one-time cache miss on Windows)
+    return hashlib.sha1(f"{winsafe.norm_case_path(p)}|{st.st_size}|{int(st.st_mtime)}".encode()).hexdigest()[:12]
+
+
+def _cleanup_dir(d: Path, root: Path) -> bool:
+    ok = winsafe.safe_rmtree(d, root)
+    if not ok and Path(d).exists():
+        LEAKED_TEMP.append(str(d))
+        log.warning("could not remove temp dir %s", d)
+    return ok
+
+
+def _cleanup_file(f: Path, root: Path) -> bool:
+    ok = winsafe.safe_unlink(f, root)
+    if not ok and Path(f).exists():
+        LEAKED_TEMP.append(str(f))
+        log.warning("could not remove temp file %s", f)
+    return ok
 
 
 def stem_dir(path, provider: str) -> Path:
@@ -139,16 +160,18 @@ def separate_demucs(song_path, out: Path, progress=None, cancel=None, proc_holde
                AMV_DEMUCS_JOBS=os.environ.get("AMV_DEMUCS_JOBS", "4"))   # 4 worker processes: 162 s vs 755 s on a 233 s song, identical stems
     runner = Path(__file__).with_name("_demucs_runner.py")
     tmp = out / "_tmp"
-    shutil.rmtree(tmp, ignore_errors=True)
-    proc = subprocess.Popen([str(demucs_python()), "-I", str(runner), str(src), str(tmp)],
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
+    _cleanup_dir(tmp, out)
+    # own session/process group (POSIX) so kill_tree reaches demucs' worker grandchildren; Windows: taskkill /T
+    kw = {} if winsafe._is_win() else {"start_new_session": True}
+    proc = winsafe.popen([str(demucs_python()), "-I", str(runner), str(src), str(tmp)],
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env, **kw)
     if proc_holder is not None:
         proc_holder["proc"] = proc
     tail = []
     try:
         for line in proc.stdout:
             if cancel and cancel.is_set():
-                proc.kill()
+                winsafe.kill_tree(proc)
                 raise Cancelled()
             line = line.strip()
             if line.startswith("PROGRESS "):
@@ -161,17 +184,17 @@ def separate_demucs(song_path, out: Path, progress=None, cancel=None, proc_holde
         rc = proc.wait()
     finally:
         if proc.poll() is None:
-            proc.kill()
+            winsafe.kill_tree(proc)
             proc.wait()
     if cancel and cancel.is_set():
-        shutil.rmtree(tmp, ignore_errors=True)
+        _cleanup_dir(tmp, out)
         raise Cancelled()
     if rc != 0:
         raise RuntimeError("Demucs failed: " + " | ".join(tail[-3:]))
     for n in STEM_NAMES["demucs"]:
-        os.replace(tmp / f"{n}.wav", out / f"{n}.wav")
-    shutil.rmtree(tmp, ignore_errors=True)
-    src.unlink(missing_ok=True)
+        winsafe.replace_retry(tmp / f"{n}.wav", out / f"{n}.wav")
+    _cleanup_dir(tmp, out)
+    _cleanup_file(src, out)
     return {"provider": "demucs", "stems": {n: str(out / f"{n}.wav") for n in STEM_NAMES["demucs"]}}
 
 

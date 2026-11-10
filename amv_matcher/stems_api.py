@@ -1,18 +1,23 @@
 """Stems endpoints: separate (HPSS / Demucs) as a job, status, stem audio, stem features, installer."""
 from __future__ import annotations
 
+import json
+import re
+import shutil
 import subprocess
 import sys
 import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from . import stems as S
+from . import winsafe
 
 router = APIRouter()
 JOBS: dict = {}
@@ -96,7 +101,7 @@ def cancel_stems(req: StemsRequest):
             j["_cancel"].set()
             p = j["_proc"].get("proc")
             if p and p.poll() is None:
-                p.kill()
+                winsafe.kill_tree(p)
             n += 1
     return {"cancelled": n}
 
@@ -148,15 +153,84 @@ def stem_features(song_path: str, provider: str = ""):
     return S.features_for(song, prov)
 
 
+# ---------------------------------------------------------------- python / pack detection
+PY_MIN, PY_MAX = (3, 9), (3, 12)          # torch 2.2.x wheels exist for these
+PACK_VERSION_FILE = "pack.json"
+
+
+def _py_version(cmd) -> tuple | None:
+    """(major, minor) of the interpreter `cmd` (list), or None if it doesn't run / isn't Python 3."""
+    try:
+        r = winsafe.run(list(cmd) + ["-c", "import sys;print('%d.%d' % sys.version_info[:2])"],
+                        capture_output=True, text=True, timeout=15)
+    except Exception:  # noqa: BLE001 - missing exe, timeout, permission
+        return None
+    m = re.fullmatch(r"(\d+)\.(\d+)", (r.stdout or "").strip()) if r.returncode == 0 else None
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def find_system_python() -> list | None:
+    """Command (argv prefix) of a system Python 3.9-3.12 to build the stems venv with, else None.
+    Never returns sys.executable when frozen (that is the app exe).  macOS: python3.x / python3;
+    Windows: `py -3.x` launcher then python/python3 on PATH; others: python3 on PATH."""
+    cands: list = []
+    if winsafe._is_win():
+        for minor in (11, 10, 12, 9):
+            cands.append(["py", f"-3.{minor}"])
+        cands += [["py", "-3"], ["python"], ["python3"]]
+    else:
+        for minor in (11, 10, 12, 9):
+            cands.append([f"python3.{minor}"])
+        cands += [["python3"], ["python"]]
+        if sys.platform == "darwin":
+            cands += [["/usr/bin/python3"], ["/opt/homebrew/bin/python3"], ["/usr/local/bin/python3"]]
+    if not getattr(sys, "frozen", False):
+        cands.insert(0, [sys.executable])
+    seen = set()
+    for c in cands:
+        if c[0] in seen or (shutil.which(c[0]) is None and not Path(c[0]).is_file()):
+            continue
+        seen.add(c[0] if len(c) == 1 else " ".join(c))
+        v = _py_version(c)
+        if v and PY_MIN <= v <= PY_MAX:
+            return c
+    return None
+
+
+def pack_status() -> dict:
+    """{installed, version, python_path, size_mb, source}: pure detection, no downloads.
+    source: 'pack' (frozen app's stems-pack dir), 'venv' (dev .venv-stems) or None."""
+    py = S.demucs_python()
+    installed = S.demucs_installed()
+    version = None
+    size_mb = 0.0
+    if installed:
+        try:
+            version = json.loads((S.VENV_DIR / PACK_VERSION_FILE).read_text()).get("version")
+        except Exception:  # noqa: BLE001 - no/garbled manifest
+            version = None
+        try:
+            size_mb = round(sum(f.stat().st_size for f in S.VENV_DIR.rglob("*") if f.is_file()) / 1024 ** 2, 1)
+        except OSError:
+            size_mb = 0.0
+    return {"installed": bool(installed), "version": version,
+            "python_path": str(py) if installed else None, "size_mb": size_mb,
+            "source": ("pack" if S.paths_frozen() else "venv") if installed else None}
+
+
 # ---------------------------------------------------------------- installer
 def _install_job():
     steps = 0
     try:
         INSTALL.update(status="running", progress=0.02, message="Creating environment", error=None)
         if not S.demucs_python().is_file():
-            subprocess.run([sys.executable, "-m", "venv", str(S.VENV_DIR)], check=True)
+            base = find_system_python() if getattr(sys, "frozen", False) else [sys.executable]
+            if not base:
+                raise RuntimeError("No system Python 3.9-3.12 found. Install Python from python.org, "
+                                   "then try again (or drop a stems pack into the app data folder).")
+            winsafe.run(base + ["-m", "venv", str(S.VENV_DIR)], check=True)
         req = S.ROOT / "requirements-stems.txt"
-        proc = subprocess.Popen([str(S.demucs_python()), "-m", "pip", "install", "--no-input", "-r", str(req)],
+        proc = winsafe.popen([str(S.demucs_python()), "-m", "pip", "install", "--no-input", "-r", str(req)],
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         tail = []
         for line in proc.stdout:
@@ -180,7 +254,7 @@ def install_demucs():
     if S.demucs_installed():
         INSTALL.update(status="done", progress=1.0, message="Demucs already installed")
         return _public(INSTALL)
-    if S.paths_frozen():
+    if S.paths_frozen() and not find_system_python():
         raise HTTPException(501, S.PACK_MISSING_MSG + f" (drop a stems pack into {S.VENV_DIR})")
     free = S.free_bytes(S.ROOT)
     if free < S.MIN_FREE_BYTES:
