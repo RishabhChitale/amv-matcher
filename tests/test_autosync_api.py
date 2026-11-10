@@ -204,3 +204,50 @@ def test_original_flag_and_cancel_returns_best_so_far(tmp_path, monkeypatch):
     assert j["result"]["final"]["natural_total_pct"] == 60
     assert seen == {"original": False, "unlock": True}            # a normal song is not 'original'
     assert server._autosync_cached(v.resolve(), s.resolve()) is None
+
+
+def test_real_auto_sync_progress_and_cancel(tmp_path, monkeypatch):
+    """Real autosync.auto_sync through the API; only paced (sleep per progress event) so polls can see it."""
+    import functools
+    real = server._autosync.auto_sync
+    v = make_clip(tmp_path / "r.mp4", dur=4.0)
+    s = make_wav(tmp_path / "rs.wav", 8.0)
+    monkeypatch.setattr(server, "ALLOWED_VIDEOS", {str(v.resolve())})
+    monkeypatch.setattr(server, "ALLOWED_SONGS", {str(s.resolve())})
+    monkeypatch.setattr(server, "_autosync_cache_file", tmp_path / "as2.json")
+
+    @functools.wraps(real)
+    def paced(song, video, *a, progress_cb=None, **kw):
+        def cb(ev):
+            time.sleep(0.4)
+            if progress_cb:
+                progress_cb(ev)
+        return real(song, video, *a, progress_cb=cb, **kw)
+    monkeypatch.setattr(server._autosync, "auto_sync", paced)
+    assert all(server._autosync_hooks_supported().values())
+    c = TestClient(server.app)
+    jid = c.post("/api/auto-sync", json=_body(v, s, budget_s=60)).json()["job_id"]
+    counts = []
+    for _ in range(300):
+        j = c.get(f"/api/auto-sync/{jid}").json()
+        n = len(j["steps_so_far"])
+        if not counts or counts[-1] != n:
+            counts.append(n)
+        if j["status"] != "running" or len(counts) >= 3 and n >= 3:
+            break
+        time.sleep(0.1)
+    assert j["status"] == "running", "run finished before it could be cancelled"
+    assert len(counts) >= 3 and counts[-1] > counts[0] >= 0      # grew across >= 2 polls
+    assert counts[-1] >= 2
+    assert c.post(f"/api/auto-sync/{jid}/cancel").json()["cancelled"] is True
+    j = _wait(c, jid)
+    assert j["status"] == "cancelled"
+    r = j["result"]
+    assert r and "cancelled" in r["limits_hit"]
+    plan = r["plan"]
+    segs = plan.get("segments")
+    if segs:        # spliced plan: contiguous output covering the video
+        assert segs[0]["dst_start"] == 0 and all(g["src_end"] > g["src_start"] for g in segs)
+        assert abs(sum(g["src_end"] - g["src_start"] for g in segs) - 4.0) < 0.05
+    else:           # plain trim (offset may be negative)
+        assert -4.0 < plan["offset"] <= 8.0 - 4.0 + 1e-6      # negative = song starts late (lead-in)
