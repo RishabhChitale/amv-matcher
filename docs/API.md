@@ -78,9 +78,11 @@ Same, for a song (Range supported, 206).
  "duration": 30.0, "bpm": 120.04,
  "beat_times": [0.5, 1.0, 20.5, 21.0, 24.4], "beat_strengths": [0.9, 0.4, 0.8, 0.5, 1.0],
  "drops": [24.4], "lulls": [[4.0, 6.5]],
- "energy_curve": [0.1, 0.2], "energy_hz": 10}
+ "energy_curve": [0.1, 0.2], "energy_hz": 10,
+ "sections": [{"start": 0.0, "end": 16.0, "label": "intro", "energy": 0.31, "repeat_group": "A"},
+              {"start": 16.0, "end": 32.0, "label": "chorus", "energy": 0.8, "repeat_group": "B"}]}
 ```
-`peaks` is a flat list `[min0, max0, min1, max1, ...]`, 4000 pairs (8000 numbers) spanning the whole song, values -1..1. No raw audio is ever returned. `beat_strengths[i]` (0-1) belongs to `beat_times[i]`. `beat_times`, `drops` (the drop times) and `lulls` are absolute song time in seconds.
+`sections` is the song structure (empty list if it could not be computed): contiguous, covering 0..duration, boundaries snapped to bar starts (downbeats via `bar_phase`). `label` is one of `intro|verse|pre|chorus|bridge|breakdown|drop|outro`; sections with the same `repeat_group` ("A", "B", ...) are repeats of each other (similar chroma + timbre). `energy` is the mean 0-1 energy curve over the section. Found from a bar-synchronous self-similarity matrix (chroma + MFCC), a checkerboard novelty curve, and average-linkage clustering; labels come from energy, position and repetition (most repeated high-energy group = chorus). Songs with fewer than 8 bars get one `verse` section. `peaks` is a flat list `[min0, max0, min1, max1, ...]`, 4000 pairs (8000 numbers) spanning the whole song, values -1..1. No raw audio is ever returned. `beat_strengths[i]` (0-1) belongs to `beat_times[i]`. `beat_times`, `drops` (the drop times) and `lulls` are absolute song time in seconds.
 
 ## GET /api/pump?path=&boom=40&decay=180&drops_only=false&fps=30&shake=false&start=0&duration=
 `boom` 0-100 (0 = off), `decay` ms 50-400, `start`/`duration` select the song-time window (omit `duration` = whole song). Keyframe `t` is WINDOW-RELATIVE seconds (`t = i/fps`, t=0 at song time `start`; song time = `start + t`), which is what a clip-relative Resolve export wants.
@@ -129,7 +131,7 @@ A client can handle both: if `status == "done"` use it, else poll.
 If a video has an embedded audio track it is decoded (PyAV, no system ffmpeg) to `.cache/extracted/<sha12>.wav` and offered as a scoring source. `video` gains `has_audio: bool`, `original_audio: {path, name: "Original audio (<video name>)"}` (absent when no audio) and, if decoding failed, `audio_error`. Every entry in `results` / `too_short` / `skipped` carries `source: "original" | "song"`. The original is already aligned to the video, so it is scored at the fixed offset 0 (`best_offset_s: 0`) when its duration >= video duration - 0.5 s, otherwise it lands in `too_short`. It is ranked alongside the songs. Its `path` works in `/api/audio`, `/api/waveform`, `/api/splice`, `/api/render-audio`.
 
 ### POST /api/analyze-video
-Body: `{"video_path": str}`. The video must be under `.uploads/` or a previously scanned video (else 403; bad Origin 403; undecodable video 422). Returns `{"video_path": "<resolved>", "video": {...}}` where `video` is the same object as the `video` section of a scan (`duration`, `fps`, `motion_tempo_bpm`, `cut_times`, `cut_count`, `energy_curve`, `energy_hz`, `segments`, `lulls`, `peak_segments`, `shots`, `peak_count`). Synchronous; the result is cached in memory per video, so repeat calls are instant.
+Body: `{"video_path": str}`. The video must be under `.uploads/` or a previously scanned video (else 403; bad Origin 403; undecodable video 422). Returns `{"video_path": "<resolved>", "video": {...}}` where `video` is the same object as the `video` section of a scan (`duration`, `fps`, `motion_tempo_bpm`, `cut_times`, `cut_count`, `energy_curve`, `energy_hz`, `segments`, `segments_struct`, `lulls`, `peak_segments`, `shots`, `peak_count`). `segments_struct` is a coarser phrase-level list `[{start, end, kind: calm|build|peak, energy}]` covering 0..duration, every block >= 2 s (shorter fine segments are merged into the neighbour with the closest energy). Synchronous; the result is cached in memory per video, so repeat calls are instant.
 
 ### GET /api/uploads
 Totals cover `.uploads/` plus `.exports/`:

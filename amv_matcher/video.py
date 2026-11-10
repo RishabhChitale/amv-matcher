@@ -234,6 +234,7 @@ def analyze_video(path: str) -> dict:
         "energy_curve": [round(float(v), 3) for v in energy],
         "energy_hz": curves.HZ,
         "segments": curves.label_segments(energy),
+        "segments_struct": struct_segments(curves.label_segments(energy), duration, energy),
         "lulls": curves.find_lulls(energy),
         "peak_segments": curves.find_peak_segments(energy),
         "shots": shots,
@@ -263,4 +264,66 @@ def _shots(cut_times, duration, energy, curve, fps):
             "mean_energy": round(float(e.mean()), 3), "peak_energy": round(float(e.max()), 3),
             "motion_tempo_bpm": round(motion_tempo(c, fps), 1) if len(c) >= 24 else 0.0,
         })
+    return out
+
+
+STRUCT_MIN_S = 2.0
+
+
+def struct_segments(segs, duration: float, energy, min_s: float = STRUCT_MIN_S):
+    """Phrase-level video segments covering [0, duration]: [{start, end, kind calm|build|peak, energy}].
+
+    Merges the fine calm/build/peak segments: each fine segment takes its own kind (gaps are
+    'build' when the energy rises into the next block, else 'calm'), neighbours of one kind join,
+    and any block shorter than `min_s` is absorbed by its more energetic-matching neighbour."""
+    hz = curves.HZ
+    energy = np.asarray(energy, dtype=float)
+    duration = float(duration)
+    if duration <= 0:
+        return []
+    kinds = {"calm": 0, "build": 1, "peak": 2}
+    step = 0.1
+    n = max(1, int(round(duration / step)))
+    lab = np.full(n, -1, dtype=int)
+    for s in sorted(segs, key=lambda s: kinds.get(s["label"], 0)):      # peak overrides build overrides calm
+        a, b = int(round(s["start"] / step)), int(round(s["end"] / step))
+        lab[max(0, a):min(n, b)] = kinds.get(s["label"], 0)
+    for i in range(n):                                                   # gaps: plain calm
+        if lab[i] < 0:
+            lab[i] = 0
+    blocks = []
+    for i, k in enumerate(lab):
+        if blocks and blocks[-1][2] == k:
+            blocks[-1][1] = i + 1
+        else:
+            blocks.append([i, i + 1, int(k)])
+    def _e(a, b):
+        seg = energy[int(a * step * hz):max(int(a * step * hz) + 1, int(b * step * hz))]
+        return float(seg.mean()) if len(seg) else 0.0
+    changed = True
+    while changed and len(blocks) > 1:
+        changed = False
+        short = [i for i, b in enumerate(blocks) if (b[1] - b[0]) * step < min_s - 1e-9]
+        if not short:
+            break
+        i = min(short, key=lambda j: blocks[j][1] - blocks[j][0])
+        cand = [j for j in (i - 1, i + 1) if 0 <= j < len(blocks)]
+        me = _e(blocks[i][0], blocks[i][1])
+        j = min(cand, key=lambda j: abs(_e(blocks[j][0], blocks[j][1]) - me))
+        blocks[j][0], blocks[j][1] = min(blocks[j][0], blocks[i][0]), max(blocks[j][1], blocks[i][1])
+        del blocks[i]
+        merged = []
+        for b in blocks:
+            if merged and merged[-1][2] == b[2]:
+                merged[-1][1] = b[1]
+            else:
+                merged.append(b)
+        blocks = merged
+        changed = True
+    out = []
+    for a, b, k in blocks:
+        t0, t1 = round(a * step, 3), round(b * step, 3)
+        out.append({"start": t0, "end": t1 if b < n else round(duration, 3),
+                    "kind": ("calm", "build", "peak")[k], "energy": round(_e(a, b), 3)})
+    out[0]["start"] = 0.0
     return out

@@ -20,7 +20,7 @@ from . import paths as _paths
 CACHE_PATH = _paths.CACHE / "songs.json"
 WF_DIR = CACHE_PATH.parent / "wf"
 WF_POINTS = 4000
-CACHE_VERSION = "v4"
+CACHE_VERSION = "v5"
 GRID_MAX_FIT_MS = 70.0     # use the constant-tempo grid when the robust beat residual is below this
 GRID_MAX_DRIFT_MS = 100.0   # ...and no 16-beat window drifts further than this from the line
 GRID_MIN_BEATS = 8
@@ -176,6 +176,11 @@ def _compute(path: str):
         "drops": curves.find_drops(energy),
         "lulls": curves.find_lulls(energy),
     }
+    from .structure import analyze_structure
+    try:
+        result["sections"] = analyze_structure(y, sr, result)
+    except Exception:          # structure is an extra; never fail the analysis over it
+        result["sections"] = []
     return result, waveform_peaks(y)
 
 

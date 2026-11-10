@@ -98,7 +98,7 @@ def _full_video(vp: Path) -> dict:
 
 def _video_info(video: dict) -> dict:
     info = {k: video[k] for k in ("duration", "fps", "motion_tempo_bpm", "energy_curve",
-                                  "energy_hz", "segments", "lulls", "peak_segments",
+                                  "energy_hz", "segments", "segments_struct", "lulls", "peak_segments",
                                   "cut_times", "shots")}
     info["has_audio"] = bool(video.get("has_audio"))
     info["original_audio"] = video.get("original_audio")
@@ -263,7 +263,8 @@ def waveform(path: str):
     return {"peaks": song_waveform(str(p)), "duration": song["duration"], "bpm": song["bpm"],
             "beat_times": song["beat_times"], "drops": song["drops"], "lulls": song["lulls"],
             "beat_strengths": song.get("beat_strengths", []),
-            "energy_curve": song["energy_curve"], "energy_hz": song["energy_hz"]}
+            "energy_curve": song["energy_curve"], "energy_hz": song["energy_hz"],
+            "sections": song.get("sections", [])}
 
 
 class ScoreRequest(BaseModel):
