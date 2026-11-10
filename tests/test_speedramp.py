@@ -79,3 +79,25 @@ def test_ramp_smoother_than_step_and_constraints():
     w = np.asarray(r["warp"])
     assert np.all(np.diff(w[:, 0]) > 0) and np.all(np.diff(w[:, 1]) > 0)
     assert abs(apply_warp(vid, r["warp"])["duration"] - r["out_duration"]) < 0.05
+
+
+def test_anchored_mode_smooth_and_bounded():
+    song = make_song()
+    vid = make_video(_ramp_cuts(0.57, 0.46), duration=28.0)
+    r = SR.plan_ramps(song, vid, 0.0, 0.25, mode="anchored")
+    assert "anchored" in r and r["anchored"]["n_anchors"] >= 3
+    warp = np.asarray(r["warp"])
+    assert np.all(np.diff(warp[:, 0]) > 0) and np.all(np.diff(warp[:, 1]) > 0)
+    st = SR.stats(warp)
+    assert st["max_jump"] < 0.03                                   # no instant speed steps
+    assert st["max_accel"] <= 0.5 * 1.15
+    lo, hi = r["speed_range"]
+    assert lo >= 0.75 - 1e-6 and hi <= 1.25 + 1e-6
+    assert r["sync_after"] >= r["sync_before"]
+
+
+def test_anchored_mode_does_not_regress_coord_mode_default():
+    song = make_song()
+    vid = make_video(_ramp_cuts(0.58, 0.58), duration=28.0)
+    a = SR.plan_ramps(song, vid, 0.0, 0.25)
+    assert "anchored" not in a                                     # default mode is unchanged

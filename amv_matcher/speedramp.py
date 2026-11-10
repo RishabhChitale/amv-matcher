@@ -424,20 +424,212 @@ def _objective(song, video, offset, lead_s, tight_weight=TIGHT_WEIGHT):
     return ev
 
 
+# --- anchored planner: hold speed through every event->beat anchor, ramp only between -----------------
+
+def _grid_targets(song, offset, lead, grid):
+    ref = np.asarray(S._beats(song), dtype=float) - float(offset) - lead
+    if grid == "half_beat" and len(ref) > 1:
+        ref = np.sort(np.concatenate([ref, (ref[:-1] + ref[1:]) / 2]))
+    return ref
+
+
+def select_anchors(ev_t, ev_w, targets, step_warp, lo, hi, win_s=0.3, max_skip=3, rate_w=40.0, pos_w=8.0):
+    """Choose a weighted-max chain of (event src time, grid out time) anchors: consecutive anchors imply a speed in
+    [lo, hi] (the virtual anchor (0,0) starts the chain); candidates for each event are grid points within win_s
+    of where the step plan puts it, and an anchor is charged for straying from the step plan's local speed/position."""
+    order = np.argsort(ev_t)
+    e = np.asarray(ev_t, dtype=float)[order]
+    w = np.asarray(ev_w, dtype=float)[order]
+    w = w / max(w.sum(), 1e-12)
+    sw = np.asarray(step_warp, dtype=float)
+    ws = np.interp(e, sw[:, 0], sw[:, 1])
+    cands = []
+    for i in range(len(e)):
+        c = targets[(np.abs(targets - ws[i]) <= win_s) & (targets > 0.05)]
+        cands.append(c if e[i] > 0.05 else np.zeros(0))
+    NEG = -1e18
+    best = [np.full(len(c), NEG) for c in cands]
+    back = [[None] * len(c) for c in cands]
+    for i in range(len(e)):
+        for k, b in enumerate(cands[i]):
+            gain = 100.0 * w[i] - pos_w * abs(b - ws[i])
+            r0 = e[i] / b
+            if lo - 1e-9 <= r0 <= hi + 1e-9:
+                best[i][k], back[i][k] = gain - rate_w * abs(r0 - e[i] / max(ws[i], 1e-6)), None
+            for j in range(max(0, i - 1 - max_skip), i):
+                if e[i] - e[j] < 0.05:
+                    continue
+                rs = (e[i] - e[j]) / max(ws[i] - ws[j], 1e-6)
+                for m, bm in enumerate(cands[j]):
+                    if best[j][m] <= NEG / 2 or b - bm < 0.05:
+                        continue
+                    r = (e[i] - e[j]) / (b - bm)
+                    if not (lo - 1e-9 <= r <= hi + 1e-9):
+                        continue
+                    v = best[j][m] + gain - rate_w * abs(r - rs)
+                    if v > best[i][k]:
+                        best[i][k], back[i][k] = v, (j, m)
+    top, at = NEG, None
+    for i in range(len(e)):
+        for k in range(len(cands[i])):
+            if best[i][k] > top:
+                top, at = best[i][k], (i, k)
+    out = []
+    while at is not None:
+        i, k = at
+        out.append((float(e[i]), float(cands[i][k]), float(w[i])))
+        at = back[i][k]
+    return out[::-1]
+
+
+def _seg_times(sp, e, hold, ease_fn, K=40):
+    """Output seconds spent in each source gap [e_i, e_i+1] when speed holds `hold` (src s) at both ends and
+    eases between (sp[i] -> sp[i+1]) in the middle. Vectorised midpoint quadrature."""
+    G = np.diff(e)
+    h = np.minimum(hold, 0.3 * G)
+    u = (np.arange(K) + 0.5) / K
+    x = G[:, None] * u[None, :]
+    z = np.clip((x - h[:, None]) / np.maximum(G - 2 * h, 1e-9)[:, None], 0.0, 1.0)
+    a = sp[:-1, None]
+    speed = a + (sp[1:, None] - a) * ease_fn(z)
+    return (G / K) * np.sum(1.0 / speed, axis=1)
+
+
+def solve_anchor_speeds(e, b, lo, hi, max_accel, ease, hold=0.05, sigma_s=0.012, lam_smooth=0.6, lam_dev=0.05,
+                        lam_acc=20.0, w=None):
+    """Regularised least squares for the plateau speed at each anchor (e[0],b[0] = (0,0)). Residual = how far the
+    cumulative output time at each anchor lands from its beat; penalties: speed steps (smoothness), distance from 1,
+    and ramps steeper than max_accel (output-time width of a ramp = gap / speed)."""
+    from scipy.optimize import least_squares
+    fn, slope = _ease(ease)
+    e = np.asarray(e, float)
+    b = np.asarray(b, float)
+    n = len(e)
+    G = np.diff(e)
+    h = np.minimum(hold, 0.3 * G)
+    wt = np.ones(n - 1)
+    if w is not None:                       # heavier events pull harder (mean weight 1, floor 0.5)
+        ww = np.asarray(w[1:], float)
+        wt = np.maximum(0.5, ww / max(ww.mean(), 1e-9))
+
+    def res(sp):
+        cum = np.cumsum(_seg_times(sp, e, hold, fn)) - b[1:]
+        r1 = wt * cum / sigma_s
+        ds = np.diff(sp)
+        r2 = lam_smooth * ds / 0.03
+        avg = 0.5 * (sp[1:] + sp[:-1])
+        t_ramp = np.maximum(G - 2 * h, 1e-3) / avg
+        viol = np.maximum(0.0, slope * np.abs(ds) / t_ramp - max_accel) / max_accel
+        return np.concatenate([r1, r2, lam_acc * viol, lam_dev * (sp - 1.0) / 0.1])
+
+    x0 = np.clip(np.append(G / np.maximum(np.diff(b), 1e-6), 1.0), lo, hi)     # implied gap speeds, last repeated
+    x0 = np.clip(np.concatenate([[x0[0]], x0[:n - 1]]), lo, hi)
+    sol = least_squares(res, x0, bounds=(lo, hi), method="trf", max_nfev=200)
+    cum = np.cumsum(_seg_times(sol.x, e, hold, fn)) - b[1:]
+    return sol.x, np.concatenate([[0.0], cum])
+
+
+def anchored_points(e, speeds, vd, hold, ease_max_s=EASE_MAX_S):
+    """Speed points from anchor times + plateau speeds: plateau i holds `hold` src-s either side of anchor i, ramps
+    fill the rest of each gap (each point's ease is centred on its gap)."""
+    G = np.diff(e)
+    h = np.minimum(hold, 0.3 * G)
+    pts = [{"t_src": 0.0, "speed": float(speeds[0]), "ease_in_s": 0.0, "ease_out_s": 0.0}]
+    for i in range(1, len(e)):
+        half = max(0.0, 0.5 * (G[i - 1] - 2 * h[i - 1]))
+        mid = e[i - 1] + h[i - 1] + half
+        pts.append({"t_src": float(mid), "speed": float(speeds[i]), "ease_in_s": float(half), "ease_out_s": float(half)})
+    return pts
+
+
+def plan_anchored(song, video, offset, step, *, max_speed_dev=0.25, max_accel=MAX_ACCEL, ease="smoothstep",
+                  ease_max_s=EASE_MAX_S, lead=None, grid=None, hold_s=0.05, sigma_s=0.012, lam_smooth=0.6,
+                  win_s=0.3, drop_iters=2, drop_ms=30.0, **_unused):
+    """Anchor-hold ramps: lock events to the grid like the step plan, but with a continuous eased speed curve.
+    Returns (points, info)."""
+    vd = float(video["duration"])
+    lo, hi = 1.0 - max_speed_dev, 1.0 + max_speed_dev
+    lead = S._lead(lead)
+    if grid is None:
+        grid = S.tightness(song, R.apply_warp(video, step["warp"]), offset, lead).get("grid", "beat")
+    targets = _grid_targets(song, offset, lead, grid)
+    ev_t, ev_w = S._events(video)
+    anchors = select_anchors(ev_t, ev_w, targets, step["warp"], lo, hi, win_s=win_s)
+    info = {"grid": grid, "n_events": int(len(ev_t)), "n_candidates_chain": len(anchors), "dropped": 0}
+    if len(anchors) < 2:
+        return [{"t_src": 0.0, "speed": 1.0, "ease_in_s": 0.0, "ease_out_s": 0.0}], info
+    cur = anchors
+    for it in range(drop_iters + 1):
+        e = np.array([0.0] + [a[0] for a in cur])
+        b = np.array([0.0] + [a[1] for a in cur])
+        w = np.array([0.0] + [a[2] for a in cur])
+        sp, err = solve_anchor_speeds(e, b, lo, hi, max_accel, ease, hold=hold_s, sigma_s=sigma_s,
+                                      lam_smooth=lam_smooth, w=w)
+        bad = np.abs(err[1:]) * 1000.0 > drop_ms
+        if it == drop_iters or not bad.any():
+            break
+        info["dropped"] += int(bad.sum())
+        cur = [a for a, x in zip(cur, bad) if not x]
+        if len(cur) < 2:
+            break
+    info["n_anchors"] = len(cur)
+    info["anchor_err_ms_median"] = round(float(np.median(np.abs(err[1:])) * 1000.0), 1) if len(err) > 1 else None
+    info["anchor_err_ms_p90"] = round(float(np.percentile(np.abs(err[1:]) * 1000.0, 90)), 1) if len(err) > 1 else None
+    pts = anchored_points(e, sp, vd, hold_s, ease_max_s)
+    return pts, info
+
+
+def _finish(song, video, offset, lead, step, pts, ease, max_speed_dev, max_accel, extra=None):
+    """Score + package a points plan (shared by the coordinate-descent and anchored planners)."""
+    vd = float(video["duration"])
+    full, sarr = warp_from_points(pts, vd, ease)
+    wv = R.apply_warp(video, full)
+    after = S.score_at(song, wv, offset, lead_s=lead)
+    base = S.score_at(song, R.apply_warp(video, step["warp"]), offset, lead_s=lead)
+    orig = S.score_at(song, video, offset, lead_s=lead)
+    step_ = int(max(1, round(GRID_HZ / WARP_HZ)))
+    idx = np.unique(np.append(np.arange(0, len(full), step_), len(full) - 1))
+    wsamp = [[round(float(full[i, 0]), 3), round(float(full[i, 1]), 4)] for i in idx]
+    cstep = int(max(1, round(GRID_HZ / SAMPLE_HZ)))
+    cidx = np.unique(np.append(np.arange(0, len(full), cstep), len(full) - 1))
+    curve = [[round(float(full[i, 0]), 3), round(float(full[i, 1]), 3), round(float(sarr[i]), 4)] for i in cidx]
+    out = {
+        "points": [{"t_src": round(p["t_src"], 3), "speed": round(p["speed"], 4),
+                    "ease_in_s": round(p["ease_in_s"], 3), "ease_out_s": round(p["ease_out_s"], 3)} for p in pts],
+        "curve": curve, "warp": wsamp, "out_duration": round(float(full[-1, 1]), 3),
+        "ease": ease, "max_speed_dev": max_speed_dev, "max_accel": max_accel,
+        "sync_before": orig["sync_pct"], "sync_step": base["sync_pct"], "sync_after": after["sync_pct"],
+        "total_before": orig["total_pct"], "total_step": base["total_pct"], "total_after": after["total_pct"],
+        "tight_step": base["tightness"], "tight_after": after["tightness"],
+        "smooth_step": stats(step["warp"]), "smooth_ramp": stats(full),
+        "speed_range": [round(float(sarr.min()), 3), round(float(sarr.max()), 3)],
+        "step": step,
+    }
+    if extra:
+        out.update(extra)
+    return out
+
+
 def plan_ramps(song: dict, video: dict, offset: float, max_speed_dev: float = 0.25,
                max_accel: float = MAX_ACCEL, ease: str = "smoothstep", ease_max_s: float = EASE_MAX_S,
                lead_s: float = None, *, step_plan: dict = None, optimize_points: bool = True,
-               should_cancel=None, extra_targets=None) -> dict:
+               should_cancel=None, extra_targets=None, mode: str = "coord", **anchored_kw) -> dict:
     """Eased speed-point plan for `video` against `song` at `offset`.
 
-    Starts from retime.plan_retime's event placement (step_plan, computed if not given), re-expresses it as
-    plateaus + eased ramps, then optimizes speeds/boundaries/splits against the real sync+arc+tempo score.
+    mode="coord": start from retime.plan_retime's event placement (step_plan, computed if not given),
+    re-express it as plateaus + eased ramps, then optimize speeds/boundaries/splits against the real
+    sync+arc+tempo score. mode="anchored": hold a constant speed through every event->beat anchor and ramp only
+    between anchors (see plan_anchored); anchored_kw are its knobs (sigma_s, lam_smooth, hold_s, snap_s, ...).
     Returns {points, curve, warp, out_duration, sync_before, sync_step, sync_after, total_step, total_after,
     smooth_step, smooth_ramp, ...}; `warp` is sampled at WARP_HZ and feeds retime.apply_warp / the renderer."""
     vd = float(video["duration"])
     lead = S._lead(lead_s)
     step = step_plan or R.plan_retime(song, video, offset, max_speed_dev, lead_s=lead_s,
                                       should_cancel=should_cancel, extra_targets=extra_targets)
+    if mode == "anchored":
+        pts, info = plan_anchored(song, video, offset, step, max_speed_dev=max_speed_dev, max_accel=max_accel,
+                                  ease=ease, ease_max_s=ease_max_s, lead=lead, **anchored_kw)
+        return _finish(song, video, offset, lead, step, pts, ease, max_speed_dev, max_accel, {"anchored": info})
     lo, hi = 1.0 - max_speed_dev, 1.0 + max_speed_dev
     _fn, slope = _ease(ease)
     evaluate = _objective(song, video, offset, lead)
@@ -468,29 +660,7 @@ def plan_ramps(song: dict, video: dict, offset: float, max_speed_dev: float = 0.
     _j, speeds, bounds = best
     speeds, bounds = _merge_flat(speeds, bounds)
     pts = points_from(speeds, bounds, vd, max_accel, ease_max_s, ease)
-    full, sarr = warp_from_points(pts, vd, ease)
-    wv = R.apply_warp(video, full)
-    after = S.score_at(song, wv, offset, lead_s=lead)
-    base = S.score_at(song, R.apply_warp(video, step["warp"]), offset, lead_s=lead)
-    orig = S.score_at(song, video, offset, lead_s=lead)
-    step_ = int(max(1, round(GRID_HZ / WARP_HZ)))
-    idx = np.unique(np.append(np.arange(0, len(full), step_), len(full) - 1))
-    wsamp = [[round(float(full[i, 0]), 3), round(float(full[i, 1]), 4)] for i in idx]
-    cstep = int(max(1, round(GRID_HZ / SAMPLE_HZ)))
-    cidx = np.unique(np.append(np.arange(0, len(full), cstep), len(full) - 1))
-    curve = [[round(float(full[i, 0]), 3), round(float(full[i, 1]), 3), round(float(sarr[i]), 4)] for i in cidx]
-    return {
-        "points": [{"t_src": round(p["t_src"], 3), "speed": round(p["speed"], 4),
-                    "ease_in_s": round(p["ease_in_s"], 3), "ease_out_s": round(p["ease_out_s"], 3)} for p in pts],
-        "curve": curve, "warp": wsamp, "out_duration": round(float(full[-1, 1]), 3),
-        "ease": ease, "max_speed_dev": max_speed_dev, "max_accel": max_accel,
-        "sync_before": orig["sync_pct"], "sync_step": base["sync_pct"], "sync_after": after["sync_pct"],
-        "total_before": orig["total_pct"], "total_step": base["total_pct"], "total_after": after["total_pct"],
-        "tight_step": base["tightness"], "tight_after": after["tightness"],
-        "smooth_step": stats(step["warp"]), "smooth_ramp": stats(full),
-        "speed_range": [round(float(sarr.min()), 3), round(float(sarr.max()), 3)],
-        "step": step,
-    }
+    return _finish(song, video, offset, lead, step, pts, ease, max_speed_dev, max_accel)
 
 
 def ramp_directions(points, vd=None):
