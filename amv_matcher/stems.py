@@ -135,7 +135,8 @@ def separate_demucs(song_path, out: Path, progress=None, cancel=None, proc_holde
         progress(0.01, "Decoding song")
     _write(src, _load_stereo(song_path))
     TORCH_HOME.mkdir(parents=True, exist_ok=True)
-    env = dict(os.environ, TORCH_HOME=str(TORCH_HOME), PYTHONUNBUFFERED="1", OMP_NUM_THREADS=str(os.cpu_count() or 4))
+    env = dict(os.environ, TORCH_HOME=str(TORCH_HOME), PYTHONUNBUFFERED="1", OMP_NUM_THREADS=str(os.cpu_count() or 4),
+               AMV_DEMUCS_JOBS=os.environ.get("AMV_DEMUCS_JOBS", "4"))   # 4 worker processes: 162 s vs 755 s on a 233 s song, identical stems
     runner = Path(__file__).with_name("_demucs_runner.py")
     tmp = out / "_tmp"
     shutil.rmtree(tmp, ignore_errors=True)

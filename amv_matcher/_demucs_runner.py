@@ -3,6 +3,7 @@
 usage: python _demucs_runner.py in.wav out_dir
 Prints 'PROGRESS <0..1>' lines on stdout; weights are cached under TORCH_HOME (set by the parent).
 """
+import os
 import re
 import sys
 from pathlib import Path
@@ -15,10 +16,14 @@ def main(src, out_dir):
     from demucs.apply import apply_model
     from demucs.pretrained import get_model
 
+    jobs = int(os.environ.get("AMV_DEMUCS_JOBS", "0") or 0)       # apply_model num_workers (0 = in-process)
+    seg = float(os.environ.get("AMV_DEMUCS_SEGMENT", "0") or 0)   # seconds per chunk; 0 = model default
     torch.set_num_threads(max(1, torch.get_num_threads()))
     print("PROGRESS 0.02 loading-model", flush=True)
     model = get_model("htdemucs")
     model.eval()
+    if seg > 0:
+        model.segment = min(seg, float(model.segment))
     wav, sr = sf.read(src, dtype="float32", always_2d=True)   # (n, ch)
     assert sr == model.samplerate, (sr, model.samplerate)
     x = torch.from_numpy(np.ascontiguousarray(wav.T))
@@ -42,7 +47,7 @@ def main(src, out_dir):
     ap.tqdm.tqdm = _Bar
     with torch.no_grad():
         out = apply_model(model, x[None], device="cpu", split=True, overlap=0.25, shifts=0,
-                          progress=True, num_workers=0)[0]
+                          progress=True, num_workers=jobs)[0]
     out = out * ref.std() + ref.mean()
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
