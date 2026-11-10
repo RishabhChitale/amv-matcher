@@ -280,9 +280,11 @@ def tightness(song: dict, video: dict, offset: float, lead_s: float = None) -> d
 
 
 def _pack(song, video, off, tempo_pct, rate, sync_pct, arc_pct, lead_s=None, quiet=None):
+    from . import buildup
+    bs = buildup.build_stats(song, video, off) if buildup.W_BUILD > 0 else None
     out = {
         "eligible": True,
-        "total_pct": int(round(_combine(tempo_pct, sync_pct, arc_pct))),
+        "total_pct": int(round(buildup.blend_total(_combine(tempo_pct, sync_pct, arc_pct), bs))),
         "tempo_pct": round(tempo_pct, 1),
         "sync_pct": round(sync_pct, 1),
         "arc_pct": round(arc_pct, 1),
@@ -292,6 +294,8 @@ def _pack(song, video, off, tempo_pct, rate, sync_pct, arc_pct, lead_s=None, qui
         "best_rate": rate,
         "tightness": tightness(song, video, off, lead_s),
     }
+    if bs is not None:
+        out.update(build_pct=bs["build_pct"], launch_pct=bs["launch_pct"], n_launches=bs["n_launches"], n_builds=bs["n_builds"])
     if quiet is not None:
         out["quiet_sync"] = quiet["quiet_sync_pct"]
         out["quiet_sync_beats"] = quiet["quiet_sync_beats_pct"]
