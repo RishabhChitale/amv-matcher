@@ -246,3 +246,11 @@ Range requests and polls stay fast during analysis. The non-blocking job API:
 - `POST /api/jobs/{id}/cancel`, `POST /api/jobs/{id}/bump` `{priority}` (Origin-guarded).
 - `POST /api/prewarm/pause`, `POST /api/prewarm/resume` (Origin-guarded).
 A worker crash fails only its job; results land in the normal caches, keyed by (path, size, mtime).
+
+## Projects (.amvproj)
+Module `amv_matcher/project.py`, routes in `project_api.py` (Origin-guarded). A project is JSON (`version` 1) holding the video, music dirs, sources, `in_use`, `offset`, `splice`, `autosync`, `effects`, `export` and `ui`. Media is referenced by `{path,size,mtime}`, never copied. Paths must end with `.amvproj`.
+- `POST /api/project/save` `{path, data}` writes atomically (tmp + replace) and adds it to Recent.
+- `POST /api/project/load` `{path}` -> `{data, missing:[...]}`: defaults filled for missing keys; media that is gone or whose size/mtime differs gets `missing:true`. 400 for a bad file/version, 404 if absent.
+- `GET /api/project/recent` -> `{recent:[{path,name,opened,missing}]}` (max 10, newest first).
+- `POST /api/project/relink` `{entry, roots?}` -> `{candidates:[path]}`: same name + size found under `roots` (default: the entry's old folder); hidden dirs skipped, 2000 files per root.
+- `POST /api/project/autosave` `{data}` writes `autosave/<name>.amvproj` under the app data dir.

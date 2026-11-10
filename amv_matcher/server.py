@@ -1107,3 +1107,4 @@ def auto_sync_status(job_id: str):
     if not job or "options" not in job:
         raise HTTPException(404, "Unknown job")
     return JSONResponse(job)
+from .project_api import router as project_router; app.include_router(project_router, dependencies=[Depends(_origin_guard)])
