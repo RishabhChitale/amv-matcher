@@ -118,8 +118,11 @@ def _fake_win(monkeypatch, mapping=None):
     """Simulate Windows normalisation: _is_win True, ntpath-style abspath/normcase, optional short->long map."""
     import ntpath
     mapping = mapping or {}
+    # capture originals BEFORE patching: on Windows ntpath IS os.path, so calling it inside the lambda recurses
+    orig_abspath = ntpath.abspath
+    orig_splitdrive = ntpath.splitdrive
     monkeypatch.setattr(winsafe, "_is_win", lambda: True)
-    monkeypatch.setattr(winsafe.os.path, "abspath", lambda s: ntpath.abspath(s) if ntpath.splitdrive(s)[0] else s)
+    monkeypatch.setattr(winsafe.os.path, "abspath", lambda s: orig_abspath(s) if orig_splitdrive(s)[0] else s)
     monkeypatch.setattr(winsafe.os.path, "normcase", ntpath.normcase)
     monkeypatch.setattr(winsafe, "_long_path", lambda s: next((s.replace(k, v) for k, v in mapping.items() if k in s), s))
 
