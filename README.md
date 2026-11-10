@@ -1,49 +1,47 @@
 # AMV Matcher
 
-Ranks the songs in a folder by how well they fit an AMV video: tempo, beat sync and energy arc.
-Runs locally; it serves files only to your own browser (127.0.0.1, no login, no cloud).
+A desktop app for macOS and Windows. It ranks the songs in a folder by how well they fit an AMV video, then syncs the video to the song you pick.
+Everything runs on your computer.
 
-## Quick start
-```
-./run.sh
-```
-This creates `.venv`, installs dependencies and starts the server. Open http://127.0.0.1:8765 (the script tries to open it for you). Paste the video path and the music folder path, then press Scan. Songs: .mp3 .wav .m4a .flac. Tests: `.venv/bin/python -m pytest`. Backend routes are in [docs/API.md](docs/API.md).
+## Download and install
+Get the build for your system from the GitHub Releases page of this repo (`AMV-Matcher-macos-arm.zip`, `AMV-Matcher-macos-intel.zip` or `AMV-Matcher-windows.zip`). CI also attaches each build as an artifact on every run. Unzip it and move the app where you like.
 
 ### First launch
-The packaged app is unsigned (personal use), so the OS warns the first time:
+The app is unsigned (personal use), so the OS warns the first time:
 - **macOS:** right-click `AMV Matcher.app` > Open, then confirm Open.
 - **Windows:** SmartScreen > More info > Run anyway.
 
-## Using the editor
-- **Results list**: ranked songs with a score ring, BPM and trim window; the list scrolls. Songs too short for the video are under "Too short", unreadable files under "Skipped". Clicking a row loads that song onto A1 at its best offset. It does not autoplay: press Space or Play to hear it in sync with the video.
-- **Timeline**: V1 shows the video's energy curve as a filled area, cuts as thin ticks, and calm/peak segments as tinted bands. A1 shows the selected song's waveform, beat ticks, drops as glowing diamonds, and a thin pump lane underneath.
-- **Song offset**: drag the song clip on A1 to set a manual offset. The score updates live and the result's trim row shows the new window marked "(manual)".
-- **Effects panel**: Boom (0-100, default 40) sets pulse strength; Decay (50-400 ms, default 180) sets how fast it fades; Drops only ignores ordinary beats; Shake jolts the picture on drops. Drops also flash the video brighter. Preview only for now; `GET /api/pump` returns the same pulses as keyframes. These settings are remembered in the browser between visits (Boom starts at 0 if your system asks for reduced motion).
-- **Select, delete, undo**: click the V1 area (or the player) to select the video clip, or the A1 clip to select the audio; Esc or a click on empty space deselects. Backspace/Delete (or the x on the clip) removes the selection from the editor view only; songs stay in the sources list and in `.uploads/`. Removing audio leaves A1 empty and disables Fit; removing the video greys the scores ("needs a video") until you drop or browse a new video, which rescores everything. A toast with Undo (6 s) or Cmd/Ctrl+Z restores the clip, its offset, In use and scores.
-- **Linking**: a video and its own original audio are linked by default (chain icons on V1/A1, toggle in the transport bar, Cmd+Opt+L): selecting or deleting either acts on both, and one Undo restores both. Unlink to remove just one; the original audio stays locked at offset 0. Regular songs are never linked.
-- **Formats**: if the browser can't play the video (.mkv and some others), the player shows "This format can't preview in the browser; scores still work."
-- **Keys**: Space play/pause; Left/Right one frame; Shift+Left/Right one second; J slower, K pause, L faster.
+## The main workflow
+1. **New match** (opens on first launch, or Cmd/Ctrl+N): pick a video and a music folder, then press Find best songs.
+2. The **match results list** shows every song with a fit %. Press Space to preview one.
+3. Press **Use this audio** on a song (or Enter). It loads on A1 at its best start.
+4. Press **Auto-sync to 100%**. The app retimes, splices and arranges to raise the fit, within your guardrails.
+5. **Export video** (.mp4) or **Export to Resolve** (a DaVinci Resolve bundle).
+
+A step-by-step guide to every panel is in [docs/USER-GUIDE.md](docs/USER-GUIDE.md).
+
+## Features
+- **Media library:** your files are used in place, from folders you add; shows download sources and thumbnails.
+- **Scoring:** tempo, beat sync and energy arc, 0-100 per song ([how it works](docs/HOW-SCORING-WORKS.md)).
+- **Auto-sync:** tries tools in turn and keeps what helps; guardrails limit speed change, tempo stretch and cuts; a cut lead sets how early cuts land before the beat.
+- **Smart splice and section arrangement:** cuts the song on bars and reorders its sections to fit the video.
+- **Retime and frame generation:** slows or speeds sections of the video; fills slowed frames by blend (fast) or RIFE (high quality).
+- **Stems and the stem player:** split the song into vocals, drums, bass and other; play and view them as lanes under A1.
+- **Boom effects:** a pulse (and optional shake) on beats and drops, in the preview.
+- **Projects:** `.amvproj` files with save, load, relink and autosave (file support is in; the in-app menu is coming soon).
+- **Resolve export:** FCPXML timeline with retime clips, markers and an AMV Pump Fusion effect. Not yet tested in Resolve.
+
+## Building from source
+- **Dev:** `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`, then `.venv/bin/python app_main.py`.
+- **Stems (optional):** Demucs needs its own venv, see `requirements-stems.txt`. The packaged app leaves it out; an in-app installer is coming soon.
+- **Packaging:** `pip install -r requirements-dev.txt`, then `python -m PyInstaller --noconfirm amv_matcher.spec`. The result is in `dist/`.
+- **CI:** `.github/workflows/build.yml` runs the tests, builds on macOS (Intel and Apple Silicon) and Windows, runs `--selftest` on the built app and zips the result. Pushing a `v*` tag attaches the zips to a release.
+- Backend routes: [docs/API.md](docs/API.md). Open items: [docs/LEFTOVERS.md](docs/LEFTOVERS.md).
 
 ## Testing
-- `.venv/bin/python -m pytest`
-- `.venv/bin/python tools/ui_smoke.py` drives the UI in headless Chrome and prints PASS/FAIL per check. It needs Google Chrome installed and the server running (`./run.sh`).
+- `.venv/bin/python -m pytest` runs the unit and API tests. Real-media and env-gated tests skip themselves.
+- `.venv/bin/python tools/ui_smoke.py` drives the UI in headless Chrome and prints PASS/FAIL per check. It needs Google Chrome installed.
+- `.venv/bin/python tools/real_suite.py` runs the scorer and auto-sync on real media. It reads a local, untracked `real_cases.json` that lists your videos and songs.
 
-## How the score works
-`total = 0.20 * tempo + 0.60 * sync + 0.20 * arc`, each 0-100.
-- **Tempo (20%)**: song BPM vs the video's tempo, half/double time allowed.
-- **Sync (60%)**: how sharply the video's cuts and motion peaks lock to the song's beat at this alignment, compared with the same song slightly shifted or re-tempoed. A song that only fits at its exact tempo and offset scores high; one that fits equally well at wrong tempos scores low.
-- **Arc (20%)**: how closely the video's energy curve follows the song's, plus bonuses for peaks on drops and calm parts on lulls.
-- **Length rule**: a song shorter than the video is ineligible (listed under "Too short"). A longer song is trimmed: the best window is chosen and shown as the trim window. The song may also start up to 3 s after the video starts (a negative offset).
-- **Original audio**: if the video's own soundtrack is in the folder it is scored at offset 0 only, and every other song shows its difference from it ("vs original").
-
-Details, constants and how we checked it: [docs/HOW-SCORING-WORKS.md](docs/HOW-SCORING-WORKS.md).
-
-## Known limits
-- .mkv and some other formats may not preview in the browser; scores still work.
-- No ffmpeg is used or required, so there is no transcoding or export of media.
-- Analysis takes time: the first run is slow (librosa/numba start-up) and a 3-minute song takes about 11 s cold. Results are cached in `.cache/`.
-- Beat tracking is librosa-based; very ambient or rubato music scores poorly.
-
-## Roadmap
-1. Auto-splice the video's shots to fit the song (cuts landing on beats, high-energy shots on drops).
-2. DaVinci Resolve FREE export: an "AMV Pump" Fusion effect with baked keyframes, plus an FCPXML timeline with beat and drop markers.
+## Privacy
+Everything is local. Nothing is uploaded. Your media is never copied: the app reads files where they are, and keeps only small caches (analysis, thumbnails, proxies) and exports in its own data folder. The one network use is the optional download of RIFE or Demucs, which you start yourself.
