@@ -1,0 +1,3 @@
+#dnd{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:999px;border:1px solid rgba(255,255,255,.15);background:transparent;color:inherit;opacity:.6;cursor:pointer;font:inherit;font-size:12px;white-space:nowrap}
+#dnd svg{width:14px;height:14px}
+#dnd.on{opacity:1;color:#ffb454;border-color:#ffb454;background:rgba(255,180,84,.12)}
