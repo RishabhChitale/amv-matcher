@@ -16,7 +16,7 @@ def test_slow_drift_fixed():
 
 
 def test_slow_section_retimed():
-    r = auto_sync(make_song(), make_video(slow_section_cuts()), min_gain=0.05, lead_s=0.0)  # lead 0: scorer's sync term uses the bare grid; sync is near-saturated; 3 of ~50 cuts drift
+    r = auto_sync(make_song(), make_video(slow_section_cuts()), min_gain=0.05)  # sync is near-saturated; 3 of ~50 cuts drift
     assert r["final"]["sync_pct"] >= 95
     rt = r["plan"]["retime"]
     assert rt and any(abs(s["speed"] - 1.25) < 0.1 for s in rt["sections"])
@@ -151,7 +151,7 @@ def _auto(name):
     """auto_sync result per fixture, computed once for the whole module."""
     if name not in _AUTO:
         song, vid = _fixtures()[name]
-        _AUTO[name] = auto_sync(song, vid, lead_s=0.0)
+        _AUTO[name] = auto_sync(song, vid)
     return _AUTO[name]
 
 
@@ -206,7 +206,7 @@ def test_negative_offset_auto_sync_valid_plan():
 
 
 def test_tail_ramps_to_speed_one_and_durations_reported():
-    r = auto_sync(make_song(), make_video(slow_section_cuts()), min_gain=0.05, lead_s=0.0)  # lead 0: scorer's sync term uses the bare grid; sync is near-saturated; 3 of ~50 cuts drift
+    r = auto_sync(make_song(), make_video(slow_section_cuts()), min_gain=0.05)  # sync is near-saturated; 3 of ~50 cuts drift
     assert r["final"]["video_duration_s"] == 30.0
     assert r["final"]["out_duration_s"] > 0
     rt = r["plan"]["retime"]
@@ -220,11 +220,11 @@ def test_tail_ramps_to_speed_one_and_durations_reported():
 def test_budget_prunes_but_stays_valid():
     song = make_song(90.0)
     vid = make_video(np.arange(1, 56) * 0.52, duration=30.0, tempo=115.4)
-    r = auto_sync(song, vid, budget_s=0.01, lead_s=0.0)
+    r = auto_sync(song, vid, budget_s=0.01)
     assert r["pruned"] and "budget" in r["limits_hit"]
     assert r["final"]["total_pct"] >= r["steps"][0]["score_before"] - 1
     assert "elapsed_s" in r
-    full = auto_sync(song, vid, budget_s=20.0, lead_s=0.0)
+    full = auto_sync(song, vid, budget_s=20.0)
     assert full["final"]["total_pct"] >= r["final"]["total_pct"]
 
 

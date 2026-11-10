@@ -177,7 +177,7 @@ def _sections(warp, min_section_s, speed_tol=0.02):
 
 
 def plan_retime(song: dict, video: dict, offset: float, max_speed_dev: float = 0.25,
-                min_section_s: float = 0.75, lead_s: float = 0.0) -> dict:
+                min_section_s: float = 0.75, lead_s: float = None) -> dict:
     """Warp video time so events land on the nearest suitable beats (song at `offset`).
 
     Output time t_out = song time - offset. speed = video seconds per output second.
@@ -190,9 +190,10 @@ def plan_retime(song: dict, video: dict, offset: float, max_speed_dev: float = 0
     ev_t, ev_w = ev_t[keep], ev_w[keep]
     # cuts/peaks are placed lead_s ahead of the beat (editors cut before it; score.tightness measures
     # against beat - PERCEPTUAL_LEAD_S; auto_sync passes that as lead_s). Drops/lulls keep their own, unshifted targets.
-    beats = np.asarray(song["beat_times"], dtype=float) - float(offset) - float(lead_s)
+    lead_s = S._lead(lead_s)                  # None -> scorer default, clamped like the scorer
+    beats = np.asarray(song["beat_times"], dtype=float) - float(offset) - lead_s
     beats = beats[(beats > 0) & (beats < vd / max(1e-6, 1.0 - max_speed_dev) + 1.0)]
-    before = S.score_at(song, video, offset)["sync_pct"]
+    before = S.score_at(song, video, offset, lead_s=lead_s)["sync_pct"]
     events, sync_unit, arc_unit, drops, lulls = _events_for_dp(song, video, offset, ev_t, ev_w, vd)
     anchors = _anchors(events, sync_unit, arc_unit, drops, lulls, beats, max_speed_dev, DP_JUMP) \
         if events and (len(beats) or len(drops) or lulls) else []
@@ -228,7 +229,7 @@ def plan_retime(song: dict, video: dict, offset: float, max_speed_dev: float = 0
                          "out_start": round(g[2], 3), "out_end": round(g[3], 3), "events_moved": moved,
                          "reason": "land %d event(s) on the beat grid at %.2fx" % (moved, sp)})
     wv = apply_warp(video, warp)
-    after = S.score_at(song, wv, offset)["sync_pct"]
+    after = S.score_at(song, wv, offset, lead_s=lead_s)["sync_pct"]
     return {"sections": sections, "warp": warp, "out_duration": round(float(warp[-1][1]), 3),
             "sync_before": before, "sync_after": after, "max_speed_jump": round(max_jump, 3),
             "speed_jump_ok": max_jump <= MAX_JUMP + 1e-9, "max_speed_dev": max_speed_dev}

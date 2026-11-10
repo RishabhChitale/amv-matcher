@@ -135,16 +135,16 @@ def _bonus(asm, video):
     return pts
 
 
-def _eval(song, video, segments, ncuts):
+def _eval(song, video, segments, ncuts, lead_s=None):
     vd = float(video["duration"])
     asm = _assemble(song, segments, vd)
-    r = S.score_at(asm, video, 0.0)
+    r = S.score_at(asm, video, 0.0, lead_s=lead_s)
     raw = S._combine(r["tempo_pct"], r["sync_pct"], r["arc_pct"])
     return {"r": r, "obj": raw + _bonus(asm, video) - CUT_PENALTY * ncuts}
 
 
 # ------------------------------------------------------------ DP machinery
-def _gains(song, video, bars, bt, L, g, nslots):
+def _gains(song, video, bars, bt, L, g, nslots, lead_s=None):
     """gain[s, k]: proxy score points for putting source bar k in output slot s."""
     vd = float(video["duration"])
     hz = S.ENERGY_HZ
@@ -191,7 +191,7 @@ def _gains(song, video, bars, bt, L, g, nslots):
             if not m.any():
                 continue
             t, w = ev_t[m], ev_w[m]
-            d = np.abs(t[:, None, None] - (g + s * L + off4)[None, :, :]).min(axis=2)       # (E,K)
+            d = np.abs(t[:, None, None] + S._lead(lead_s) - (g + s * L + off4)[None, :, :]).min(axis=2)       # (E,K)
             gain[s] += scale * ((d <= S.TOLERANCE_S) * w[:, None]).sum(axis=0)
 
     # drops on peaks (priority)
@@ -327,7 +327,7 @@ def _empty(reason, phase):
 
 
 def plan_splice(song: dict, video: dict, max_cuts: int, min_segment_s: float = 2.0,
-                allow_negative: bool = False) -> dict:
+                allow_negative: bool = False, lead_s: float = None) -> dict:
     """Plan: {"eligible", "segments": [{"src_start","src_end","dst_start"}], "cuts", scores...,
     "lead_silence_s"}.
 
@@ -340,14 +340,14 @@ def plan_splice(song: dict, video: dict, max_cuts: int, min_segment_s: float = 2
     phase = _bar_phase(song)
     if sd < vd:
         return _empty("song shorter than video", phase)
-    base = S.score(song, video, allow_negative=allow_negative)
+    base = S.score(song, video, allow_negative=allow_negative, lead_s=lead_s)
     if not base.get("eligible", True):
         return _empty("song shorter than video", phase)
     off = float(base["best_offset_s"])
     base_segs = _single(off, vd)
     base_total = int(base["total_pct"])
     base_res = {k: base[k] for k in ("total_pct", "tempo_pct", "sync_pct", "arc_pct")}
-    base_obj = _eval(song, video, base_segs, 0)["obj"]
+    base_obj = _eval(song, video, base_segs, 0, lead_s)["obj"]
 
     def pack(segs, r, obj):
         return {"eligible": True, "segments": segs, "cuts": _cuts(segs), "total_pct": r["total_pct"],
@@ -371,7 +371,7 @@ def plan_splice(song: dict, video: dict, max_cuts: int, min_segment_s: float = 2
     pk = _strongest_peak(video)
     if pk is not None:
         for d in song.get("drops", []):
-            o = round(round((d - pk) / 0.05) * 0.05, 2)
+            o = round(round((d - pk - S._lead(lead_s)) / 0.05) * 0.05, 2)
             if 0 <= o <= sd - min_segment_s and all(abs(o - c) > 1e-6 for c in cands):
                 cands.append(o)
     for o in cands:
@@ -382,18 +382,18 @@ def plan_splice(song: dict, video: dict, max_cuts: int, min_segment_s: float = 2
         nslots = max(1, int(math.ceil((vd - g) / L - 1e-9)))
         if nslots < 2:
             continue
-        gain = _gains(song, video, bars, bt, L, g, nslots)
+        gain = _gains(song, video, bars, bt, L, g, nslots, lead_s)
         r0 = R - 1 if g + L >= min_segment_s - 1e-9 else min(R - 1, int(math.ceil((g + L) / L - 1e-9)) - 1)
         plans = _dp(gain, int(max_cuts), R, lambda s, g=g: vd - (g + s * L) >= min_segment_s - 1e-9, (k0, r0))
         for _v, c, path in plans:
             segs = _path_to_plan(path, bars, vd, L, o)
             if len(segs) - 1 > max_cuts or not _valid(segs, vd, min_segment_s, sd):
                 continue
-            e = _eval(song, video, segs, len(segs) - 1)
+            e = _eval(song, video, segs, len(segs) - 1, lead_s)
             if e["obj"] > best[2] and e["r"]["total_pct"] >= base_total:
                 best = (segs, e["r"], e["obj"])
         # the free-trim single segment (no cuts) is also a candidate
-        e = _eval(song, video, _single(o, vd), 0)
+        e = _eval(song, video, _single(o, vd), 0, lead_s)
         if e["obj"] > best[2] and e["r"]["total_pct"] >= base_total:
             best = (_single(o, vd), e["r"], e["obj"])
     return pack(*best)
