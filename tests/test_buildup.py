@@ -45,3 +45,15 @@ def test_none_leaves_total():
 def test_never_lowers():
     assert buildup.blend_total(90.0, {"build_pct": 0.0}) == 90.0
     assert buildup.blend_total(50.0, {"build_pct": 100.0}) > 50.0
+
+
+def test_video_hits_edges_and_chorus_candidates():
+    v = {"duration": 40.0, "motion_curve": [], "energy_curve": [],
+         "segments_struct": [{"start": 0, "end": 10, "kind": "calm"}, {"start": 10, "end": 18, "kind": "peak"},
+                             {"start": 18, "end": 40, "kind": "calm"}]}
+    kinds = {(h["kind"], h["t"]) for h in buildup.video_hits(v)}
+    assert ("onset", 10.0) in kinds and ("impact", 18.0) in kinds
+    song = _song(18.0)
+    song["drops"] = []
+    song["sections"] = [{"start": 18.0, "end": 30.0, "label": "chorus", "energy": 0.9}]
+    assert any(abs(b["drop"] - 18.0) < 0.1 for b in buildup.song_buildups(song))

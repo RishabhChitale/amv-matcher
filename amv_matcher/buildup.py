@@ -22,6 +22,8 @@ MATCH_MAX_S = 0.8
 RECALL_W = 0.8
 W_LAUNCH = 0.7
 W_INTENSITY = 0.3
+EDGE_STRENGTH = 0.5
+CHORUS_LABELS = ("chorus", "drop")
 W_BUILD = 0.20                 # share of the total when build_pct applies (others scaled by 1 - W_BUILD)
 
 
@@ -92,6 +94,22 @@ def video_launches(video: dict) -> list:
     return out
 
 
+def video_hits(video: dict) -> list:
+    """[{t, strength, kind}] video moments that can hit a drop: motion launches (speed ramp ends in a peak)
+    plus the structural edges of the video's build/peak blocks (a block that starts out of calm = the
+    build-up is released; the end of a peak block = the impact the cut is held for). Real AMVs mark a
+    drop with either, so both count."""
+    out = [dict(l, kind="launch") for l in video_launches(video)]
+    segs = video.get("segments_struct") or []
+    for i, sg in enumerate(segs):
+        k = sg.get("kind")
+        if k in ("build", "peak") and i > 0 and segs[i - 1].get("kind") == "calm":
+            out.append({"t": round(float(sg["start"]), 2), "strength": EDGE_STRENGTH, "kind": "onset"})
+        if k == "peak" and i + 1 < len(segs):
+            out.append({"t": round(float(segs[i + 1]["start"]), 2), "strength": EDGE_STRENGTH, "kind": "impact"})
+    return sorted(out, key=lambda d: d["t"])
+
+
 def song_buildups(song: dict, stems_feats: dict = None) -> list:
     """[{start, drop, strength}] for each song drop that is preceded by a rising-energy ramp (2-16 s)."""
     e = _norm01(_smooth(song.get("energy_curve") or [], SMOOTH_S * HZ))
@@ -102,7 +120,13 @@ def song_buildups(song: dict, stems_feats: dict = None) -> list:
         if d and d.get("onset_strength"):
             dr = _norm01(_smooth(d["onset_strength"], 1))
     out = []
-    for d in drops:
+    # drop candidates: detected drops plus chorus-section entries (the detector can miss a drop on songs
+    # whose energy rises gradually), merged within 2 s
+    cand = list(drops)
+    for sec in song.get("sections") or []:
+        if str(sec.get("label", "")).startswith(CHORUS_LABELS) and all(abs(float(sec["start"]) - d) > 2.0 for d in cand):
+            cand.append(float(sec["start"]))
+    for d in sorted(cand):
         i = int(round(d * HZ))
         if i <= int(RAMP_MIN_S * HZ) or i >= len(e):
             continue
@@ -143,7 +167,7 @@ def build_stats(song: dict, video: dict, off: float, stems_feats: dict = None):
     """None when neither side has a build/launch. Otherwise build_pct = W_LAUNCH * launch match (strength
     weighted share of builds+launches that coincide within +-1 beat) + W_INTENSITY * speed~energy correlation."""
     vd = float(video.get("duration") or 0.0)
-    L = video_launches(video)
+    L = video_hits(video)
     B = [b for b in song_buildups(song, stems_feats) if -1.0 <= b["drop"] - off <= vd + 1.0]
     if not B:
         return None                  # nothing to build into: build_pct does not apply
