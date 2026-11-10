@@ -1,5 +1,5 @@
 -r requirements.txt
 pytest==8.4.2
 httpx==0.28.1
-websocket-client
+websocket-client==1.9.0  # was unpinned; pinned to the version installed in .venv (reason for choosing it: unknown)
 pyinstaller==6.22.3

@@ -1,3 +1,5 @@
+# All pins equal what .venv (Python 3.9.6) has installed and was tested against. Per-pin reasons are not
+# documented anywhere in the repo ('reason unknown'), except: numpy 2.0.2 here vs numpy 1.26.4 in requirements-stems.txt.
 librosa==0.11.0
 soundfile==0.13.1
 numpy==2.0.2
