@@ -192,6 +192,9 @@ def _cached_for(video_path, song_path):
         return None
 
 
+TEMPO_SWEEP_TOP = 5       # best-tempo sweep runs only for the top N ranked songs (keeps scans fast)
+
+
 def _score_songs(job: dict, video: dict, songs: list):
     """Analyze + score songs into job (results/too_short/skipped); shared by scan and score-songs."""
     job.update(stage="songs", total=len(songs), done=0)
@@ -217,8 +220,6 @@ def _score_songs(job: dict, video: dict, songs: list):
         try:
             song = _song(str(p))
             sc = score(song, video, allow_negative=True)
-            if sc.get("eligible"):
-                sc.update(best_tempo(song, video, sc))
             results.append({"path": str(p), "name": p.name, "source": "song", "bpm": song["bpm"],
                             "duration": song["duration"], **sc, "natural_total_pct": sc.get("total_pct"),
                             "auto_sync_cached": _cached_for(job.get("video_path"), p)})
@@ -236,6 +237,11 @@ def _score_songs(job: dict, video: dict, songs: list):
     ok.sort(key=lambda r: (r["natural_total_pct"], r["sync_pct"]), reverse=True)
     for rank, r in enumerate(ok, 1):
         r["rank"] = rank
+    for r in [r for r in ok if r.get("source") != "original"][:TEMPO_SWEEP_TOP]:   # lazy: only the top N pay for it
+        try:
+            r.update(best_tempo(_song(r["path"]), video, r))
+        except Exception:
+            pass
     short.sort(key=lambda r: r["duration"], reverse=True)
     job.update(done=len(songs), reference=reference, results=ok, too_short=short, skipped=skipped, status="done",
                message=f"Done: {len(ok)} ranked, {len(skipped)} skipped")
