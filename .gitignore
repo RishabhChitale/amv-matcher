@@ -12,3 +12,4 @@ __pycache__/
 *.mkv
 *.webm
 .uploads/
+.exports/

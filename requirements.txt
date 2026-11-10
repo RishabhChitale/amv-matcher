@@ -5,3 +5,4 @@ scipy==1.13.1
 opencv-python-headless==5.0.0.93
 fastapi==0.128.8
 uvicorn[standard]==0.39.0
+av==15.1.0

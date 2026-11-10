@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
 
 from .audio import AUDIO_EXTS, analyze_song, song_waveform
+from . import media
 from .pump import pump_keyframes
 from .score import score, score_at
 from .video import VIDEO_EXTS, analyze_video
@@ -29,8 +30,11 @@ ALLOWED_VIDEOS: set = set()  # video files that have been scanned
 VIDEOS: dict = {}           # resolved video path -> analysis (for /api/score)
 _jobs_lock = threading.Lock()
 
+EXTRACTED = ROOT / ".cache" / "extracted"   # embedded audio decoded from videos
+EXPORTS = ROOT / ".exports"                 # rendered wavs / mp4s the user can download
 UPLOADS = ROOT / ".uploads"   # dropped files land here (module var so tests can redirect it)
 UPLOAD_LIMITS = {"video": 8 * 1024 ** 3, "song": 300 * 1024 ** 2}
+ORIGINAL_SLACK_S = 0.5
 ALLOWED_ORIGINS = {"http://127.0.0.1:8765", "http://localhost:8765"}
 
 
@@ -48,14 +52,41 @@ def _in_uploads(p: Path) -> bool:
         return False
 
 
+def _under(p: Path, base: Path) -> bool:
+    try:
+        return p.is_relative_to(base.resolve())
+    except Exception:
+        return False
+
+
 def _in_music_dirs(p: Path) -> bool:
     return any(p == Path(d) or Path(d) in p.parents for d in ALLOWED_DIRS)
+
+
+def _full_video(vp: Path) -> dict:
+    """Cached video analysis plus has_audio / original_audio (embedded audio extracted to a wav)."""
+    video = VIDEOS.get(str(vp))
+    if video is None:
+        video = analyze_video(str(vp))
+        video["has_audio"], video["original_audio"] = False, None
+        try:
+            wav = media.extract_audio(vp, EXTRACTED)
+            if wav is not None:
+                video["has_audio"] = True
+                video["original_audio"] = {"path": str(wav.resolve()),
+                                           "name": f"Original audio ({vp.name})"}
+        except Exception as e:   # a broken audio track must not break video analysis
+            video["audio_error"] = f"{type(e).__name__}: {e}"
+        VIDEOS[str(vp)] = video
+    return video
 
 
 def _video_info(video: dict) -> dict:
     info = {k: video[k] for k in ("duration", "fps", "motion_tempo_bpm", "energy_curve",
                                   "energy_hz", "segments", "lulls", "peak_segments",
                                   "cut_times", "shots")}
+    info["has_audio"] = bool(video.get("has_audio"))
+    info["original_audio"] = video.get("original_audio")
     info["cut_count"] = len(video["cut_times"])
     info["peak_count"] = len(video["motion_peaks"])
     return info
@@ -65,12 +96,26 @@ def _score_songs(job: dict, video: dict, songs: list):
     """Analyze + score songs into job (results/too_short/skipped); shared by scan and score-songs."""
     job.update(stage="songs", total=len(songs), done=0)
     results, skipped = [], []
+    orig = video.get("original_audio")
+    if orig:      # the video's own soundtrack: already aligned, so offset 0 is fixed
+        job.update(message="Analyzing original audio")
+        try:
+            song = analyze_song(orig["path"])
+            if song["duration"] >= float(video["duration"]) - ORIGINAL_SLACK_S:
+                sc = score_at(song, video, 0.0)
+            else:
+                sc = score(song, video)       # clearly shorter than the video: too_short
+            results.append({"path": orig["path"], "name": orig["name"], "source": "original",
+                            "bpm": song["bpm"], "duration": song["duration"], **sc})
+        except Exception as e:
+            skipped.append({"path": orig["path"], "name": orig["name"], "source": "original",
+                            "reason": f"{type(e).__name__}: {e}"})
     for i, p in enumerate(songs, 1):
         job.update(done=i - 1, message=f"Analyzing song {i}/{len(songs)}: {p.name}")
         try:
             song = analyze_song(str(p))
             sc = score(song, video)
-            results.append({"path": str(p), "name": p.name, "bpm": song["bpm"],
+            results.append({"path": str(p), "name": p.name, "source": "song", "bpm": song["bpm"],
                             "duration": song["duration"], **sc})
         except Exception as e:  # reported, never silently skipped
             skipped.append({"path": str(p), "name": p.name, "reason": f"{type(e).__name__}: {e}"})
@@ -102,8 +147,7 @@ def _run_job(job_id: str, req: ScanRequest):
         video_path = Path(req.video_path).expanduser()
         music_dir = Path(req.music_dir).expanduser().resolve()
         job.update(stage="video", message=f"Analyzing video: {video_path.name}")
-        video = analyze_video(str(video_path))
-        VIDEOS[str(video_path.resolve())] = video
+        video = _full_video(video_path.resolve())
         job["video_path"] = str(video_path.resolve())
         job["video"] = _video_info(video)
         _score_songs(job, video, _list_songs(music_dir, req.recursive))
@@ -148,7 +192,7 @@ def _safe_song(path: str) -> Path:
         p = Path(path).expanduser().resolve()
     except Exception:
         raise HTTPException(400, "Bad path")
-    if not (_in_music_dirs(p) or _in_uploads(p)) or p.suffix.lower() not in AUDIO_EXTS or not p.is_file():
+    if not (_in_music_dirs(p) or _in_uploads(p) or _under(p, EXTRACTED)) or p.suffix.lower() not in AUDIO_EXTS or not p.is_file():
         raise HTTPException(403, "Path is not a song inside a scanned music folder or the uploads folder")
     return p
 
@@ -292,9 +336,7 @@ def _run_score_songs(job_id: str, vp: Path, songs: list):
     job = JOBS[job_id]
     try:
         job.update(stage="video", message=f"Analyzing video: {vp.name}")
-        video = VIDEOS.get(str(vp))
-        if video is None:
-            video = VIDEOS[str(vp)] = analyze_video(str(vp))
+        video = _full_video(vp)
         job["video_path"] = str(vp)
         job["video"] = _video_info(video)
         _score_songs(job, video, songs)
@@ -309,12 +351,10 @@ class AnalyzeVideoRequest(BaseModel):
 @app.post("/api/analyze-video", dependencies=[Depends(_origin_guard)])
 def analyze_video_endpoint(req: AnalyzeVideoRequest):
     vp = _safe_video(req.video_path)
-    video = VIDEOS.get(str(vp))
-    if video is None:
-        try:
-            video = VIDEOS[str(vp)] = analyze_video(str(vp))
-        except Exception as e:
-            raise HTTPException(422, f"Could not analyze video: {type(e).__name__}: {e}")
+    try:
+        video = _full_video(vp)
+    except Exception as e:
+        raise HTTPException(422, f"Could not analyze video: {type(e).__name__}: {e}")
     return JSONResponse({"video_path": str(vp), "video": _video_info(video)})
 
 

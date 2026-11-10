@@ -152,3 +152,34 @@ def test_analyze_video_and_empty_score_songs(env):
     assert c.post("/api/analyze-video", json={"video_path": str(s)}).status_code == 403
     assert c.post("/api/analyze-video", json={"video_path": "/etc/passwd"}).status_code == 403
     assert c.post("/api/analyze-video", json={"video_path": str(tmp / "uploads" / ".." / "x.avi")}).status_code == 403
+
+
+@pytest.fixture()
+def avenv(env, monkeypatch):
+    from tests.synth import make_video_with_audio
+    server, c, v, s, tmp = env
+    monkeypatch.setattr(server, "EXTRACTED", tmp / "extracted")
+    monkeypatch.setattr(server, "EXPORTS", tmp / "exports")
+    vm = tmp / "clip.mp4"
+    make_video_with_audio(vm, s)
+    return server, c, vm, s, tmp
+
+
+def test_original_audio_is_a_fixed_offset_source(avenv):
+    server, c, vm, s, tmp = avenv
+    uv = up(c, "video", "clip.mp4", vm.read_bytes()).json()["path"]
+    r = c.post("/api/score-songs", json={"video_path": uv, "song_paths": []}).json()
+    assert r["video"]["has_audio"] is True
+    oa = r["video"]["original_audio"]
+    assert oa["name"].startswith("Original audio (")
+    assert [x["source"] for x in r["results"]] == ["original"]
+    o = r["results"][0]
+    assert o["best_offset_s"] == 0 and o["bpm"] > 0
+    # the extracted wav is a usable song path, and songs are tagged 'song'
+    assert c.get("/api/audio", params={"path": oa["path"]}).status_code == 200
+    us = up(c, "song", "c120.wav", s.read_bytes()).json()["path"]
+    r2 = c.post("/api/score-songs", json={"video_path": uv, "song_paths": [us]}).json()
+    assert sorted(x["source"] for x in r2["results"]) == ["original", "song"]
+    # a video without audio has no original source
+    nv = up(c, "video", "jump.avi", (tmp / "jump.avi").read_bytes()).json()["path"]
+    assert c.post("/api/analyze-video", json={"video_path": nv}).json()["video"]["has_audio"] is False

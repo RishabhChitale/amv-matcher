@@ -86,3 +86,40 @@ def make_drop(path, bpm=120, seconds=12.0, drop_at=6.0, seed=0):
         k += 1
     y += (0.002 * rng.standard_normal(len(y))).astype(np.float32)
     sf.write(str(path), np.clip(y, -1, 1), SR)
+
+
+def make_video_with_audio(path, wav, seconds=10.0, fps=30, jump_every=0.5, size=(320, 240),
+                          vcodec="libx264", acodec="aac"):
+    """Jumping-square video muxed with `wav` as its soundtrack, written with PyAV."""
+    import av
+    w, h = size
+    out = av.open(str(path), "w")
+    vs = out.add_stream(vcodec, rate=fps)
+    vs.width, vs.height = w, h
+    vs.pix_fmt = "yuvj420p" if vcodec == "mjpeg" else "yuv420p"
+    if vcodec == "libx264":
+        vs.options = {"preset": "ultrafast", "crf": "18"}
+    a = out.add_stream(acodec, rate=44100)
+    a.layout = "stereo"
+    pos = [(40, 40), (240, 160), (200, 40), (60, 150)]
+    for f in range(int(seconds * fps)):
+        x, y = pos[int((f / fps) / jump_every + 1e-6) % 4]
+        img = np.zeros((h, w, 3), np.uint8)
+        img[y:y + 40, x:x + 40] = 255
+        for p in vs.encode(av.VideoFrame.from_ndarray(img, format="bgr24")):
+            out.mux(p)
+    for p in vs.encode(None):
+        out.mux(p)
+    data, sr = sf.read(str(wav), dtype="int16")
+    data = data[: int(seconds * sr)]
+    fmt = "s16" if acodec.startswith("pcm") else "fltp"
+    rs = av.AudioResampler(format=fmt, layout="stereo", rate=44100,
+                           frame_size=None if acodec.startswith("pcm") else 1024)
+    fr = av.AudioFrame.from_ndarray(data.reshape(1, -1), format="s16", layout="mono")
+    fr.sample_rate = sr
+    for r in rs.resample(fr) + rs.resample(None):
+        for p in a.encode(r):
+            out.mux(p)
+    for p in a.encode(None):
+        out.mux(p)
+    out.close()
