@@ -222,40 +222,49 @@ def _combine(tempo_pct, sync_pct, arc_pct):
 
 
 TIGHT_TOL_S = 0.040           # an event is "tight" when within +-40 ms of the grid
+# Human editors cut slightly BEFORE the beat (perceptual sync). Median signed event-to-nearest-beat
+# error on the two ground-truth AMVs: A -65 ms, B -53 ms -> 0.06 s.
+PERCEPTUAL_LEAD_S = 0.06
 
 
-def tightness(song: dict, video: dict, offset: float) -> dict:
-    """Non-saturating alignment of the video's locked events (cuts + peaks, same weights as
-    the sync score) to the song's beat grid at `offset`. Uses the half-beat grid when the
-    edit locks at 8ths (its 2nd harmonic is stronger than the beat's), else the beat grid.
-    tight_pct = weighted % of events within +-40 ms of the grid; median/p90 are the
-    unweighted absolute errors in ms."""
-    ev_t, ev_w = _events(video)
-    beats = _beats(song)
-    empty = {"tight_pct": 0.0, "median_err_ms": None, "p90_err_ms": None, "n_events": 0,
-             "grid": "beat", "chance_pct": 0.0}
-    if len(ev_t) == 0 or len(beats) < 2:
-        return empty
-    ref = np.asarray(beats, dtype=float)
-    T = float(np.median(np.diff(ref)))
-    w = ev_w / ev_w.sum()
-    t = ev_t + float(offset)
+def _tight_stats(t, w, ref, T):
     r1 = abs(np.sum(w * np.exp(2j * np.pi * t / T)))
     r2 = abs(np.sum(w * np.exp(2j * np.pi * t / (T / 2))))
-    grid, per = "beat", T
+    grid, per, g = "beat", T, ref
     if r2 > r1:
-        mids = (ref[:-1] + ref[1:]) / 2
-        ref = np.sort(np.concatenate([ref, mids]))
+        g = np.sort(np.concatenate([ref, (ref[:-1] + ref[1:]) / 2]))
         grid, per = "half_beat", T / 2
-    err = _dist_to(t, ref)
+    err = _dist_to(t, g)
     return {
         "tight_pct": round(float(100.0 * np.sum(w[err <= TIGHT_TOL_S])), 1),
         "median_err_ms": round(float(np.median(err)) * 1000.0, 1),
         "p90_err_ms": round(float(np.percentile(err, 90)) * 1000.0, 1),
-        "n_events": int(len(ev_t)),
         "grid": grid,
         "chance_pct": round(100.0 * min(1.0, 2 * TIGHT_TOL_S / per), 1),
     }
+
+
+def tightness(song: dict, video: dict, offset: float) -> dict:
+    """Non-saturating alignment of the video's locked events (cuts + peaks, same weights as
+    the sync score) to the song's beat grid at `offset`. The main numbers are measured against
+    the lead-compensated grid (beat_time - PERCEPTUAL_LEAD_S, since editors cut before the beat);
+    `raw` is the same measure against the bare beat grid. The half-beat grid is used when the
+    edit locks at 8ths (2nd-harmonic coherence beats the beat's). tight_pct = weighted % of
+    events within +-40 ms of the grid; median/p90 are absolute errors in ms."""
+    ev_t, ev_w = _events(video)
+    beats = _beats(song)
+    blank = {"tight_pct": 0.0, "median_err_ms": None, "p90_err_ms": None, "grid": "beat", "chance_pct": 0.0}
+    if len(ev_t) == 0 or len(beats) < 2:
+        return {**blank, "n_events": 0, "lead_ms": round(PERCEPTUAL_LEAD_S * 1000), "raw": dict(blank)}
+    ref = np.asarray(beats, dtype=float)
+    T = float(np.median(np.diff(ref)))
+    w = ev_w / ev_w.sum()
+    t = ev_t + float(offset)
+    out = _tight_stats(t + PERCEPTUAL_LEAD_S, w, ref, T)   # event vs (beat - lead)
+    out["n_events"] = int(len(ev_t))
+    out["lead_ms"] = round(PERCEPTUAL_LEAD_S * 1000)
+    out["raw"] = _tight_stats(t, w, ref, T)
+    return out
 
 
 def _pack(song, video, off, tempo_pct, rate, sync_pct, arc_pct):
@@ -336,8 +345,7 @@ def score(song: dict, video: dict, allow_negative: bool = False) -> dict:
             "eligible": False, "total_pct": 0, "tempo_pct": 0.0, "sync_pct": 0.0, "arc_pct": 0.0,
             "best_offset_s": 0.0, "trim_start_s": 0.0, "trim_end_s": round(vd, 2), "best_rate": 1.0,
             "reason": "too_short",
-            "tightness": {"tight_pct": 0.0, "median_err_ms": None, "p90_err_ms": None,
-                          "n_events": 0, "grid": "beat", "chance_pct": 0.0}, "song_duration": round(sd, 2), "video_duration": round(vd, 2),
+            "tightness": tightness({"beat_times": []}, {"cut_times": [], "motion_peaks": []}, 0.0), "song_duration": round(sd, 2), "video_duration": round(vd, 2),
         }
     tempo_pct, rate = _tempo(song, video)
     ev_t, ev_w = _events(video)

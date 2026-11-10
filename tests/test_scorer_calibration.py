@@ -70,7 +70,7 @@ def test_constant_tempo_grid_fit(tmp_path):
 
 
 def test_tightness_metric():
-    from amv_matcher.score import score_at, tightness
+    from amv_matcher.score import PERCEPTUAL_LEAD_S, score_at, tightness
     beats = [i * 0.5 for i in range(1, 121)]
     song = {"bpm": 120.0, "beat_times": beats, "duration": 60.0, "energy_curve": [0.5] * 60,
             "drops": [], "lulls": []}
@@ -78,11 +78,14 @@ def test_tightness_metric():
     def vid(cuts):
         return {"cut_times": cuts, "motion_peaks": [], "duration": 20.0, "energy_curve": [0.5] * 20,
                 "motion_tempo_bpm": 120.0, "motion_tempo_candidates": []}
-    on = tightness(song, vid([1.0 + 0.5 * i for i in range(20)]), 0.0)
-    assert on["tight_pct"] == 100.0 and on["median_err_ms"] < 1 and on["n_events"] == 20
-    late = tightness(song, vid([1.0 + 0.5 * i + 0.030 for i in range(20)]), 0.0)
+    on = tightness(song, vid([1.0 + 0.5 * i for i in range(20)]), 0.0)["raw"]
+    assert on["tight_pct"] == 100.0 and on["median_err_ms"] < 1
+    lead = tightness(song, vid([1.0 + 0.5 * i - PERCEPTUAL_LEAD_S for i in range(20)]), 0.0)
+    assert lead["tight_pct"] == 100.0 and lead["median_err_ms"] < 1 and lead["n_events"] == 20
+    assert lead["raw"]["tight_pct"] == 0.0            # same edit measured against the bare beat
+    late = tightness(song, vid([1.0 + 0.5 * i + 0.030 - PERCEPTUAL_LEAD_S for i in range(20)]), 0.0)
     assert late["tight_pct"] == 100.0 and 29 < late["median_err_ms"] < 31
-    off = tightness(song, vid([1.0 + 0.5 * i + 0.100 for i in range(20)]), 0.0)
+    off = tightness(song, vid([1.0 + 0.5 * i + 0.100 - PERCEPTUAL_LEAD_S for i in range(20)]), 0.0)
     assert off["tight_pct"] == 0.0 and 99 < off["p90_err_ms"] < 101
     assert score_at(song, vid([1.0, 1.5, 2.0, 2.5]), 0.0)["tightness"]["n_events"] == 4
     assert tightness(song, vid([]), 0.0)["median_err_ms"] is None
