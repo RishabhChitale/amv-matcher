@@ -20,3 +20,4 @@ dist/
 *.log
 real_cases.json
 docs/real-suite-latest.md
+docs/diagnosis-videoA.md
