@@ -363,6 +363,83 @@ def main():
         else:
             print("SKIP  drop checks (no drop.wav in", a.music + ")")
 
+        # ---- drag-and-drop / Browse uploads
+        mus = lambda n: os.path.join(a.music, n)
+        have = [n for n in ("click120.wav", "click140.wav", "click97.wav") if os.path.exists(mus(n))]
+        if os.path.exists(a.video) and len(have) >= 2:
+            c.ev("""(()=>{const i=document.createElement('input');i.type='file';i.multiple=true;i.id='__scratch';document.body.appendChild(i)})()""")
+            root = c.call("DOM.getDocument")["root"]["nodeId"]
+            nid = c.call("DOM.querySelector", nodeId=root, selector="#__scratch")["nodeId"]
+            c.call("DOM.setFileInputFiles", files=[os.path.abspath(a.video)] + [mus(n) for n in have], nodeId=nid)
+            c.ev("""(()=>{window.__F=[...document.getElementById('__scratch').files];
+              window.__vid=__F.filter(f=>/\\.mp4$/.test(f.name));window.__aud=__F.filter(f=>/\\.wav$/.test(f.name));
+              window.__drop=(sel,files)=>{const dt=new DataTransfer();files.forEach(f=>dt.items.add(f));
+                document.querySelector(sel).dispatchEvent(new DragEvent('drop',{dataTransfer:dt,bubbles:true,cancelable:true}))};
+              window.__toasts=()=>[...document.querySelectorAll('.toast')].map(t=>t.innerText).join(' | ')})()""")
+
+            c.ev("__drop('#stage', __aud.slice(0,1))")
+            check("audio dropped on the video zone -> 'Not a video' toast", wait_for(c, "/Not a video/.test(__toasts())", 5), (c.ev("__toasts()") or "")[:60])
+
+            c.ev("__drop('#stage', __vid)")
+            ok = wait_for(c, "/\\.uploads\\//.test(decodeURIComponent(document.getElementById('vid').src||'')) && document.getElementById('up-ring').classList.contains('hidden')", 90)
+            check("dropping a video uploads it and the player switches to it", ok, (c.ev("document.getElementById('vid').src") or "")[-50:])
+            wait_for(c, "!document.getElementById('scan').disabled && document.querySelectorAll('.res').length>0", 60)
+
+            c.ev("__drop('#results-panel', __aud.slice(0,2))")
+            ok = wait_for(c, "document.querySelectorAll('.res .chip').length>=2 && document.getElementById('up-ring').classList.contains('hidden')", 120)
+            chips = c.ev("document.querySelectorAll('.res .chip').length")
+            check("dropping 2 songs adds scored rows with a 'dropped' chip", ok and chips >= 2, f"chips={chips}")
+            check("a row stays selected after dropped songs merge", bool(c.ev("!!document.querySelector('.res.sel')")))
+            up = c.ev("fetch('/api/uploads').then(r=>r.json())")
+            check("uploads control shows the dropped files", up["count"] >= 3 and c.ev("document.getElementById('up-clear').disabled") is False, str(up))
+
+            if len(have) > 2:
+                nid2 = c.call("DOM.querySelector", nodeId=root, selector="#f-songs")["nodeId"]
+                c.call("DOM.setFileInputFiles", files=[mus(have[2])], nodeId=nid2)
+                ok = wait_for(c, "document.querySelectorAll('.res .chip').length>=3 && document.getElementById('up-ring').classList.contains('hidden')", 120)
+                check("Browse... (file input) uploads and scores a song", ok)
+
+            c.ev("""(()=>{const mk=f=>({isFile:true,isDirectory:false,name:f.name,file:cb=>cb(f)});
+              const dir={isFile:false,isDirectory:true,createReader:()=>{let n=0;return{readEntries:cb=>cb(n++?[]:[mk(__aud[0]),mk(__aud[1]),mk(new File(['x'],'notes.txt'))])}}};
+              const e=new Event('drop',{bubbles:true,cancelable:true});
+              Object.defineProperty(e,'dataTransfer',{value:{types:['Files'],files:[],items:[{kind:'file',webkitGetAsEntry:()=>dir}]}});
+              document.querySelector('#results-panel').dispatchEvent(e)})()""")
+            wait_for(c, "/2\\/2/.test(__toasts())", 20)
+            wait_for(c, "document.getElementById('up-ring').classList.contains('hidden') && !document.querySelector('.toast')", 40)
+            check("dropping a folder walks it and picks up its audio files (non-audio ignored)", not c.errors)
+
+            c.ev("""(()=>{const dt=new DataTransfer();dt.items.add(new File([''],'a.mp4',{type:'video/mp4'}));
+              window.dispatchEvent(new DragEvent('dragenter',{dataTransfer:dt,bubbles:true,cancelable:true}));
+              document.querySelector('#stage').dispatchEvent(new DragEvent('dragover',{dataTransfer:dt,bubbles:true,cancelable:true}))})()""")
+            c.pump(0.5)
+            check("dragging files over the page highlights the drop zones",
+                  bool(c.ev("document.body.classList.contains('dragging') && document.querySelector('#stage').classList.contains('dz')")))
+            import base64
+            shot2 = os.path.join(os.path.dirname(os.path.abspath(a.shot)), "ui-drop.png")
+            open(shot2, "wb").write(base64.b64decode(c.call("Page.captureScreenshot", format="png")["data"]))
+            check("screenshot saved (drag highlight)", os.path.getsize(shot2) > 10000, shot2)
+            c.ev("window.dispatchEvent(new DragEvent('dragend'))")
+
+            c.ev("document.getElementById('up-clear').click()")
+            check("Clear opens the in-page confirm popover", c.ev("!document.getElementById('up-pop').classList.contains('hidden')"))
+            c.ev("document.getElementById('up-yes').click()")
+            ok = wait_for(c, "document.getElementById('up-clear').disabled && document.querySelectorAll('.res .chip').length===0", 20)
+            up = c.ev("fetch('/api/uploads').then(r=>r.json())")
+            check("Clear deletes uploads and dropped rows vanish", ok and up["count"] == 0, str(up))
+
+            c.ev("document.getElementById('video-path').value='';S.videoPath='';D.videoPath=''")
+            c.ev("__drop('#results-panel', __aud.slice(0,2))")
+            ok = wait_for(c, "/Drop a video first/.test(__toasts()+document.getElementById('status').innerText)", 30)
+            check("songs dropped before a video are queued with a hint", ok and c.ev("D.queue.length") == 2, f"queue={c.ev('D.queue.length')}")
+            c.ev("__drop('#stage', __vid)")
+            ok = wait_for(c, "document.querySelectorAll('.res .chip').length>=2 && document.getElementById('up-ring').classList.contains('hidden')", 120)
+            check("queued songs are scored once the video arrives", ok and c.ev("D.queue.length") == 0)
+            c.ev("document.getElementById('up-clear').click();document.getElementById('up-yes').click()")
+            wait_for(c, "document.getElementById('up-clear').disabled", 20)
+            c.ev("document.getElementById('__scratch').remove()")
+        else:
+            print("SKIP  drag-and-drop checks (fixtures missing)")
+
         # ---- error path
         if os.path.exists(a.bad_video):
             scan(a.bad_video)

@@ -10,12 +10,19 @@
 <body>
 <header class="topbar glass">
   <div class="brand"><span class="logo"></span>AMV Matcher</div>
-  <input id="video-path" placeholder="Video file path (.mp4 .mov .mkv .webm .avi)" spellcheck="false">
-  <input id="music-dir" placeholder="Music folder path" spellcheck="false">
+  <input id="video-path" placeholder="Video file path (.mp4 .mov .mkv .webm .avi) or drop a video" spellcheck="false">
+  <button id="b-video" class="mini" title="Choose a video file">Browse...</button>
+  <input id="music-dir" placeholder="Music folder path (or drop songs)" spellcheck="false">
+  <button id="b-songs" class="mini" title="Choose song files">Browse...</button>
   <label class="chk"><input type="checkbox" id="recursive"> subfolders</label>
   <button id="scan" class="primary">Scan</button>
   <span id="status" class="status"></span>
+  <span id="uploads" class="uploads">Uploads: <b id="up-size">0 B</b> <button id="up-clear" class="linkbtn" disabled>Clear</button>
+    <div id="up-pop" class="pop hidden"><div id="up-pop-t"></div><div class="pop-b"><button id="up-yes" class="danger">Delete</button><button id="up-no">Cancel</button></div></div></span>
 </header>
+<input type="file" id="f-video" class="hidden" accept="video/*,.mkv,.avi,.m4v">
+<input type="file" id="f-songs" class="hidden" multiple accept="audio/*,.mp3,.wav,.m4a,.flac,.ogg,.aac">
+<div id="toasts" class="toasts"></div>
 <div id="progress" class="progress hidden"><div id="progress-bar"></div></div>
 
 <main class="layout">
@@ -24,7 +31,8 @@
     <div class="stage glass" id="stage">
       <video id="vid" muted playsinline preload="auto"></video>
       <div id="vid-msg" class="vid-msg hidden">This format can't preview in the browser; scores still work.</div>
-      <div id="empty" class="vid-msg">Scan a video and a music folder to begin.</div>
+      <div id="empty" class="vid-msg">Scan a video and a music folder, or drop a video here.</div>
+      <div id="up-ring" class="up-ring hidden"><svg width="96" height="96"><circle class="bg" cx="48" cy="48" r="38"/><circle class="fg" id="up-fg" cx="48" cy="48" r="38"/></svg><div id="up-txt"></div></div>
     </div>
     <div class="scrub" id="scrub"><div class="scrub-fill" id="scrub-fill"></div><div class="playhead-dot" id="scrub-head"></div></div>
     <div class="transport glass">
@@ -65,5 +73,6 @@
 </main>
 <audio id="aud" preload="auto"></audio>
 <script src="/static/app.js"></script>
+<script src="/static/drop.js"></script>
 </body>
 </html>

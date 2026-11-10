@@ -112,15 +112,17 @@ function bars(r) {
   <span>Arc %</span><div class="bar"><i style="width:${r.arc_pct}%"></i></div></div>`;
 }
 function renderResults(j) {
+  S.short = j.too_short || []; S.skipped = j.skipped || [];
   const box = $('results'); box.innerHTML = '';
   if (!S.results.length) box.innerHTML = '<div class="muted pad">No eligible songs (all shorter than the video, or unreadable).</div>';
   S.results.forEach((r, i) => {
     const d = document.createElement('div'); d.className = 'res'; d.dataset.i = i;
     d.innerHTML = ring(r.total_pct) + `<div><div class="rname" title="${esc(r.name)}">${i + 1}. ${esc(r.name)}</div>
-      <div class="rmeta">${r.bpm.toFixed(0)} BPM | Use ${fmtMS(r.trim_start_s)} to ${fmtMS(r.trim_end_s)}</div>${bars(r)}</div>`;
+      <div class="rmeta">${r.bpm.toFixed(0)} BPM | Use ${fmtMS(r.trim_start_s)} to ${fmtMS(r.trim_end_s)}${r.dropped ? ' <span class="chip">dropped</span>' : ''}</div>${bars(r)}</div>`;
     d.onclick = () => selectSong(r); box.appendChild(d);
   });
   requestAnimationFrame(() => box.querySelectorAll('.fg').forEach(c => { c.style.strokeDashoffset = C * (1 - c.dataset.p / 100); }));
+  document.querySelectorAll('.res').forEach(e => e.classList.toggle('sel', S.results[e.dataset.i] === S.sel));
   const sh = j.too_short || [];
   $('short-wrap').classList.toggle('hidden', !sh.length); $('short-n').textContent = sh.length;
   $('short').innerHTML = sh.map(r => `<div>${esc(r.name)} <span class="muted">(${fmtMS(r.song_duration)} vs video ${fmtMS(r.video_duration)})</span></div>`).join('');
