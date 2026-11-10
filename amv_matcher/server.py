@@ -837,7 +837,7 @@ def index():
     return FileResponse(STATIC / "index.html")
 
 
-@app.get("/static/{name}")
+@app.get("/static/{name:path}")
 def static_file(name: str):
     p = (STATIC / name).resolve()
     if STATIC.resolve() not in p.parents or not p.is_file():
