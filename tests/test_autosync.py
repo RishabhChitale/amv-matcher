@@ -74,3 +74,117 @@ def test_real_songS1_videoA():
     print("segments", len(r["plan"]["segments"]), "final", r["final"])
     first = r["steps"][0]["score_before"] if r["steps"] else 0
     assert r["final"]["total_pct"] >= first        # never worse than the start
+
+
+# ---- revision 1: jump limit, energy alignment, best-path invariant, sync_headline ----
+from amv_matcher import score as S
+from amv_matcher.retime import MAX_JUMP, apply_warp, plan_retime
+from amv_matcher.splice import _assemble, plan_splice
+from amv_matcher.tempo import apply_tempo, plan_tempo
+
+
+def _energy(n, steps):
+    e = np.full(n, 0.2)
+    for a, b, v in steps:
+        e[int(a * 10):int(b * 10)] = v
+    return e
+
+
+def drop_fixture():
+    """Song: calm, drop at 20 s (loud to 40 s), calm again. Video: peak segment 6-14 s whose cuts
+    sit ~10% off the beat grid; the peak should land on the drop while cuts stay on beats."""
+    song = make_song(60.0)
+    song["energy_curve"] = _energy(600, [(20, 40, 0.9)]).tolist()
+    song["drops"], song["lulls"] = [20.0], [[0.0, 6.0], [45.0, 60.0]]
+    cuts = list(np.arange(0.5, 6.0, 0.5)) + list(6.0 + 0.55 * np.arange(0, 15))
+    vid = make_video(cuts, 14.0)
+    vid["energy_curve"] = _energy(140, [(6, 14, 0.9)]).tolist()
+    vid["peak_segments"], vid["lulls"] = [[6.0, 14.0]], [[0.0, 5.0]]
+    return song, vid
+
+
+def peak_fixture():
+    """Two peaks and a lull, drifting 6% slow; song has two drops and a lull in between."""
+    song = make_song(90.0)
+    song["energy_curve"] = _energy(900, [(10, 25, 0.9), (50, 70, 0.9)]).tolist()
+    song["drops"], song["lulls"] = [10.0, 50.0], [[30.0, 48.0]]
+    cuts = np.arange(1, 50) * 0.53
+    vid = make_video(cuts, 26.0, tempo=113.0)
+    vid["energy_curve"] = _energy(260, [(3, 12, 0.9), (20, 26, 0.9)]).tolist()
+    vid["peak_segments"], vid["lulls"] = [[3.0, 12.0], [20.0, 26.0]], [[13.0, 19.0]]
+    return song, vid
+
+
+def _fixtures():
+    return {
+        "slow_drift": (make_song(90.0), make_video(np.arange(1, 56) * 0.52, 30.0, 115.4)),
+        "slow_section": (make_song(), make_video(slow_section_cuts())),
+        "synced": (make_song(), make_video(np.arange(0.5, 28, 0.5))),
+        "drop": drop_fixture(),
+        "peaks": peak_fixture(),
+    }
+
+
+def _single_tools(song, vid, **kw):
+    """Total after applying each tool directly to the baseline (best offset where relevant)."""
+    from amv_matcher.autosync import _best_offset, _tot
+    off = _best_offset(song, vid) if float(song["duration"]) >= float(vid["duration"]) else 0.0
+    out = {"offset": _tot(S.score_at(song, vid, off))}
+    rp = plan_retime(song, vid, off)
+    out["retime"] = _tot(S.score_at(song, apply_warp(vid, rp["warp"]), off))
+    pt = plan_tempo(song, vid, 0.08)
+    st = apply_tempo(song, pt["ratio"])
+    out["tempo"] = _tot(S.score_at(st, vid, _best_offset(st, vid)))
+    from amv_matcher.autosync import _safe_assemble, _safe_plan
+    sp = _safe_plan(song, vid, 3)
+    if sp.get("eligible") and len(sp["segments"]) > 1:
+        asm = _safe_assemble(song, sp["segments"], float(vid["duration"]))
+        if asm is not None:
+            out["splice"] = _tot(S.score_at(asm, vid, 0.0))
+    return out
+
+
+_AUTO = {}
+
+
+def _auto(name):
+    """auto_sync result per fixture, computed once for the whole module."""
+    if name not in _AUTO:
+        song, vid = _fixtures()[name]
+        _AUTO[name] = auto_sync(song, vid)
+    return _AUTO[name]
+
+
+def test_speed_jump_limit_all_fixtures():
+    for name, (song, vid) in _fixtures().items():
+        rp = plan_retime(song, vid, 0.0)
+        assert rp["max_speed_jump"] <= MAX_JUMP + 1e-9, name
+        w = np.asarray(rp["warp"])
+        sp = np.diff(w[:, 0]) / np.diff(w[:, 1])
+        assert np.all(np.abs(np.diff(sp)) <= MAX_JUMP + 1e-3), name
+        r = _auto(name)
+        rt = r["plan"]["retime"]
+        assert rt is None or rt["max_speed_jump"] <= MAX_JUMP + 1e-9, name
+        assert "speed_jump_over_0.15" not in r["limits_hit"], name
+
+
+def test_arc_rises_on_drop_peak_fixtures():
+    for name in ("drop", "peaks"):
+        song, vid = _fixtures()[name]
+        r = _auto(name)
+        assert r["final"]["arc_pct"] > 60, (name, r["final"])
+        assert r["final"]["arc_pct"] >= S.score(song, vid)["arc_pct"] - 1.0, name
+
+
+def test_final_at_least_best_single_tool():
+    for name, (song, vid) in _fixtures().items():
+        r = _auto(name)
+        singles = _single_tools(song, vid)
+        assert r["final"]["total_pct"] >= round(max(singles.values())) - 1, (name, r["final"], singles)
+
+
+def test_sync_headline():
+    for name, (song, vid) in _fixtures().items():
+        f = _auto(name)["final"]
+        assert f["sync_headline"] == round(0.6 * f["sync_pct"] + 0.4 * f["tempo_pct"]), name
+        assert "total_pct" in f
