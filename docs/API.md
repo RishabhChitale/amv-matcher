@@ -88,3 +88,31 @@ brightness(t) = 1 + 0.35 * max over drops of k_i(t)       (peak 1.35; 1 when boo
 shake (drops, shake=true): dx, dy = random sign * (2..6 px) * k_i(t)   (deterministic per drop/frame in Python)
 drops_only=true ignores ordinary beats; boom = 0 -> scale 1.0 everywhere.
 ```
+
+## Uploads (drag-and-drop)
+Browsers can't hand over file paths, so dropped files are uploaded to the local server and stored under `.uploads/<kind>/` (git-ignored). Uploaded files are accepted anywhere a `video_path` / `song_path` is expected (`/api/audio`, `/api/video`, `/api/waveform`, `/api/pump`, `/api/score`, `/api/score-songs`).
+
+**Origin guard:** every POST/DELETE endpoint returns 403 if an `Origin` header is present and is not `http://127.0.0.1:8765` or `http://localhost:8765`. Requests with no Origin (curl) pass.
+
+### POST /api/upload?kind=video|song&name=<original filename>
+Body: the raw file bytes (`Content-Type` ignored; use `fetch(url, {method:"POST", body: file})`). Streamed to disk and hashed (sha256); stored as `.uploads/<kind>/<sha12>-<sanitized name>`. The name is reduced to its basename and characters outside `A-Za-z0-9._ ()-` become `_`.
+Limits/types: video 8 GB (`.mp4 .mov .mkv .webm .avi .m4v`), song 300 MB (`.mp3 .wav .m4a .flac .ogg .aac`).
+```json
+{"path": "/abs/amv-matcher/.uploads/song/3f2a9c01b7de-click120.wav", "name": "click120.wav",
+ "size": 5292044, "kind": "song", "deduped": false}
+```
+`deduped: true` means identical bytes were already stored (same `path` returned). Errors: 400 bad kind / extension / empty body, 413 over the limit, 403 bad Origin.
+
+### POST /api/score-songs
+Body: `{"video_path": str, "song_paths": [str, ...]}`. The video must be a scanned or uploaded video; songs must be in a scanned music folder or `.uploads/`. Results have exactly the same shape as `/api/scan` (`results` ranked, `too_short`, `skipped`, `video`).
+- **One song: synchronous.** The response is the finished job plus `job_id`: `{"job_id": "...", "status": "done", "results": [...], "too_short": [], "skipped": [], "video": {...}, ...}`.
+- **Two or more songs: job + progress.** Response `{"job_id": "a1b2c3d4e5f6", "status": "running"}`; poll `GET /api/scan/{job_id}` (same object as a scan).
+A client can handle both: if `status == "done"` use it, else poll.
+
+### GET /api/uploads
+```json
+{"count": 2, "bytes": 5292050}
+```
+
+### DELETE /api/uploads
+Deletes everything inside `.uploads/` only. `{"freed": 5292050}` (bytes).

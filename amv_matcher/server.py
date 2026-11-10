@@ -1,13 +1,16 @@
 """FastAPI server: scan jobs with polling progress, ranked results, audio preview."""
 from __future__ import annotations
 
+import hashlib
 import os
+import re
+import shutil
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
 
@@ -25,6 +28,60 @@ ALLOWED_DIRS: set = set()   # music dirs that have been scanned
 ALLOWED_VIDEOS: set = set()  # video files that have been scanned
 VIDEOS: dict = {}           # resolved video path -> analysis (for /api/score)
 _jobs_lock = threading.Lock()
+
+UPLOADS = ROOT / ".uploads"   # dropped files land here (module var so tests can redirect it)
+UPLOAD_LIMITS = {"video": 8 * 1024 ** 3, "song": 300 * 1024 ** 2}
+ALLOWED_ORIGINS = {"http://127.0.0.1:8765", "http://localhost:8765"}
+
+
+def _origin_guard(request: Request):
+    """Reject cross-site POST/DELETE: a present Origin header must be this server."""
+    origin = request.headers.get("origin")
+    if origin is not None and origin not in ALLOWED_ORIGINS:
+        raise HTTPException(403, f"Origin {origin} is not allowed")
+
+
+def _in_uploads(p: Path) -> bool:
+    try:
+        return p.is_relative_to(UPLOADS.resolve())
+    except Exception:
+        return False
+
+
+def _in_music_dirs(p: Path) -> bool:
+    return any(p == Path(d) or Path(d) in p.parents for d in ALLOWED_DIRS)
+
+
+def _video_info(video: dict) -> dict:
+    info = {k: video[k] for k in ("duration", "fps", "motion_tempo_bpm", "energy_curve",
+                                  "energy_hz", "segments", "lulls", "peak_segments",
+                                  "cut_times", "shots")}
+    info["cut_count"] = len(video["cut_times"])
+    info["peak_count"] = len(video["motion_peaks"])
+    return info
+
+
+def _score_songs(job: dict, video: dict, songs: list):
+    """Analyze + score songs into job (results/too_short/skipped); shared by scan and score-songs."""
+    job.update(stage="songs", total=len(songs), done=0)
+    results, skipped = [], []
+    for i, p in enumerate(songs, 1):
+        job.update(done=i - 1, message=f"Analyzing song {i}/{len(songs)}: {p.name}")
+        try:
+            song = analyze_song(str(p))
+            sc = score(song, video)
+            results.append({"path": str(p), "name": p.name, "bpm": song["bpm"],
+                            "duration": song["duration"], **sc})
+        except Exception as e:  # reported, never silently skipped
+            skipped.append({"path": str(p), "name": p.name, "reason": f"{type(e).__name__}: {e}"})
+    ok = [r for r in results if r["eligible"]]
+    short = [r for r in results if not r["eligible"]]
+    ok.sort(key=lambda r: (r["total_pct"], r["sync_pct"]), reverse=True)
+    for rank, r in enumerate(ok, 1):
+        r["rank"] = rank
+    short.sort(key=lambda r: r["duration"], reverse=True)
+    job.update(done=len(songs), results=ok, too_short=short, skipped=skipped, status="done",
+               message=f"Done: {len(ok)} ranked, {len(skipped)} skipped")
 
 
 class ScanRequest(BaseModel):
@@ -48,33 +105,8 @@ def _run_job(job_id: str, req: ScanRequest):
         video = analyze_video(str(video_path))
         VIDEOS[str(video_path.resolve())] = video
         job["video_path"] = str(video_path.resolve())
-        job["video"] = {k: video[k] for k in ("duration", "fps", "motion_tempo_bpm", "energy_curve",
-                                             "energy_hz", "segments", "lulls", "peak_segments",
-                                             "cut_times", "shots")}
-        job["video"]["cut_count"] = len(video["cut_times"])
-        job["video"]["peak_count"] = len(video["motion_peaks"])
-
-        songs = _list_songs(music_dir, req.recursive)
-        job.update(stage="songs", total=len(songs), done=0)
-        results, skipped = [], []
-        for i, p in enumerate(songs, 1):
-            job.update(done=i - 1, message=f"Analyzing song {i}/{len(songs)}: {p.name}")
-            try:
-                song = analyze_song(str(p))
-                s = score(song, video)
-                results.append({"path": str(p), "name": p.name, "bpm": song["bpm"],
-                                "duration": song["duration"], **s})
-            except Exception as e:  # reported, never silently skipped
-                skipped.append({"path": str(p), "name": p.name, "reason": f"{type(e).__name__}: {e}"})
-        ok = [r for r in results if r["eligible"]]
-        short = [r for r in results if not r["eligible"]]
-        ok.sort(key=lambda r: (r["total_pct"], r["sync_pct"]), reverse=True)
-        for rank, r in enumerate(ok, 1):
-            r["rank"] = rank
-        short.sort(key=lambda r: r["duration"], reverse=True)
-        results = ok
-        job.update(done=len(songs), results=results, too_short=short, skipped=skipped, status="done",
-                   message=f"Done: {len(results)} ranked, {len(skipped)} skipped")
+        job["video"] = _video_info(video)
+        _score_songs(job, video, _list_songs(music_dir, req.recursive))
     except Exception as e:
         job.update(status="error", error=f"{type(e).__name__}: {e}", message=str(e))
 
@@ -82,7 +114,7 @@ def _run_job(job_id: str, req: ScanRequest):
 _pool = ThreadPoolExecutor(max_workers=2)
 
 
-@app.post("/api/scan")
+@app.post("/api/scan", dependencies=[Depends(_origin_guard)])
 def scan(req: ScanRequest):
     vp = Path(req.video_path).expanduser()
     md = Path(req.music_dir).expanduser()
@@ -111,32 +143,34 @@ def scan_status(job_id: str):
     return JSONResponse(job)
 
 
-@app.get("/api/audio")
-def audio(path: str):
+def _safe_song(path: str) -> Path:
     try:
         p = Path(path).expanduser().resolve()
     except Exception:
         raise HTTPException(400, "Bad path")
-    ok = any(p == Path(d) or Path(d) in p.parents for d in ALLOWED_DIRS)
-    if not ok or p.suffix.lower() not in AUDIO_EXTS or not p.is_file():
-        raise HTTPException(403, "Path is not a song inside a scanned music folder")
-    return FileResponse(p)  # supports Range requests for seeking
-
-
-def _safe_song(path: str) -> Path:
-    p = Path(path).expanduser().resolve()
-    ok = any(p == Path(d) or Path(d) in p.parents for d in ALLOWED_DIRS)
-    if not ok or p.suffix.lower() not in AUDIO_EXTS or not p.is_file():
-        raise HTTPException(403, "Path is not a song inside a scanned music folder")
+    if not (_in_music_dirs(p) or _in_uploads(p)) or p.suffix.lower() not in AUDIO_EXTS or not p.is_file():
+        raise HTTPException(403, "Path is not a song inside a scanned music folder or the uploads folder")
     return p
+
+
+def _safe_video(path: str) -> Path:
+    try:
+        p = Path(path).expanduser().resolve()
+    except Exception:
+        raise HTTPException(400, "Bad path")
+    if not (str(p) in ALLOWED_VIDEOS or _in_uploads(p)) or p.suffix.lower() not in VIDEO_EXTS or not p.is_file():
+        raise HTTPException(403, "Path is not a scanned or uploaded video")
+    return p
+
+
+@app.get("/api/audio")
+def audio(path: str):
+    return FileResponse(_safe_song(path))  # supports Range requests for seeking
 
 
 @app.get("/api/video")
 def video_file(path: str):
-    p = Path(path).expanduser().resolve()
-    if str(p) not in ALLOWED_VIDEOS or not p.is_file():
-        raise HTTPException(403, "Path is not a scanned video")
-    return FileResponse(p)  # Starlette FileResponse honours Range -> 206
+    return FileResponse(_safe_video(path))  # Starlette FileResponse honours Range -> 206
 
 
 @app.get("/api/waveform")
@@ -155,7 +189,7 @@ class ScoreRequest(BaseModel):
     offset: float
 
 
-@app.post("/api/score")
+@app.post("/api/score", dependencies=[Depends(_origin_guard)])
 def score_offset(req: ScoreRequest):
     vp = str(Path(req.video_path).expanduser().resolve())
     video = VIDEOS.get(vp)
@@ -172,6 +206,118 @@ def pump(path: str, boom: float = 40, decay: float = 180, drops_only: bool = Fal
     song = analyze_song(str(_safe_song(path)))
     return {"fps": fps, "keyframes": pump_keyframes(song, boom, decay, drops_only, fps,
                                                     duration=duration, shake=shake, start=start)}
+
+
+SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._ ()\-]")
+
+
+def _sanitize_name(name: str) -> str:
+    base = name.replace("\\", "/").split("/")[-1]
+    base = SAFE_NAME_RE.sub("_", base).strip(" .")
+    stem, dot, ext = base.rpartition(".")
+    if not dot:
+        stem, ext = base, ""
+    stem = (stem or "file")[:100]
+    return f"{stem}.{ext.lower()}" if ext else stem
+
+
+@app.post("/api/upload", dependencies=[Depends(_origin_guard)])
+async def upload(request: Request, kind: str, name: str):
+    if kind not in UPLOAD_LIMITS:
+        raise HTTPException(400, "kind must be 'video' or 'song'")
+    exts = VIDEO_EXTS if kind == "video" else AUDIO_EXTS
+    clean = _sanitize_name(name)
+    ext = Path(clean).suffix.lower()
+    if ext not in exts:
+        raise HTTPException(400, f"Unsupported {kind} type '{ext}'; use {sorted(exts)}")
+    limit = UPLOAD_LIMITS[kind]
+    cl = request.headers.get("content-length")
+    if cl and cl.isdigit() and int(cl) > limit:
+        raise HTTPException(413, f"{kind} is larger than the {limit // 1024 ** 2} MB limit")
+    d = UPLOADS / kind
+    d.mkdir(parents=True, exist_ok=True)
+    tmp = d / f".tmp-{uuid.uuid4().hex}"
+    h, size = hashlib.sha256(), 0
+    try:
+        with open(tmp, "wb") as f:
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > limit:
+                    raise HTTPException(413, f"{kind} is larger than the {limit // 1024 ** 2} MB limit")
+                h.update(chunk)
+                f.write(chunk)
+        if size == 0:
+            raise HTTPException(400, "Empty upload")
+        final = d / f"{h.hexdigest()[:12]}-{clean}"
+        deduped = final.exists()
+        if not deduped:
+            os.replace(tmp, final)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return {"path": str(final.resolve()), "name": clean, "size": size, "kind": kind, "deduped": deduped}
+
+
+def _uploads_files():
+    if not UPLOADS.is_dir():
+        return []
+    return [p for p in UPLOADS.rglob("*") if p.is_file() and not p.is_symlink()]
+
+
+@app.get("/api/uploads")
+def uploads_info():
+    files = _uploads_files()
+    return {"count": len(files), "bytes": sum(p.stat().st_size for p in files)}
+
+
+@app.delete("/api/uploads", dependencies=[Depends(_origin_guard)])
+def uploads_clear():
+    freed = sum(p.stat().st_size for p in _uploads_files())
+    if UPLOADS.is_dir():
+        for child in UPLOADS.iterdir():
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child, ignore_errors=True)
+            else:
+                child.unlink(missing_ok=True)
+    for k in [k for k in VIDEOS if _in_uploads(Path(k))]:
+        VIDEOS.pop(k, None)
+    return {"freed": freed}
+
+
+class ScoreSongsRequest(BaseModel):
+    video_path: str
+    song_paths: list
+
+
+def _run_score_songs(job_id: str, vp: Path, songs: list):
+    job = JOBS[job_id]
+    try:
+        job.update(stage="video", message=f"Analyzing video: {vp.name}")
+        video = VIDEOS.get(str(vp))
+        if video is None:
+            video = VIDEOS[str(vp)] = analyze_video(str(vp))
+        job["video_path"] = str(vp)
+        job["video"] = _video_info(video)
+        _score_songs(job, video, songs)
+    except Exception as e:
+        job.update(status="error", error=f"{type(e).__name__}: {e}", message=str(e))
+
+
+@app.post("/api/score-songs", dependencies=[Depends(_origin_guard)])
+def score_songs(req: ScoreSongsRequest):
+    vp = _safe_video(req.video_path)
+    if not req.song_paths:
+        raise HTTPException(400, "song_paths is empty")
+    songs = [_safe_song(str(x)) for x in req.song_paths]
+    job_id = uuid.uuid4().hex[:12]
+    with _jobs_lock:
+        JOBS[job_id] = {"id": job_id, "status": "running", "stage": "starting", "done": 0,
+                        "total": 0, "message": "Starting", "video": None,
+                        "results": None, "too_short": [], "skipped": [], "error": None}
+    if len(songs) == 1:      # synchronous: the finished job comes back inline
+        _run_score_songs(job_id, vp, songs)
+        return JSONResponse({"job_id": job_id, **JOBS[job_id]})
+    _pool.submit(_run_score_songs, job_id, vp, songs)
+    return {"job_id": job_id, "status": "running"}
 
 
 @app.get("/")

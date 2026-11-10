@@ -8,7 +8,7 @@ from scipy.ndimage import uniform_filter1d
 
 from . import curves
 
-VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".avi"}
+VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
 MAX_FPS = 30.0
 CUT_K = 6.0          # median + K*MAD for cuts
 PEAK_K = 2.5         # median + K*MAD for motion peaks
