@@ -33,13 +33,18 @@ jobs:
         if: runner.os == 'macOS'
         timeout-minutes: 15
         run: |
-          "dist/AMV Matcher.app/Contents/MacOS/AMV Matcher" --selftest | tee selftest.log
+          "dist/AMV Matcher.app/Contents/MacOS/AMV Matcher" --selftest --selftest-log selftest.log
           test "$(grep -c '^selftest ok' selftest.log)" -eq 6
       - name: Selftest (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         timeout-minutes: 15
-        run: '& "dist\AMV Matcher\AMV Matcher.exe" --selftest'
+        run: |
+          $p = Start-Process -FilePath "dist\AMV Matcher\AMV Matcher.exe" -ArgumentList "--selftest","--selftest-log","selftest.log" -Wait -PassThru
+          if (Test-Path selftest.log) { Get-Content selftest.log }
+          if ($p.ExitCode -ne 0) { throw "selftest exit code $($p.ExitCode)" }
+          $n = (Select-String -Path selftest.log -Pattern '^selftest ok').Count
+          if ($n -ne 6) { throw "expected 6 selftest ok lines, got $n" }
       - name: Zip (macOS)
         if: runner.os == 'macOS'
         run: ditto -c -k --sequesterRsrc --keepParent "dist/AMV Matcher.app" "AMV-Matcher-${{ matrix.label }}.zip"

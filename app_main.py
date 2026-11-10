@@ -75,6 +75,31 @@ class Server:
         self.t.join(timeout=5)
 
 
+def seed_rife_from_dev_cache() -> str:
+    """Dev-only convenience: if this checkout's .cache holds a verified RIFE (marker tag/name/sha256 match the
+    pinned asset and the binary + model are present) and the app-data tools dir has none, COPY it over instead of
+    downloading ~436 MB. No-op when the source is missing/unverified or the target already has one."""
+    try:
+        from amv_matcher import render
+        src = Path(os.environ.get("AMV_DEV_CACHE") or (Path.home() / "Claude" / "amv-matcher" / ".cache")) / "tools" / "rife"
+        dst = render.rife_dir()
+        if src.resolve() == dst.resolve() or render.rife_exe() is not None or not src.is_dir():
+            return "skip"
+        a = render._asset()
+        m = json.loads((src / render._MARKER).read_text())
+        if not (m.get("verified") and m.get("tag") == render.RIFE_TAG and m.get("name") == a["name"]
+                and m.get("sha256") == a["sha256"]):
+            return "skip: marker mismatch"
+        if not any(f.is_file() and (f.parent / render.RIFE_MODEL).is_dir() for f in src.rglob(a["exe"])):
+            return "skip: incomplete"
+        shutil.copytree(src, dst, dirs_exist_ok=True, symlinks=True)
+        LOG.info("RIFE seeded from dev cache %s -> %s", src, dst)
+        return "copied"
+    except Exception as e:  # noqa: BLE001
+        LOG.info("RIFE seed skipped: %s", e)
+        return "skip"
+
+
 VIDEO_TYPES = ("Video files (*.mp4;*.mov;*.mkv;*.webm;*.avi;*.m4v)",)
 AUDIO_TYPES = ("Audio files (*.mp3;*.wav;*.m4a;*.flac;*.ogg;*.aac)",)
 
@@ -124,6 +149,7 @@ class Api:
 def run_window() -> int:
     import webview
     from webview.dom import DOMEventHandler
+    seed_rife_from_dev_cache()
     s = Server()
     s.start()
     LOG.info("server on %s (frozen=%s data=%s)", s.url, paths.FROZEN, paths.DATA)
@@ -185,13 +211,22 @@ def run_window() -> int:
     return 0
 
 
-def selftest() -> int:
+def selftest(log_path: str = "") -> int:
     """Server up, GET /, one synthetic scan (tiny generated media), exit 0/1. No window."""
     import tempfile
     import numpy as np
     import soundfile as sf
     import av
     tmp = Path(tempfile.mkdtemp(prefix="amv-selftest-"))
+    if log_path:
+        Path(log_path).write_text("")
+
+    def print(*a):   # noqa: A001  stdout AND the log file (a windowed exe has no console)
+        line = " ".join(str(x) for x in a)
+        sys.stdout.write(line + "\n")
+        if log_path:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
     try:
         s = Server()
         s.start()
@@ -290,7 +325,8 @@ def selftest() -> int:
 
 def main(argv) -> int:
     if "--selftest" in argv:
-        return selftest()
+        lp = argv[argv.index("--selftest-log") + 1] if "--selftest-log" in argv and argv.index("--selftest-log") + 1 < len(argv) else ""
+        return selftest(lp)
     setup_logging()
     return run_window()
 
