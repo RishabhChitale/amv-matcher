@@ -202,6 +202,14 @@ def main():
         ok = wait_for(c, "!!(S.sel && S.wf) && document.getElementById('vid').readyState>=2", 30)
         check("click top row loads song onto A1 (waveform + video ready)", ok)
         c.pump(0.5)
+        # player message only on a genuine decode error: clearing src / transient events must not show it
+        c.ev("(()=>{const v=document.getElementById('vid');v.dispatchEvent(new Event('stalled'));v.dispatchEvent(new Event('waiting'));"
+             "window.__s=v.getAttribute('src');v.removeAttribute('src');v.dispatchEvent(new Event('error'));})()")
+        c.pump(0.3)
+        check("no can't-preview message on stall/waiting or src-less error",
+              bool(c.ev("document.getElementById('vid-msg').classList.contains('hidden')")))
+        c.ev("document.getElementById('vid').setAttribute('src',window.__s)")
+        check("player recovers (canplay) after src restored", wait_for(c, "document.getElementById('vid').readyState>=2", 20))
 
         # ---- play + sync
         c.ev("document.getElementById('b-play').click()")

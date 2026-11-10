@@ -53,8 +53,17 @@ $('b-loop').onclick = () => { S.loop = !S.loop; $('b-loop').classList.toggle('on
 $('vol').oninput = () => { aud.volume = $('vol').value / 100; };
 aud.volume = 0.8;
 vid.addEventListener('ended', () => { if (S.loop) { seek(0); play(); } else pause(); });
-vid.addEventListener('error', () => { S.vidOk = false; $('vid-msg').classList.remove('hidden'); });
-vid.addEventListener('loadeddata', () => { S.vidOk = true; $('vid-msg').classList.add('hidden'); });
+// Only a genuine decode/format failure on a real src shows "can't preview". Clearing the src
+// (load() with no src raises code 4) and transient network stalls (code 2) must not; those retry once.
+let vidRetry = 0;
+vid.addEventListener('error', () => {
+  const src = vid.getAttribute('src'), code = vid.error && vid.error.code;
+  if (!src) return;
+  if (code === 2 && vidRetry++ < 2) { const t = vid.currentTime; vid.load(); vid.addEventListener('loadedmetadata', () => { vid.currentTime = t; }, { once: true }); return; }
+  S.vidOk = false; $('vid-msg').classList.remove('hidden');
+});
+const vidGood = () => { vidRetry = 0; S.vidOk = true; $('vid-msg').classList.add('hidden'); };
+['loadeddata', 'canplay', 'playing'].forEach(n => vid.addEventListener(n, vidGood));
 document.addEventListener('keydown', e => {
   const t = e.target, tag = t.tagName || '';
   if (t.isContentEditable || (/INPUT|TEXTAREA/.test(tag) && t.type !== 'range' && t.type !== 'checkbox')) return;
