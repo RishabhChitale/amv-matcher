@@ -13,6 +13,7 @@ import socket
 import sys
 import threading
 import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -231,6 +232,53 @@ def selftest() -> int:
         assert j["status"] == "done", j
         assert j["results"], "no scored songs"
         print("selftest ok: top =", round(j["results"][0]["total_pct"], 1), "%")
+        sp = str(sd / "click120.wav")          # scan registered both paths as allowed
+
+        def get(path):
+            return json.loads(urllib.request.urlopen(base + path, timeout=30).read())
+
+        def wait(path, secs=240):
+            t1 = time.time()
+            while time.time() - t1 < secs:
+                r = get(path)
+                if r.get("status") != "running":
+                    return r
+                time.sleep(0.5)
+            raise AssertionError("timeout waiting for " + path)
+
+        # 1. auto-sync (tiny budget)
+        r = wait("/api/auto-sync/" + post("/api/auto-sync", {"video_path": str(vp), "song_path": sp, "budget_s": 5})["job_id"])
+        assert r["status"] == "done" and (r["result"] or {}).get("final"), r
+        print("selftest ok: auto-sync final total =", r["result"]["final"].get("total_pct"))
+        # 2. 1 s dup render (1 s of video, no interpolation tool needed)
+        plan = {"offset": 0.0, "tempo_ratio": 1.0, "segments": [], "nudges": [], "lead_silence_s": 0.0,
+                "retime": {"warp": [[0, 0], [1, 1]], "out_duration": 1.0}}
+        r = wait("/api/render-mp4/" + post("/api/render-mp4", {"video_path": str(vp), "song_path": sp, "plan": plan, "interp": "dup"})["job_id"])
+        assert r["status"] == "done", r
+        with av.open(r["path"]) as c:
+            assert c.streams.video and c.streams.audio and 0.8 < float(c.duration) / 1e6 < 1.3, c.duration
+        print("selftest ok: render 1 s dup ->", Path(r["path"]).name)
+        # 3. quick-split stems (hpss; the Demucs pack is optional)
+        r = post("/api/stems", {"song_path": sp, "provider": "hpss"})
+        t1 = time.time()
+        while r.get("status") == "running" and time.time() - t1 < 240:
+            time.sleep(0.5)
+            r = get("/api/stems/status?song_path=" + urllib.parse.quote(sp)).get("running") or {"status": "done", "again": 1}
+        st = get("/api/stems/status?song_path=" + urllib.parse.quote(sp))
+        assert st["state"] == "ready" and {"drums", "music"} <= set(st["stems"]), st
+        print("selftest ok: stems quick split:", ",".join(st["stems"]), "| demucs pack:", st["capabilities"]["demucs_installed"])
+        # 4. DaVinci Resolve bundle
+        r = wait("/api/scan/" + post("/api/export-resolve", {"video_path": str(vp), "song_path": sp, "plan": plan})["job_id"])
+        assert r["status"] == "done" and Path(r["zip"]).is_file(), r
+        import zipfile
+        names = zipfile.ZipFile(r["zip"]).namelist()
+        assert any(n.endswith(".fcpxml") for n in names), names
+        print("selftest ok: resolve bundle:", len(names), "files")
+        # 5. render-tools path logic: RIFE lives under the app-data cache
+        rt = get("/api/render-tools")["rife"]
+        from amv_matcher import render
+        assert str(render.rife_dir()).startswith(str(paths.CACHE)), render.rife_dir()
+        print("selftest ok: rife dir =", render.rife_dir(), "| installed:", rt["installed"], "| frozen:", paths.FROZEN)
         s.stop()
         return 0
     except Exception as e:  # noqa: BLE001

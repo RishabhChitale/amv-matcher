@@ -3,11 +3,12 @@ import sys
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules, collect_dynamic_libs
 
 NAME = "AMV Matcher"
-datas = [("static", "static")]
+datas = [("static", "static"),
+         ("amv_matcher/_demucs_runner.py", "amv_matcher")]   # run by path in the optional stems-pack venv
 binaries = []
 hidden = ["uvicorn.logging", "uvicorn.loops.auto", "uvicorn.protocols.http.auto",
           "uvicorn.protocols.websockets.auto", "uvicorn.lifespan.on", "platformdirs",
-          "multipart", "python_multipart"]
+          "multipart", "python_multipart", "fractions", "zipfile", "concurrent.futures"]
 for pkg in ("librosa", "scipy", "av", "cv2", "soundfile", "webview", "numba", "sklearn", "resampy"):
     try:
         datas += collect_data_files(pkg)

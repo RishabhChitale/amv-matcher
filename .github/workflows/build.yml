@@ -29,12 +29,16 @@ jobs:
         run: python -m pytest -q tests
       - name: Build
         run: python -m PyInstaller --noconfirm amv_matcher.spec
-      - name: Selftest (macOS)
+      - name: Selftest (macOS)   # scan, auto-sync, 1 s dup render, stems quick split, Resolve export, RIFE path
         if: runner.os == 'macOS'
-        run: "dist/AMV\\ Matcher.app/Contents/MacOS/AMV\\ Matcher --selftest"
+        timeout-minutes: 15
+        run: |
+          "dist/AMV Matcher.app/Contents/MacOS/AMV Matcher" --selftest | tee selftest.log
+          test "$(grep -c '^selftest ok' selftest.log)" -eq 6
       - name: Selftest (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
+        timeout-minutes: 15
         run: '& "dist\AMV Matcher\AMV Matcher.exe" --selftest'
       - name: Zip (macOS)
         if: runner.os == 'macOS'
