@@ -25,7 +25,9 @@ ROOT = Path(__file__).resolve().parent.parent
 from . import paths as _paths
 from . import winsafe
 CACHE_DIR = _paths.CACHE / "stems"           # module var so tests can redirect it
-VENV_DIR = _paths.STEMS_PACK if _paths.FROZEN else ROOT / ".venv-stems"
+DEV_VENV = ROOT / ".venv-stems"             # the hand-built dev venv: the installer must never rebuild it
+# AMV_STEMS_VENV (not frozen only) points the pack at another dir, the explicit opt-in for a dev install.
+VENV_DIR = _paths.STEMS_PACK if _paths.FROZEN else Path(os.environ.get("AMV_STEMS_VENV") or DEV_VENV)
 PACK_MISSING_MSG = "Stems pack not installed: quick split only"
 # Demucs weights (~80 MB) are downloaded on the FIRST separation, not at install time.  The runner is
 # started with TORCH_HOME=this dir so they land in the app-data cache (<app data>/cache/torch), never in
@@ -73,6 +75,21 @@ def _cleanup_file(f: Path, root: Path) -> bool:
 
 def stem_dir(path, provider: str) -> Path:
     return CACHE_DIR / song_key(path) / provider
+
+
+def install_blocked() -> str | None:
+    """Why the pack installer must refuse, or None.  Not frozen + VENV_DIR is the dev .venv-stems and no
+    AMV_STEMS_VENV override: the install would rmtree the dev venv.  The frozen path is unchanged."""
+    if _paths.FROZEN or os.environ.get("AMV_STEMS_VENV"):
+        return None
+    try:
+        same = Path(VENV_DIR).resolve() == DEV_VENV.resolve()
+    except OSError:
+        same = Path(VENV_DIR) == DEV_VENV
+    if same:
+        return (f"Refusing to install: {VENV_DIR} is the dev .venv-stems and would be deleted. "
+                "Set AMV_STEMS_VENV to another directory to install a pack from a dev tree.")
+    return None
 
 
 def venv_python(venv_dir=None) -> Path:

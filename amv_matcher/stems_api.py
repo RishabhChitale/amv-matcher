@@ -281,6 +281,9 @@ def _install_job(job: dict | None = None):
     state: dict = {}
     t0 = time.time()
     try:
+        blocked = S.install_blocked()
+        if blocked:
+            raise RuntimeError(blocked)
         _upd(job, status="running", stage="venv", progress=0.02, message="Creating environment", error=None)
         base = find_system_python() if getattr(sys, "frozen", False) else [sys.executable]
         if not base:
@@ -374,6 +377,9 @@ def install_demucs():
         if S.demucs_installed() and _complete():
             return {"id": None, "status": "done", "stage": "done", "progress": 1.0,
                     "message": "Demucs already installed", "error": None}
+        blocked = S.install_blocked()
+        if blocked:
+            raise HTTPException(409, blocked)
         if S.paths_frozen() and not find_system_python():
             raise HTTPException(501, S.PACK_MISSING_MSG + f" (drop a stems pack into {S.VENV_DIR})")
         free = S.free_bytes(S.VENV_DIR.parent)

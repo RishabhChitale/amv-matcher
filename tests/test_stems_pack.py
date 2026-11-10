@@ -196,3 +196,37 @@ def test_weights_stage_and_status(monkeypatch):
     monkeypatch.setattr(S, "separate", fake_sep)
     A._run(job, "song.wav")
     assert job["status"] == "done"
+
+
+# ---- dev-venv guard: the installer must never rmtree the dev .venv-stems
+def test_install_blocked_for_dev_venv(monkeypatch, tmp_path):
+    monkeypatch.delenv("AMV_STEMS_VENV", raising=False)
+    monkeypatch.setattr(S._paths, "FROZEN", False)
+    monkeypatch.setattr(S, "VENV_DIR", S.DEV_VENV)
+    assert "dev .venv-stems" in S.install_blocked()
+    with pytest.raises(HTTPException) as e:
+        A.install_demucs()
+    assert e.value.status_code == 409
+    job = A._new_install_job()
+    A._install_job(job)                      # direct call: errors out, deletes nothing
+    assert job["status"] == "error" and "Refusing" in job["error"]
+
+
+def test_install_allowed_with_override_or_other_dir(monkeypatch, tmp_path):
+    monkeypatch.setattr(S._paths, "FROZEN", False)
+    monkeypatch.setattr(S, "VENV_DIR", tmp_path / "v")
+    monkeypatch.delenv("AMV_STEMS_VENV", raising=False)
+    assert S.install_blocked() is None
+    monkeypatch.setattr(S, "VENV_DIR", S.DEV_VENV)
+    monkeypatch.setenv("AMV_STEMS_VENV", str(tmp_path / "x"))
+    assert S.install_blocked() is None
+    monkeypatch.delenv("AMV_STEMS_VENV")
+    monkeypatch.setattr(S._paths, "FROZEN", True)
+    assert S.install_blocked() is None       # frozen unchanged
+
+
+def test_venv_dir_env_override():
+    import os
+    out = subprocess.run([sys.executable, "-c", "from amv_matcher import stems as S; print(S.VENV_DIR)"],
+                         env={**os.environ, "AMV_STEMS_VENV": "/tmp/zz-venv"}, capture_output=True, text=True)
+    assert out.stdout.strip() == "/tmp/zz-venv"
