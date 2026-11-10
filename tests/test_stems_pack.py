@@ -229,4 +229,5 @@ def test_venv_dir_env_override():
     import os
     out = subprocess.run([sys.executable, "-c", "from amv_matcher import stems as S; print(S.VENV_DIR)"],
                          env={**os.environ, "AMV_STEMS_VENV": "/tmp/zz-venv"}, capture_output=True, text=True)
-    assert out.stdout.strip() == "/tmp/zz-venv"
+    from pathlib import Path
+    assert Path(out.stdout.strip()) == Path("/tmp/zz-venv")
