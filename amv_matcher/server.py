@@ -504,6 +504,7 @@ def pump(path: str, boom: float = 40, decay: float = 180, drops_only: bool = Fal
 
 
 SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._ ()\-]")
+_RESERVED_STEMS = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 
 
 def _sanitize_name(name: str) -> str:
@@ -513,10 +514,11 @@ def _sanitize_name(name: str) -> str:
     if not dot:
         stem, ext = base, ""
     stem = (stem or "file")[:100]
+    if stem.split(".")[0].strip().upper() in _RESERVED_STEMS:   # W-07: CON, NUL, COM1.. are device names on Windows
+        stem = "_" + stem
     return f"{stem}.{ext.lower()}" if ext else stem
 
 
-_RESERVED_STEMS = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 @app.post("/api/upload", dependencies=[Depends(_origin_guard)])
 async def upload(request: Request, kind: str, name: str):
     if kind not in UPLOAD_LIMITS:
@@ -526,8 +528,6 @@ async def upload(request: Request, kind: str, name: str):
     ext = Path(clean).suffix.lower()
     if ext not in exts:
         raise HTTPException(400, f"Unsupported {kind} type '{ext}'; use {sorted(exts)}")
-    if stem.split(".")[0].strip().upper() in _RESERVED_STEMS:   # W-07: CON, NUL, COM1.. are device names on Windows
-        stem = "_" + stem
     limit = UPLOAD_LIMITS[kind]
     cl = request.headers.get("content-length")
     if cl and cl.isdigit() and int(cl) > limit:

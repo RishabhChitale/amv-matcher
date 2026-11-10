@@ -61,6 +61,7 @@ def test_register_paths_origin_guard(tmp_path):
     assert r.status_code == 403
 
 
+@pytest.mark.slow
 def test_app_main_selftest():
     r = subprocess.run([sys.executable, "app_main.py", "--selftest"], cwd=ROOT, capture_output=True, text=True, timeout=300)
     assert r.returncode == 0 and "selftest ok" in r.stdout, r.stdout + r.stderr

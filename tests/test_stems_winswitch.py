@@ -142,6 +142,8 @@ def test_find_system_python_never_returns_app_exe_and_checks_version(monkeypatch
 
 def test_pack_status_shapes(monkeypatch, tmp_path):
     monkeypatch.setattr(S, "VENV_DIR", tmp_path / "none")
+    monkeypatch.setattr(S, "TORCH_HOME", tmp_path / "torch")
+    monkeypatch.setattr(S, "paths_frozen", lambda: False)
     monkeypatch.setattr(S, "demucs_installed", lambda: False)
     monkeypatch.setattr(S, "weights_cached", lambda: False)
     st = A.pack_status()

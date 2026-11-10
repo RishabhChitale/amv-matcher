@@ -156,6 +156,7 @@ def _auto(name):
     return _AUTO[name]
 
 
+@pytest.mark.slow
 def test_speed_jump_limit_all_fixtures():
     for name, (song, vid) in _fixtures().items():
         rp = plan_retime(song, vid, 0.0)

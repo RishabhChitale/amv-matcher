@@ -18,6 +18,7 @@ def env(tmp_path, monkeypatch):
     server.shutdown_workers()
 
 
+@pytest.mark.slow
 def test_responsive_during_video_analysis(env):
     server, c, tmp = env
     v = tmp / "big.avi"

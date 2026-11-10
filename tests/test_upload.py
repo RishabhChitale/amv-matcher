@@ -141,7 +141,7 @@ def test_delete_clears_only_uploads(env):
     assert base == {"count": 3, "bytes": 11, "uploads_count": 2, "uploads_bytes": 9,
                     "exports_count": 1, "exports_bytes": 2}
     assert g["proxy_count"] == 0
-    assert c.delete("/api/uploads").json() == {"freed": 11, "uploads_freed": 9, "exports_freed": 2}
+    assert c.delete("/api/uploads").json() == {"freed": 11, "uploads_freed": 9, "exports_freed": 2, "skipped": []}
     assert c.get("/api/uploads").json()["count"] == 0
     assert keep.exists() and s.exists() and v.exists()
 
@@ -272,3 +272,10 @@ def test_export_mp4_reencodes_mjpeg_avi(env):
     with av.open(done["path"]) as o:
         assert o.streams.video[0].codec_context.name == "h264" and len(o.streams.audio) == 1
         assert abs(float(o.duration / av.time_base) - 4.0) <= 0.15
+
+
+def test_sanitize_name_reserved_windows_names():
+    from amv_matcher import server
+    s = server._sanitize_name
+    assert s("CON.mp4").startswith("_") and s("nul").startswith("_") and s("COM1.txt").startswith("_")
+    assert s("song.mp3") == "song.mp3" and s("my video.mp4") == "my video.mp4"

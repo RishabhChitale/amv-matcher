@@ -151,6 +151,7 @@ def test_tempo_applied(tmp_path):
 
 
 @pytest.mark.skipif(render.rife_exe() is None, reason="RIFE not installed")
+@pytest.mark.slow
 def test_rife_interpolates(clip, tmp_path):
     wav = make_wav(tmp_path / "a.wav", 4.25)
     out = tmp_path / "o.mp4"
