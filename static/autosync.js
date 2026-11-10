@@ -5,7 +5,7 @@ const pk = (v, s) => v + '|' + s;
 const LS = 'amv.guard.v1';
 const AS = window.AS = {
   runs: {},            // pairKey -> {result, audioUrl}
-  mode: 'synced', running: null, cancelled: false, guard: {lead: 60, dev: 15, tempo: 4, cuts: 2, loop: false, unlock: false, energy: false},
+  mode: 'synced', running: null, cancelled: false, guard: {lead: 60, dev: 15, tempo: 4, cuts: 2, loop: false, unlock: false, energyFirst: true},
   sort: 'now', all: null, lastReq: null, bands: 0, quality: 'blend', rife: null, rd: null, estSig: '', estTok: 0,
 };
 AS.finalSteps = res => finalSteps(res);
@@ -77,13 +77,13 @@ window.asDrawA1 = (ctx, y0, h, t2x, W) => {
 // ---------- guardrails ----------
 function guardUI() {
   const g = AS.guard;
-  el('g-lead').value = g.lead; el('g-dev').value = g.dev; el('g-tempo').value = g.tempo; el('g-cuts').value = g.cuts; el('g-loop').checked = !!g.loop; el('g-unlock').checked = !!g.unlock; el('g-energy').checked = !!g.energy;
+  el('g-lead').value = g.lead; el('g-dev').value = g.dev; el('g-tempo').value = g.tempo; el('g-cuts').value = g.cuts; el('g-loop').checked = !!g.loop; el('g-unlock').checked = !!g.unlock; el('g-energy').checked = !!g.energyFirst;
   el('g-lead-v').textContent = g.lead + ' ms'; el('g-dev-v').innerHTML = '&plusmn;' + g.dev + '%'; el('g-tempo-v').textContent = g.tempo + '%'; el('g-cuts-v').textContent = g.cuts;
 }
 for (const [id, k] of [['g-lead', 'lead'], ['g-dev', 'dev'], ['g-tempo', 'tempo'], ['g-cuts', 'cuts']])
   el(id).oninput = () => { AS.guard[k] = +el(id).value; guardUI(); saveGuard(); };
 el('g-loop').onchange = () => { AS.guard.loop = el('g-loop').checked; saveGuard(); };
-el('g-energy').onchange = () => { AS.guard.energy = el('g-energy').checked; saveGuard(); };
+el('g-energy').onchange = () => { AS.guard.energyFirst = el('g-energy').checked; saveGuard(); };
 el('g-unlock').onchange = () => { AS.guard.unlock = el('g-unlock').checked; saveGuard(); ui(); };
 
 // ---------- running ----------
@@ -140,7 +140,7 @@ async function runOne(r) {   // returns result or null (cancelled / failed)
   const g = AS.guard, key = pk(v, r.path);
   const body = {video_path: v, song_path: r.path, lead_s: g.lead / 1000, allow_loop: !!g.loop,
     guardrails: {max_speed_dev: g.dev / 100, max_tempo_pct: g.tempo, max_cuts: g.cuts}};
-  if (g.energy) body.prefer_energy = true;
+  body.prefer_energy = !!g.energyFirst;
   if (r.source === 'original') body.unlock_original = true;
   AS.lastReq = body; AS.cancelled = false;
   AS.running = {key, name: r.name}; ui();
