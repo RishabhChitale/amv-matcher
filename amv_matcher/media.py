@@ -40,11 +40,20 @@ def extract_audio(video_path, out_dir: Path) -> Optional[Path]:
         if not c.streams.audio:
             return None
         rs = av.AudioResampler(format="s16", layout="stereo", rate=SR)
-        # packet by packet so one undecodable packet (seen in real files) costs ~20 ms, not the track
+        # packet by packet so one undecodable packet (seen in real files) does not cost the track.
+        # The bad packet is replaced by silence of its duration so later samples keep their timestamps.
+        last_dur = 0.0
         for pkt in c.demux(c.streams.audio[0]):
+            if pkt.size == 0 and pkt.pts is None:
+                continue  # demux flush marker
+            if pkt.duration is not None and pkt.time_base is not None:
+                last_dur = float(pkt.duration * pkt.time_base)
             try:
                 frames = pkt.decode()
-            except av.error.InvalidDataError:
+            except av.error.FFmpegError:
+                n = int(round(last_dur * SR))
+                if n > 0:
+                    chunks.append(np.zeros((1, n * 2), np.int16))
                 continue
             for frame in frames:
                 for f in rs.resample(frame):
