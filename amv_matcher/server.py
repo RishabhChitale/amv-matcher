@@ -656,3 +656,40 @@ def static_file(name: str):
 
 from . import stems_api  # noqa: E402
 app.include_router(stems_api.router)
+
+
+# ---- render router (render.py, owned by another pawn): guarded, paths validated, one job at a time
+from . import render as _render  # noqa: E402
+
+
+class RenderMp4Request(BaseModel):
+    video_path: str
+    song_path: str
+    plan: dict
+    interp: str = "auto"
+
+
+_render_lock = threading.Lock()
+
+
+@app.post("/api/render-mp4", dependencies=[Depends(_origin_guard)])
+def render_mp4(req: RenderMp4Request):
+    """Registered before the router so it shadows render.py's unvalidated POST of the same path."""
+    if req.interp not in ("auto", "rife", "blend", "dup"):
+        raise HTTPException(400, "interp must be auto, rife, blend or dup")
+    vp, sp = _safe_video(req.video_path), _safe_song(req.song_path)
+    with _render_lock:
+        for j in list(_render.JOBS.values()):
+            if j.get("stage") == "render" and j.get("status") == "running":
+                return JSONResponse({"detail": "A render is already running", "job_id": j["id"]},
+                                    status_code=409)
+        job = {"id": uuid.uuid4().hex[:12], "status": "running", "stage": "render", "done": 0}
+        _render.JOBS[job["id"]] = job
+        out = (EXPORTS / f"{_stem(vp)}__{_stem(sp)}__{job['id']}.mp4").resolve()
+        EXPORTS.mkdir(parents=True, exist_ok=True)
+        _render._pool.submit(_render._run_render, job, str(vp), str(sp), req.plan, req.interp, out)
+    return {"job_id": job["id"]}
+
+
+if _render.router is not None:
+    app.include_router(_render.router, dependencies=[Depends(_origin_guard)])

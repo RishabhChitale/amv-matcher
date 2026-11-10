@@ -162,6 +162,12 @@ Body `{"video_path", "song_path", "segments": [{src_start, src_end, dst_start}, 
 {"path": "/abs/amv-matcher/.exports/clip__song__1a2b3c4d.wav", "url": "/api/export-file?path=%2Fabs%2F...", "duration": 10.0}
 ```
 
+### Render to mp4 (render.py router, wired in server.py)
+`POST /api/render-mp4` body `{"video_path", "song_path", "plan": {auto-sync plan}, "interp": "auto"|"rife"|"blend"|"dup"}`. Origin-guarded (403); paths go through the usual allowlist (403 / 400 for an unparsable path); bad `interp` is 400. Only one render at a time: while one runs a second POST returns **409** `{"detail", "job_id"}` with the running job's id. Returns `{"job_id"}`. Output goes to `.exports/<video>__<song>__<jobid>.mp4`.
+`GET /api/render-mp4/{job_id}` -> `{id, status: running|done|error, stage, done: 0-100, interp, path, url, size, seconds, error}` (`url` works with `/api/export-file`).
+`GET /api/render-tools` -> `{"rife": {available, installed, tag, size_mb}}`; `POST /api/render-tools/rife` (origin-guarded) downloads + verifies RIFE, returns `{"job_id"}`, polled with the render GET.
+Reserved for the render owner (router-level origin guard already applies): `POST /api/render-mp4/{id}/cancel`, `GET /api/render-estimate`.
+
 ### GET /api/export-file?path=
 Serves a file from `.exports/` only (403 for anything else) as a download (`Content-Disposition: attachment`).
 
