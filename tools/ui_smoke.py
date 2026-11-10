@@ -899,6 +899,10 @@ def main():
                       has > 0 and (c.ev("AS.bands") or 0) > 0 and (c.ev("document.querySelectorAll('#as-steps li').length") or 0) >= 5
                       and "Sync" in (c.ev("document.getElementById('as-head').textContent") or ""),
                       f"sections={has} bands={c.ev('AS.bands')}")
+                rrow = c.ev("(()=>{const l=[...document.querySelectorAll('#as-steps li')].find(x=>/Retime/.test(x.textContent));return l?l.textContent:''})()") or ""
+                check("slow-section Retime row reads kept with its N sections (= plan) while bands are drawn",
+                      "kept" in rrow and "skipped" not in rrow and f"{has} section" in rrow and has > 0 and (c.ev("AS.bands") or 0) > 0,
+                      f"row={rrow!r} sections={has} bands={c.ev('AS.bands')}")
                 c.ev("document.getElementById('as-done').scrollIntoView({block:'center'})"); c.pump(0.4)
                 shotas = os.path.join(os.path.dirname(os.path.abspath(a.shot)), "ui.png")
                 open(shotas, "wb").write(base64.b64decode(c.call("Page.captureScreenshot", format="png")["data"]))

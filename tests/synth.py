@@ -190,3 +190,10 @@ def slow_section_jump_times(seconds=24.0):
         out.append(round(t, 4))
         t += 0.625 if 3.0 <= t < 9.0 else 0.5
     return out
+
+
+def slow24_jump_times():
+    """Same cut list as tests/test_autosync.py slow24_cuts: 0.5 s cuts, 0.625 s between 3 and 9 s, 24 s long."""
+    c = list(np.arange(0.5, 3.0, 0.5)) + list(3.0 + 0.625 * np.arange(0, 10))
+    c = [x for x in c if x < 9.0] + list(np.arange(9.0, 24.0, 0.5))
+    return sorted(set(float(x) for x in c))

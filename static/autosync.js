@@ -86,17 +86,26 @@ el('g-unlock').onchange = () => { AS.guard.unlock = el('g-unlock').checked; save
 // ---------- running ----------
 function setRing(p) { el('as-ring').style.background = `conic-gradient(var(--c) ${p * 3.6}deg, rgba(255,255,255,.12) 0)`; el('as-ring').textContent = Math.round(p) + '%'; }
 function stepIdx(stage) { const s = String(stage || '').toLowerCase(); for (let i = STEPS.length - 1; i >= 0; i--) if (s.includes(STEPS[i])) return i; return -1; }
+// A tool can run in several passes: its row is 'kept' if ANY of its steps was kept (showing the KEPT
+// step's before -> after); a not-kept re-try flagged params.retained is 'kept earlier', never 'skipped'.
+function stepRow(n, list, extra) {
+  const ks = list.filter(e => e.kept), last = list[list.length - 1];
+  const s = ks.length ? ks[ks.length - 1] : last;
+  const a = Math.round(s.score_before), b = Math.round(s.score_after);
+  const retained = ks.length && last !== s && last.params && last.params.retained;
+  const lbl = ks.length ? (retained ? 'kept earlier' : 'kept') + (extra ? ' &middot; ' + extra : '') : 'skipped';
+  return `<li class="${ks.length ? 'ok' : 'skip'}"><b>${STEPNAME[n]}</b><span>${a}% &rarr; ${b}%</span><span class="muted">${lbl}</span></li>`;
+}
+function groupSteps(arr) { const g = {}; (arr || []).forEach(e => { const k = e.step || e.tool; (g[k] = g[k] || []).push(e); }); return g; }
 function liveSteps(j) {
-  const ev = {}; (j.steps_so_far || []).forEach(e => { ev[e.step] = e; });
-  if (Object.keys(ev).length) {
-    let last = -1; STEPS.forEach((n, i) => { if (ev[n]) last = i; });
+  const raw = {}; (j.steps_so_far || []).forEach(e => { raw[e.step] = e; });
+  if (Object.keys(raw).length) {
+    let last = -1; STEPS.forEach((n, i) => { if (raw[n]) last = i; });
     el('as-steps').innerHTML = STEPS.map((n, i) => {
-      const e = ev[n];
-      if (e && e.status === 'end') {
-        const a = Math.round(e.score_before), b = Math.round(e.score_after);
-        return `<li class="${e.kept ? 'ok' : 'skip'}"><b>${STEPNAME[n]}</b><span>${a}% &rarr; ${b}%</span><span class="muted">${e.kept ? 'kept' : 'skipped'}</span></li>`;
-      }
-      if (e) return `<li class="act"><b>${STEPNAME[n]}</b><span class="muted">working... ${Math.round(e.score_before)}%</span></li>`;
+      const ends = (j.steps_so_far || []).filter(e => e.step === n && e.status === 'end');
+      const open = raw[n] && raw[n].status !== 'end' ? raw[n] : null;
+      if (open) return `<li class="act"><b>${STEPNAME[n]}</b><span class="muted">working... ${Math.round(open.score_before)}%</span></li>`;
+      if (ends.length) return stepRow(n, ends);
       return `<li class="${i < last ? 'skip' : ''}"><b>${STEPNAME[n]}</b><span class="muted">${i < last ? 'skipped' : 'waiting'}</span></li>`;
     }).join('');
     el('as-steps').classList.remove('hidden');
@@ -107,13 +116,13 @@ function liveSteps(j) {
   el('as-steps').classList.remove('hidden');
 }
 function finalSteps(res) {
-  const by = {}; (res.steps || []).forEach(s => by[s.tool] = s);
+  const by = groupSteps(res.steps);
   const off = res.plan && res.plan.offset != null ? 'starts at ' + fmtMS(res.plan.offset) : '';
+  const rt = res.plan && res.plan.retime && res.plan.retime.sections ? res.plan.retime.sections.length : 0;
   el('as-steps').innerHTML = STEPS.map(n => {
     if (n === 'offset') return `<li class="ok"><b>${STEPNAME[n]}</b><span class="muted">${off}</span></li>`;
-    const s = by[n]; if (!s) return `<li class="skip"><b>${STEPNAME[n]}</b><span class="muted">skipped</span></li>`;
-    const a = Math.round(s.score_before), b = Math.round(s.score_after);
-    return `<li class="${s.kept ? 'ok' : 'skip'}"><b>${STEPNAME[n]}</b><span>${a}% &rarr; ${b}%</span><span class="muted">${s.kept ? 'kept' : 'skipped'}</span></li>`;
+    const list = by[n]; if (!list) return `<li class="skip"><b>${STEPNAME[n]}</b><span class="muted">skipped</span></li>`;
+    return stepRow(n, list, n === 'retime' && rt ? rt + ' section' + (rt > 1 ? 's' : '') : '');
   }).join('');
   el('as-steps').classList.remove('hidden');
 }
