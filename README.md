@@ -32,7 +32,7 @@ A step-by-step guide to every panel is in [docs/USER-GUIDE.md](docs/USER-GUIDE.m
 - **Resolve export:** FCPXML timeline with retime clips, markers and an AMV Pump Fusion effect. Not yet tested in Resolve.
 
 ## Building from source
-- **Dev:** `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`, then `.venv/bin/python app_main.py`.
+- **Dev:** run `./run.sh` (macOS/Linux) or `run.bat` (Windows). It creates `.venv` if missing, installs `requirements.txt`, then starts the desktop app with `.venv/bin/python app_main.py`.
 - **Stems (optional):** Demucs needs its own venv, see `requirements-stems.txt`. The packaged app leaves it out; an in-app installer is coming soon.
 - **Packaging:** `pip install -r requirements-dev.txt`, then `python -m PyInstaller --noconfirm amv_matcher.spec`. The result is in `dist/`.
 - **CI:** `.github/workflows/build.yml` runs the tests, builds on macOS (Intel and Apple Silicon) and Windows, runs `--selftest` on the built app and zips the result. Pushing a `v*` tag attaches the zips to a release.
