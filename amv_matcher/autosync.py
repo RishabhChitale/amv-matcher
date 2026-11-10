@@ -157,6 +157,32 @@ def _best_offset(song, video, center=None, half=None, step=0.05, lead_s=None):
     return best[1]
 
 
+def _alt_offsets(song, video, exclude, k=3, min_sep=0.5, lead_s=None):
+    """Up to k other plausible offsets (best plain sync+arc first, >= min_sep s apart and from `exclude`,
+    always also including offset 0): the offset that is best for the plain trim is not always the one a
+    retime can improve, so the retime tool tries these too."""
+    song, video = _fast(song), _fast(video)
+    vd, sd = float(video["duration"]), float(song["duration"])
+    lo_lim, hi = S.MIN_OFFSET_S, max(0.0, sd - vd)
+    ev_t, ev_w = S._events(video)
+    if len(ev_t) == 0 or len(song["beat_times"]) < 2:
+        return []
+    offs = np.arange(lo_lim, hi + 1e-9, 0.1)
+    sc = [S.W_SYNC * S._sync_pct_at(song, ev_t, ev_w, vd, float(o), lead_s) + S.W_ARC * S._arc_pct_at(song, video, float(o))
+          for o in offs]
+    out = []
+    taken = list(exclude)
+    for i in np.argsort(sc)[::-1]:
+        o = round(float(offs[i]), 3) + 0.0
+        if all(abs(o - x) >= min_sep for x in taken):
+            out.append(o); taken.append(o)
+        if len(out) >= k:
+            break
+    if 0.0 >= lo_lim and all(abs(x) >= 1e-9 for x in out + list(exclude)) and hi >= 0.0:
+        out.append(0.0)
+    return out
+
+
 def _nudge(song, video, offset, max_shift, lead=0.0):
     """Move cuts/peaks by at most max_shift s (one frame) when that brings them inside the tolerance."""
     beats = np.asarray(song["beat_times"], dtype=float)
@@ -339,6 +365,7 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
             elif tool == "retime":
                 # always planned from the ORIGINAL video against the current song/offset (replaces)
                 begin("retime", _tot(cur))
+                alt_off = None
                 try:
                     rp = plan_retime(cur_song, video, offset, max_speed_dev, min_section_s, lead_s=lead_s,
                                      should_cancel=cancel)
@@ -349,10 +376,29 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
                 base = S.score_at(cur_song, sv, offset, lead_s=lead_s)       # current retime state, no nudges
                 ref = base if (nudges or _tot(base) > _tot(cur)) else cur
                 kept = bool(rp["sections"]) and rp["speed_jump_ok"] and _gain(rr, ref, min_gain)
+                if not kept and segs is None and not lock_original and not retime:
+                    # the plain-trim best offset can sit where the retime planner finds nothing: try the
+                    # other plausible offsets (plain trim only: segments / looped songs fix the offset at 0)
+                    try:
+                        for o2 in _alt_offsets(cur_song, video, [offset], lead_s=lead_s):
+                            if cancel() or left() <= 0:
+                                break
+                            rp2 = plan_retime(cur_song, video, o2, max_speed_dev, min_section_s, lead_s=lead_s,
+                                              should_cancel=cancel)
+                            if not rp2["sections"] or not rp2["speed_jump_ok"]:
+                                continue
+                            wv2 = apply_warp(video, rp2["warp"])
+                            rr2 = S.score_at(cur_song, wv2, o2, lead_s=lead_s)
+                            if _gain(rr2, ref, min_gain) and (not kept or _rank(rr2) > _rank(rr)):
+                                rp, wv, rr, kept, alt_off = rp2, wv2, rr2, True, o2
+                    except Cancelled:
+                        break
                 rec("retime", {"sections": len(rp["sections"]), "max_speed_dev": max_speed_dev},
                     _tot(cur), _tot(rr) if kept else _tot(cur), kept, cur, rr)
                 if kept:
                     retime, cur_video, cur, nudges = rp, wv, rr, []
+                    if alt_off is not None:
+                        offset = alt_off
                     if segs is not None and allow_splice and left() > 2.0 and not cancel():
                         # events moved: re-splice against the retimed video (one extra pass)
                         begin("splice", _tot(cur))

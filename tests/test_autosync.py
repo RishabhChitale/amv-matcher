@@ -523,3 +523,48 @@ def test_cancel_inside_retime_loop():
         plan_retime(song, vid, 0.0, should_cancel=lambda: True)
     r = auto_sync(song, vid, min_gain=0.05, should_cancel=lambda: True)
     assert "cancelled" in r["limits_hit"] and r["final"]["total_pct"] >= 0
+
+
+# ---- retime planned at the wrong offset (beedrill's slow.mp4: 0.625 s cuts 5-15 s vs a 120 BPM click) ----
+def slow_wide_cuts(dur=20.0, a=5.0, b=15.0, step=0.625):
+    c = list(np.arange(0.5, a, 0.5))
+    c += list(a + step * np.arange(0, int((b - a) / step) + 1))
+    c += list(np.arange(c[-1] + 0.5, dur - 0.2, 0.5))
+    return c
+
+
+def test_slow_wide_fixture_keeps_retime():
+    """Reliable retime fixture for the V1 bands: make_song(22.0) + make_video(slow_wide_cuts(), duration=20)."""
+    r = auto_sync(make_song(22.0), make_video(slow_wide_cuts(), duration=20.0))
+    rt = r["plan"]["retime"]
+    assert rt and len(rt["sections"]) >= 1
+    assert any(s["tool"] == "retime" and s["kept"] for s in r["steps"])
+    assert r["final"]["sync_pct"] >= 93
+
+
+def test_alt_offsets_basic():
+    from amv_matcher.autosync import _alt_offsets
+    song, vid = make_song(22.0), make_video(slow_wide_cuts(), duration=20.0)
+    alts = _alt_offsets(song, vid, [1.4], k=3, min_sep=0.5, lead_s=0.0)
+    assert 0.0 in alts and 1.4 not in alts and len(alts) <= 4
+    assert all(abs(a - 1.4) >= 0.5 - 1e-9 for a in alts)
+
+
+def test_retime_tries_other_offsets_when_best_offset_finds_nothing(monkeypatch):
+    """plan_retime finds nothing at the plain-trim best offset but a real plan elsewhere: auto_sync must
+    still keep the retime (and move the offset to where it works)."""
+    from amv_matcher import autosync as A
+    song, vid = make_song(22.0), make_video(slow_wide_cuts(), duration=20.0)
+    best = A._best_offset(song, vid)
+    real = A.plan_retime
+
+    def fake(s, v, offset, *a, **k):
+        if abs(offset - best) < 1e-6:
+            out = real(s, v, offset, *a, **k)
+            out = dict(out, sections=[], warp=[[0.0, 0.0], [float(v["duration"]), float(v["duration"])]])
+            return out
+        return real(s, v, offset, *a, **k)
+    monkeypatch.setattr(A, "plan_retime", fake)
+    r = auto_sync(song, vid)
+    assert r["plan"]["retime"] and r["plan"]["retime"]["sections"]
+    assert abs(r["plan"]["offset"] - best) >= 0.5
