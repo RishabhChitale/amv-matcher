@@ -1,5 +1,18 @@
 """Song splicing: cut the SONG on bar boundaries so it fits the video better than one trim.
 
+Conventions (deliberate, not bugs):
+  * The FIRST segment's src_start is free (0.05 s grid, like score.py) so the most
+    important song drop can land exactly on the strongest video peak. Every cut
+    after it is on a bar boundary on BOTH sides (src_from and src_to).
+  * The FINAL segment's src_end is trimmed so the output equals the video duration
+    exactly; it is therefore not bar aligned.
+  * Bars are 4 beats; the downbeat phase (0-3) is estimated from onset strength and
+    the low-band-weighted energy curve at beats and returned as 'bar_phase'.
+  * total_pct is the raw score.score_at() result on the assembled song and is what
+    improvement_pct uses; 'objective' = raw combined score + drop/lull priority
+    bonus - CUT_PENALTY per cut (what the planner maximises).
+  * A song shorter than the video returns {eligible: False, reason, segments: [], ...}.
+
 plan_splice() does an exact dynamic program over output bar slots. State =
 (source bar of the current segment, cuts used, run length capped at the minimum
 segment length). Transition = continue with the next source bar, or cut (jump
@@ -26,14 +39,36 @@ NEG = -1e18
 
 
 # ----------------------------------------------------------------- helpers
-def _bars(song):
-    """Bar start times from the beat grid (4 beats per bar). Returns array of
-    nbars+1 boundaries (bar k = [b[k], b[k+1])) or None if too few beats."""
+def _bar_phase(song):
+    """Downbeat phase 0-3: beat phase whose beats carry the most onset strength + low-band energy."""
     bt = np.asarray(song["beat_times"], dtype=float)
+    if len(bt) < 8:
+        return 0
+    en = np.asarray(song["energy_curve"], dtype=float)
+    ehz = float(song.get("energy_hz", S.ENERGY_HZ))
+    ei = np.clip(np.round(bt * ehz).astype(int), 0, len(en) - 1)
+    f = en[ei]
+    on = np.asarray(song.get("onset_env", []), dtype=float)
+    if len(on):
+        ofps = float(song.get("onset_env_fps", 1.0))
+        oi = np.round(bt * ofps).astype(int)
+        o = np.array([on[max(0, i - 1):i + 2].max() if 0 <= i < len(on) else 0.0 for i in oi])
+        f = _z(f) + _z(o)
+    best, bs = 0, -1e18
+    for p in range(BEAT_PER_BAR):
+        v = float(f[p::BEAT_PER_BAR].mean())
+        if v > bs + 1e-9:
+            best, bs = p, v
+    return best
+
+
+def _bars(song, phase=0):
+    """Bar start times (every 4th beat from `phase`). Returns (nbars+1 boundaries or None, beats)."""
+    bt = np.asarray(song["beat_times"], dtype=float)[phase:]
     nb = (len(bt) - 1) // BEAT_PER_BAR
     if nb < 2:
-        return None, bt
-    return bt[: nb * BEAT_PER_BAR + 1: BEAT_PER_BAR], bt
+        return None, np.asarray(song["beat_times"], dtype=float)
+    return bt[: nb * BEAT_PER_BAR + 1: BEAT_PER_BAR], np.asarray(song["beat_times"], dtype=float)
 
 
 def _z(x):
@@ -94,7 +129,7 @@ def _eval(song, video, segments, ncuts):
 
 
 # ------------------------------------------------------------ DP machinery
-def _gains(song, video, bars, bt, L, nslots):
+def _gains(song, video, bars, bt, L, g, nslots):
     """gain[s, k]: proxy score points for putting source bar k in output slot s."""
     vd = float(video["duration"])
     hz = S.ENERGY_HZ
@@ -112,7 +147,7 @@ def _gains(song, video, bars, bt, L, nslots):
         if i1 > i0:
             vlull[i0:i1] = np.maximum(vlull[i0:i1], 1.0 / (i1 - i0))
     for s in range(nslots):
-        a = int(round(s * L * hz))
+        a = int(round((g + s * L) * hz))
         n = max(0, min(nb, N - a))
         VS[s, :n] = vz[a:a + n]
         VW[s, :n] = vlull[a:a + n]
@@ -137,11 +172,11 @@ def _gains(song, video, bars, bt, L, nslots):
         scale = 0.4 * 100.0 / (wtot * (1.0 - base))
         off4 = np.stack([bt[BEAT_PER_BAR * np.arange(K) + j] - bars[:K] for j in range(BEAT_PER_BAR)], axis=1)  # (K,4)
         for s in range(nslots):
-            m = (ev_t >= s * L - 1e-9) & (ev_t < (s + 1) * L - 1e-9)
+            m = (ev_t >= g + s * L - 1e-9) & (ev_t < g + (s + 1) * L - 1e-9)
             if not m.any():
                 continue
             t, w = ev_t[m], ev_w[m]
-            d = np.abs(t[:, None, None] - (s * L + off4)[None, :, :]).min(axis=2)       # (E,K)
+            d = np.abs(t[:, None, None] - (g + s * L + off4)[None, :, :]).min(axis=2)       # (E,K)
             gain[s] += scale * ((d <= S.TOLERANCE_S) * w[:, None]).sum(axis=0)
 
     # drops on peaks (priority)
@@ -154,19 +189,19 @@ def _gains(song, video, bars, bt, L, nslots):
                 continue
             o = d - bars[k]
             for a in peaks:
-                s = int(round((a - o) / L))                # slot whose start puts the drop on the peak
+                s = int(round((a - o - g) / L))                # slot whose start puts the drop on the peak
                 for s2 in (s - 1, s, s + 1):
-                    if 0 <= s2 < nslots and abs(s2 * L + o - a) <= DROP_PEAK_TOL_S:
+                    if 0 <= s2 < nslots and abs(g + s2 * L + o - a) <= DROP_PEAK_TOL_S:
                         gain[s2, k] += DROP_PEAK_PTS
     return gain
 
 
-def _dp(gain, max_cuts, R, min_cut_slot_ok):
+def _dp(gain, max_cuts, R, min_cut_slot_ok, init):
     """Exact DP. Returns best (value, cuts, path) per cut count; path = source bar per slot."""
     nslots, K = gain.shape
     C = max_cuts + 1
     V = np.full((C, R, K), NEG)
-    V[0, 0, :] = gain[0]
+    V[0, init[1], init[0]] = gain[0, init[0]]
     bp = []
     ar = np.arange(K)
     for s in range(1, nslots):
@@ -222,8 +257,9 @@ def _dp(gain, max_cuts, R, min_cut_slot_ok):
     return out
 
 
-def _path_to_plan(path, bars, vd, L):
-    """Source-bar-per-slot path -> segments (contiguous runs) with exact durations."""
+def _path_to_plan(path, bars, vd, L, first_start):
+    """Source-bar-per-slot path -> segments. The first segment starts at first_start (free trim),
+    later ones on bars; the last is trimmed to fill the video exactly."""
     runs = []
     for s, k in enumerate(path):
         if runs and k == runs[-1][1] + runs[-1][2]:
@@ -232,11 +268,8 @@ def _path_to_plan(path, bars, vd, L):
             runs.append([s, k, 1])
     segs, dst = [], 0.0
     for i, (_s, k, n) in enumerate(runs):
-        a = float(bars[k])
-        if i == len(runs) - 1:
-            b = a + (vd - dst)
-        else:
-            b = float(bars[k + n])
+        a = float(first_start) if i == 0 else float(bars[k])
+        b = a + (vd - dst) if i == len(runs) - 1 else float(bars[k + n])
         a, b = round(a, 6), round(b, 6)
         segs.append({"src_start": a, "src_end": b, "dst_start": round(dst, 6)})
         dst = round(dst + (b - a), 6)
@@ -260,47 +293,81 @@ def _cuts(segs):
 
 
 # ------------------------------------------------------------------- API
+def _strongest_peak(video):
+    ve = np.asarray(video["energy_curve"], dtype=float)
+    hz = float(video.get("energy_hz", S.ENERGY_HZ))
+    best, bv = None, -1.0
+    for a, b in video.get("peak_segments", []):
+        seg = ve[int(a * hz):max(int(b * hz), int(a * hz) + 1)]
+        v = float(seg.mean()) if len(seg) else 0.0
+        if v > bv + 1e-9:
+            best, bv = float(a), v
+    return best
+
+
+def _empty(reason, phase):
+    return {"eligible": False, "reason": reason, "segments": [], "cuts": [], "total_pct": 0, "tempo_pct": 0.0,
+            "sync_pct": 0.0, "arc_pct": 0.0, "objective": 0.0, "bar_phase": phase,
+            "baseline": {"offset": 0.0, "total_pct": 0}, "improvement_pct": 0}
+
+
 def plan_splice(song: dict, video: dict, max_cuts: int, min_segment_s: float = 2.0) -> dict:
     vd, sd = float(video["duration"]), float(song["duration"])
+    phase = _bar_phase(song)
+    if sd < vd:
+        return _empty("song shorter than video", phase)
     base = S.score(song, video)
-    if max_cuts <= 0 and not base["eligible"]:
-        raise ValueError("song is shorter than the video; splicing needs max_cuts > 0")
+    if not base.get("eligible", True):
+        return _empty("song shorter than video", phase)
     off = float(base["best_offset_s"])
     base_segs = _single(off, vd)
     base_total = int(base["total_pct"])
+    base_res = {k: base[k] for k in ("total_pct", "tempo_pct", "sync_pct", "arc_pct")}
+    base_obj = _eval(song, video, base_segs, 0)["obj"]
 
-    def pack(segs, r):
-        return {"segments": segs, "cuts": _cuts(segs), "total_pct": r["total_pct"], "tempo_pct": r["tempo_pct"],
-                "sync_pct": r["sync_pct"], "arc_pct": r["arc_pct"],
+    def pack(segs, r, obj):
+        return {"eligible": True, "segments": segs, "cuts": _cuts(segs), "total_pct": r["total_pct"],
+                "tempo_pct": r["tempo_pct"], "sync_pct": r["sync_pct"], "arc_pct": r["arc_pct"],
+                "objective": round(obj, 3), "bar_phase": phase,
                 "baseline": {"offset": off, "total_pct": base_total},
                 "improvement_pct": r["total_pct"] - base_total}
 
-    base_res = {k: base[k] for k in ("total_pct", "tempo_pct", "sync_pct", "arc_pct")}
-    if max_cuts <= 0:
-        return pack(base_segs, base_res)
-
-    bars, bt = _bars(song)
-    if bars is None:
-        return pack(base_segs, base_res)
+    best = (base_segs, base_res, base_obj)
+    bars, bt = _bars(song, phase)
+    if max_cuts <= 0 or bars is None:
+        return pack(*best)
     K = len(bars) - 1
     L = float(np.median(np.diff(bars)))
-    nslots = max(1, int(math.ceil(vd / L - 1e-9)))
     R = max(1, int(math.ceil(min_segment_s / L - 1e-9)))
-    if nslots < 2 * R:
-        return pack(base_segs, base_res)
-    gain = _gains(song, video, bars, bt, L, nslots)
-    # a cut at slot s leaves vd - s*L for the tail segment; it must still be >= min_segment_s
-    plans = _dp(gain, int(max_cuts), R, lambda s: vd - s * L >= min_segment_s - 1e-9)
 
-    best_obj = _eval(song, video, base_segs, 0)["obj"]
-    best = (base_segs, base_res)
-    for _v, c, path in plans:
-        if c == 0:
+    # candidate free first trims: baseline offset + each drop aligned to the strongest peak
+    cands = [off]
+    pk = _strongest_peak(video)
+    if pk is not None:
+        for d in song.get("drops", []):
+            o = round(round((d - pk) / 0.05) * 0.05, 2)
+            if 0 <= o <= sd - vd and all(abs(o - c) > 1e-6 for c in cands):
+                cands.append(o)
+    for o in cands:
+        k0 = int(np.searchsorted(bars, o - 1e-6))
+        if k0 >= K:
             continue
-        segs = _path_to_plan(path, bars, vd, L)
-        if len(segs) - 1 > max_cuts or not _valid(segs, vd, min_segment_s, sd):
+        g = float(bars[k0] - o)
+        nslots = max(1, int(math.ceil((vd - g) / L - 1e-9)))
+        if nslots < 2:
             continue
-        e = _eval(song, video, segs, len(segs) - 1)
-        if e["obj"] > best_obj and e["r"]["total_pct"] >= base_total:
-            best_obj, best = e["obj"], (segs, e["r"])
+        gain = _gains(song, video, bars, bt, L, g, nslots)
+        r0 = R - 1 if g + L >= min_segment_s - 1e-9 else min(R - 1, int(math.ceil((g + L) / L - 1e-9)) - 1)
+        plans = _dp(gain, int(max_cuts), R, lambda s, g=g: vd - (g + s * L) >= min_segment_s - 1e-9, (k0, r0))
+        for _v, c, path in plans:
+            segs = _path_to_plan(path, bars, vd, L, o)
+            if len(segs) - 1 > max_cuts or not _valid(segs, vd, min_segment_s, sd):
+                continue
+            e = _eval(song, video, segs, len(segs) - 1)
+            if e["obj"] > best[2] and e["r"]["total_pct"] >= base_total:
+                best = (segs, e["r"], e["obj"])
+        # the free-trim single segment (no cuts) is also a candidate
+        e = _eval(song, video, _single(o, vd), 0)
+        if e["obj"] > best[2] and e["r"]["total_pct"] >= base_total:
+            best = (_single(o, vd), e["r"], e["obj"])
     return pack(*best)
