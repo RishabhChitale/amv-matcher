@@ -43,6 +43,30 @@ def is_done(status: str) -> bool:
     return bool(re.match(r"(fixed|done)\b", status.strip(), re.I))
 
 
+# Explicit alias table: prose keyword -> (argv, heavy). Nothing else is ever inferred from prose.
+ALIASES = {
+    "ui_smoke": ([PY, "tools/ui_smoke.py"], False),
+    "real_suite": ([PY, "tools/real_suite.py"], True),
+    "selftest": ([PY, "app_main.py", "--selftest"], False),
+}
+EXPECT = re.compile(r"\b(ui_smoke|real_suite)\s+(\d+)\s*/\s*(\d+)")
+
+
+def infer(v: str):
+    """Prose -> (argv, heavy, expect) using only ALIASES, test paths and 'pytest -k expr'; else None."""
+    m = re.search(r"\bpytest\s+-k\s+(?:\"([^\"]+)\"|'([^']+)'|(\S+))", v)
+    if m:
+        return [PY, "-m", "pytest", "-q", "-k", m.group(1) or m.group(2) or m.group(3)], False, None
+    paths = list(dict.fromkeys(NODE.findall(v)))
+    if paths:
+        return [PY, "-m", "pytest", "-q", *paths], False, None
+    for key, (argv, heavy) in ALIASES.items():
+        if re.search(rf"\b{key}\b", v):
+            e = EXPECT.search(v)
+            return list(argv), heavy, (int(e.group(2)), int(e.group(3))) if e and e.group(1) == key else None
+    return None
+
+
 def classify(row: dict) -> dict:
     """Adds kind = manual | automatable | unsafe | skip (not done), and argv for automatable rows."""
     row = dict(row)
@@ -54,10 +78,12 @@ def classify(row: dict) -> dict:
     cmd = None
     if spans:
         cmd = spans[0].strip()
-    elif NODE.search(v):
-        cmd = "pytest " + NODE.search(v).group(0)
     if not cmd:
-        row["kind"] = "manual"
+        inf = infer(v)
+        if not inf:
+            row["kind"] = "manual"
+            return row
+        row["kind"], row["argv"], row["heavy"], row["expect"], row["inferred"] = "automatable", *inf, True
         return row
     try:
         parts = shlex.split(cmd)
@@ -78,11 +104,18 @@ def classify(row: dict) -> dict:
 
 
 def run_row(row: dict, timeout: int) -> dict:
+    if row.get("heavy") and not row.get("include_heavy"):
+        return {**row, "result": "skipped", "secs": 0, "tail": "heavy: needs --include-heavy"}
     t0 = time.time()
     try:
         p = subprocess.run(LOCK + row["argv"], cwd=ROOT, capture_output=True, text=True, timeout=timeout)
         out = (p.stdout + p.stderr).strip().splitlines()
         tail = out[-1][:160] if out else ""
+        if row.get("expect"):
+            ok = sum(l.startswith("PASS") for l in out)
+            tot = ok + sum(l.startswith("FAIL") for l in out)
+            if tot:
+                tail = f"got {ok}/{tot}, expected {row['expect'][0]}/{row['expect'][1]}; " + tail
         if p.returncode == 0:
             status = "skipped" if re.search(r"\b\d+ skipped\b", tail) and "passed" not in tail else "pass"
         elif p.returncode == 5:
@@ -118,12 +151,13 @@ def write_report(results: list[dict], path: Path = REPORT) -> None:
              f"- Commit: {git_head()}", f"- Load average (1/5/15 min): {load}",
              "- Summary: " + ", ".join(f"{k} {v}" for k, v in sorted(counts.items())), "",
              "| ID | Result | Secs | Command | Output tail |", "|---|---|---|---|---|"]
+    lines[-2:] = ["| ID | Result | Inferred | Heavy | Secs | Command | Output tail |", "|---|---|---|---|---|---|---|"]
     for r in results:
         if r["kind"] == "skip":
             continue
         res = r.get("result") or {"manual": "manual", "unsafe": "unsafe: skipped", "automatable": "not run"}[r["kind"]]
         cmd = " ".join(r.get("argv", [])) or r.get("cmd", "")
-        lines.append(f"| {r['id']} | {res} | {r.get('secs', '')} | `{cmd}` | {r.get('tail', '').replace('|', '/')} |")
+        lines.append(f"| {r['id']} | {res} | {'inferred' if r.get('inferred') else ''} | {'heavy' if r.get('heavy') else ''} | {r.get('secs', '')} | `{cmd}` | {r.get('tail', '').replace('|', '/')} |")
     path.write_text("\n".join(lines) + "\n")
 
 
@@ -132,19 +166,24 @@ def main(argv=None) -> int:
     ap.add_argument("--only", default="")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--list", action="store_true")
+    ap.add_argument("--include-heavy", action="store_true")
     ap.add_argument("--timeout", type=int, default=300)
     a = ap.parse_args(argv)
     rows = [classify(r) for r in parse(LEFTOVERS.read_text())]
     if a.only:
         want = {x.strip().upper() for x in a.only.split(",") if x.strip()}
         rows = [r for r in rows if r["id"] in want]
+    for r in rows:
+        r["include_heavy"] = a.include_heavy
     n = {k: sum(r["kind"] == k for r in rows) for k in ("automatable", "manual", "unsafe", "skip")}
-    print(f"rows parsed {len(rows)}: automatable {n['automatable']}, manual {n['manual']}, "
+    n["inferred"] = sum(bool(r.get("inferred")) for r in rows)
+    n["heavy"] = sum(bool(r.get("heavy")) for r in rows)
+    print(f"rows parsed {len(rows)}: automatable {n['automatable']} (inferred {n['inferred']}, heavy {n['heavy']}), manual {n['manual']}, "
           f"unsafe {n['unsafe']}, not-done {n['skip']}")
     if a.list or a.dry_run:
         for r in rows:
             if r["kind"] != "skip":
-                print(f"{r['id']:5} {r['kind']:11} {' '.join(r.get('argv', [])) or r.get('cmd', '')}")
+                print(f"{r['id']:5} {r['kind']:11} {'inferred ' if r.get('inferred') else ''}{'heavy ' if r.get('heavy') else ''}{' '.join(r.get('argv', [])) or r.get('cmd', '')}")
         return 0
     results = [run_row(r, a.timeout) if r["kind"] == "automatable" else r for r in rows]
     write_report(results)
