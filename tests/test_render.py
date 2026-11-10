@@ -203,12 +203,75 @@ def test_estimate_shape(clip, tmp_path, monkeypatch):
     e = render.estimate_render(plan_of(SLOW), "blend", clip)
     assert set(e) >= {"frames", "interpolated", "est_seconds", "estimated"}
     assert e["frames"] == round(4.25 * FPS) and e["interpolated"] > 0 and e["est_seconds"] > 0
-    assert e["estimated"] is True
+    assert e["estimated"] is False and "calibration_s" in e          # blend/base calibrated on first use
     assert render.estimate_render(plan_of(SLOW), "dup", clip)["interpolated"] == 0
     assert render.estimate_render(plan_of(SLOW), "auto", clip)["interp"] == "blend"
     render._save_cost("base", f"{W}x{H}", 0.001)
     render._save_cost("blend", f"{W}x{H}", 0.001)
-    assert render.estimate_render(plan_of(SLOW), "blend", clip)["estimated"] is False
+    e2 = render.estimate_render(plan_of(SLOW), "blend", clip)
+    assert e2["estimated"] is False and "calibration_s" not in e2
+
+
+def test_rife_estimate_calibrates_once_and_caches(clip, tmp_path, monkeypatch):
+    monkeypatch.setattr(render, "tools_dir", lambda: tmp_path)
+    monkeypatch.setattr(render, "rife_exe", lambda: Path("/fake/rife"))
+    monkeypatch.setattr(render, "list_vulkan_devices", lambda exe: [{"id": 0, "name": "AMD Radeon Pro 5300M"}])
+    calls = []
+
+    class FakeRunner:
+        gpu_label, failed = "AMD Radeon Pro 5300M", []
+
+        def __init__(self, exe, gpu_id=None, cancel=None):
+            pass
+
+        def pair(self, a, b, t):
+            calls.append(a.shape)
+            time.sleep(0.05)
+            return a
+
+        def kill_all(self):
+            pass
+
+    monkeypatch.setattr(render, "RifeRunner", FakeRunner)
+    e = render.estimate_render(plan_of(SLOW), "rife", clip)
+    assert e["estimated"] is False and e["gpu"] == "AMD Radeon Pro 5300M" and "reason" not in e
+    assert (H, W, 3) in calls and len(calls) == 3                       # warm-up + 2 target-size pairs
+    cached, ok = render._cost("rife", W, H, "AMD Radeon Pro 5300M")
+    assert ok and 0.01 < cached < 5
+    e2 = render.estimate_render(plan_of(SLOW), "rife", clip)
+    assert len(calls) == 3 and e2["estimated"] is False and e2["est_seconds"] == e["est_seconds"]
+    render.estimate_render(plan_of(SLOW), "rife", clip, measure=True)   # forces a re-calibration
+    assert len(calls) == 6
+
+
+def test_rife_estimate_fallback_is_pessimistic(clip, tmp_path, monkeypatch):
+    monkeypatch.setattr(render, "tools_dir", lambda: tmp_path)
+    monkeypatch.setattr(render, "rife_exe", lambda: None)
+    e = render.estimate_render(plan_of(SLOW), "rife", clip)
+    assert e["estimated"] is True and "not installed" in e["reason"]
+    per = e["est_seconds"] - e["frames"] * render._cost("base", W, H)[0]
+    assert per >= e["interpolated"] * 1.2 * (W * H) / (1920 * 1080) - 1e-6   # never undersells
+    # a calibration that hangs is cut off by the hard timeout and falls back too
+    monkeypatch.setattr(render, "rife_exe", lambda: Path("/fake/rife"))
+    monkeypatch.setattr(render, "list_vulkan_devices", lambda exe: [{"id": 0, "name": "GPU"}])
+    monkeypatch.setattr(render, "CALIBRATION_TIMEOUT", 0.3)
+
+    class Hang:
+        gpu_label, failed = "GPU", []
+
+        def __init__(self, *a, **k):
+            pass
+
+        def pair(self, a, b, t):
+            time.sleep(2)
+
+        def kill_all(self):
+            pass
+
+    monkeypatch.setattr(render, "RifeRunner", Hang)
+    t0 = time.time()
+    e = render.estimate_render(plan_of(SLOW), "rife", clip)
+    assert time.time() - t0 < 1.5 and e["estimated"] is True and "timed out" in e["reason"]
 
 
 def test_cancel_cleans_up(clip, tmp_path):

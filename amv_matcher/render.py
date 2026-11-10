@@ -32,9 +32,12 @@ app.include_router(render_router)`), jobs polled in the same style as /api/scan/
        cancels an install job.
   POST /api/render-estimate  {"video_path": str, "plan": {...}, "interp": "auto"|..., "measure": false}
        -> {"frames","interpolated","est_seconds","estimated": bool,"interp": <resolved mode>,
-           "per_frame_s", "gpu"}   (POST because the plan is a large body; "estimated": true while
-       the per-machine, per-resolution cost is a default constant; every real render and every
-       "measure": true call (RIFE only, ~10-20 s) stores a measurement in <cache>/tools/render_cost.json)
+           "per_frame_s", "gpu", "calibration_s"?, "reason"?}   (POST because the plan is a large body.
+       A missing per-machine cost (GPU + resolution for rife; resolution for blend/base) is calibrated
+       automatically on the first estimate (rife: 2 pairs at the target resolution; blend: a few real
+       frames; hard timeout 8 s), cached in <cache>/tools/render_cost.json and reported with
+       "estimated": false. "measure": true forces a re-calibration. If calibration fails, pessimistic
+       constants (rife 1.2 s/frame at 1080p, scaled by pixels) give "estimated": true + "reason".)
   GET  /api/render-tools   -> {"rife": {"available", "installed", "tag", "size_mb"}}
   POST /api/render-tools/rife   -> {"job_id"}  (downloads + verifies RIFE; poll the job above; the
        zip is deleted after verification + extraction, only the binary, the rife-v4.6 model and
@@ -77,7 +80,8 @@ SLOW_EPS = 0.002          # local speed below 1 - eps counts as slowed
 RIFE_WORKERS = 3
 RIFE_J = "1:2:2"          # -j load:proc:save per RIFE process (tuned on the discrete GPU, see report)
 # first-use default costs at 1920x1080 (seconds); scaled by pixel count until measured
-DEFAULT_COST_1080 = {"base": 0.05, "blend": 0.03, "rife": 1.15}
+DEFAULT_COST_1080 = {"base": 0.05, "blend": 0.03, "rife": 1.2}      # pessimistic fallback (never undersell)
+CALIBRATION_TIMEOUT = 8.0
 
 RIFE_TAG = "20221029"
 _BASE = f"https://github.com/nihui/rife-ncnn-vulkan/releases/download/{RIFE_TAG}/"
@@ -442,13 +446,70 @@ def _save_cost(kind: str, key: str, value: float) -> None:
 
 
 def _cost(kind: str, w: int, h: int, gpu: Optional[str] = None):
-    """(seconds, measured?) for 'base' (per output frame), 'blend' / 'rife' (extra per interpolated
-    frame) at this resolution (and GPU for rife)."""
+    """(seconds, cached?) for 'base' (per output frame), 'blend' / 'rife' (extra per interpolated
+    frame) at this resolution (and GPU for rife). Falls back to pessimistic constants."""
     key = f"{w}x{h}" + (f"|{gpu}" if kind == "rife" and gpu else "")
     v = _load_costs().get(kind, {}).get(key)
     if v is not None:
         return float(v), True
     return DEFAULT_COST_1080[kind] * (w * h) / (1920 * 1080), False
+
+
+def _run_with_timeout(fn, timeout: float, on_timeout: Optional[Callable] = None):
+    """Run fn() in a daemon thread; raise RenderError when it takes longer than `timeout`."""
+    box: dict = {}
+
+    def work():
+        try:
+            box["v"] = fn()
+        except BaseException as e:                         # noqa: BLE001
+            box["e"] = e
+
+    th = threading.Thread(target=work, daemon=True)
+    th.start()
+    th.join(timeout)
+    if th.is_alive():
+        if on_timeout:
+            try:
+                on_timeout()
+            except Exception:                              # noqa: BLE001
+                pass
+        raise RenderError(f"calibration timed out after {timeout:.0f}s")
+    if "e" in box:
+        raise box["e"]
+    return box["v"]
+
+
+def calibrate_blend_cost(w: int, h: int, n: int = 6) -> dict:
+    """~1 s: time n frames through the real paths. base = H.264 encode (render settings) + frame
+    conversion per output frame; blend = the float32 cross-fade of two frames. Cached per resolution."""
+    rng = np.random.default_rng(1)
+    a = rng.integers(0, 255, (h, w, 3), dtype=np.uint8)
+    b = np.roll(a, 5, axis=1)
+    t0 = time.time()
+    for k in range(n):
+        f = 0.2 + 0.1 * k
+        ((1 - f) * a.astype(np.float32) + f * b.astype(np.float32) + 0.5).astype(np.uint8)
+    blend = (time.time() - t0) / n
+    tmp = Path(tempfile.mkdtemp(prefix="amv-cal-"))
+    try:
+        t0 = time.time()
+        with av.open(str(tmp / "c.mp4"), "w") as out:
+            vs = out.add_stream("libx264", rate=30)
+            vs.width, vs.height, vs.pix_fmt = w, h, "yuv420p"
+            vs.options = {"preset": "veryfast", "crf": "20"}
+            for k in range(n):
+                fr = av.VideoFrame.from_ndarray(a if k % 2 else b, format="rgb24")
+                for pk in vs.encode(fr):
+                    out.mux(pk)
+            for pk in vs.encode():
+                out.mux(pk)
+        base = (time.time() - t0) / n
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    _save_cost("blend", f"{w}x{h}", blend)
+    _save_cost("base", f"{w}x{h}", base)
+    return {"base": base, "blend": blend}
 
 
 def _probe(video_path):
@@ -466,27 +527,41 @@ def _interp_mask(f, slow):
 
 
 def measure_rife_cost(exe: Optional[Path] = None, w: int = 1920, h: int = 1080, n: int = 6,
-                      gpu_id: Optional[int] = None) -> dict:
-    """Time n synthetic frame pairs through RIFE (RIFE_WORKERS in parallel) and store s/frame."""
+                      gpu_id: Optional[int] = None, workers: Optional[int] = None,
+                      timeout: Optional[float] = None) -> dict:
+    """Time n synthetic frame pairs through RIFE (`workers` in parallel) and store s/frame.
+    With `timeout` the RIFE processes are killed and RenderError raised when it takes longer."""
     exe = exe or rife_exe()
     if not exe:
         raise RenderError("RIFE is not installed")
+    if free_bytes(tempfile.gettempdir()) < MIN_FREE_BYTES:
+        raise RenderError("Less than 3 GB of free disk space; skipping calibration")
     rng = np.random.default_rng(0)
     a = rng.integers(0, 255, (h, w, 3), dtype=np.uint8)
     b = np.roll(a, 7, axis=1)
     runner = RifeRunner(exe, gpu_id)
-    runner.pair(a[:64, :64], b[:64, :64], 0.5)                       # warm-up / device pick
-    t0 = time.time()
-    with ThreadPoolExecutor(RIFE_WORKERS) as pool:
-        list(pool.map(lambda k: runner.pair(a, b, 0.2 + 0.05 * k), range(n)))
-    per = (time.time() - t0) / n
+
+    def run():
+        runner.pair(a[:64, :64], b[:64, :64], 0.5)                   # warm-up / device pick
+        t0 = time.time()
+        with ThreadPoolExecutor(workers or RIFE_WORKERS) as pool:
+            list(pool.map(lambda k: runner.pair(a, b, 0.2 + 0.05 * k), range(n)))
+        return (time.time() - t0) / n
+
+    per = _run_with_timeout(run, timeout, runner.kill_all) if timeout else run()
     _save_cost("rife", f"{w}x{h}|{runner.gpu_label}", per)
     return {"s_per_frame": per, "gpu": runner.gpu_label, "failed": runner.failed}
 
 
 def estimate_render(plan: dict, interp: str, video, measure: bool = False,
                     gpu_id: Optional[int] = None) -> dict:
-    """{frames, interpolated, est_seconds, estimated, ...} without rendering anything."""
+    """{frames, interpolated, est_seconds, estimated, ...} without rendering anything.
+
+    A missing cost (this GPU + resolution for rife; this resolution for base/blend) is calibrated
+    automatically (rife: 2 pairs at the target resolution; blend/base: a few real frames), cached in
+    <cache>/tools/render_cost.json and reported with estimated=False. measure=True forces a fresh
+    calibration. Every calibration has a hard timeout (CALIBRATION_TIMEOUT); when it fails the
+    pessimistic constants are used and the result has estimated=True plus a "reason"."""
     mode = interp if interp != "auto" else "blend"
     if mode not in ("rife", "blend", "dup"):
         raise RenderError(f"Unknown interp {interp!r}")
@@ -497,22 +572,48 @@ def estimate_render(plan: dict, interp: str, video, measure: bool = False,
     i, f, slow = frame_plan(warp, out_dur, pr["fps"], max(1, pr["frames"]))
     n_out = len(i)
     n_int = 0 if mode == "dup" else int(_interp_mask(f, slow).sum())
-    gname = None
+    w, h = pr["w"], pr["h"]
+    gname, reasons, t_cal = None, [], 0.0
+    exe = rife_exe() if mode == "rife" else None
     if mode == "rife":
-        exe = rife_exe()
         if exe:
-            order = pick_gpu_order(list_vulkan_devices(exe), gpu_id)
-            gname = gpu_name(list_vulkan_devices(exe), order[0] if order else None)
-            if measure and n_int:
-                gname = measure_rife_cost(exe, pr["w"], pr["h"], gpu_id=gpu_id)["gpu"]
-    base, m_base = _cost("base", pr["w"], pr["h"])
-    extra, m_extra = (0.0, True) if mode == "dup" else _cost(mode, pr["w"], pr["h"], gname)
+            devs = list_vulkan_devices(exe)
+            order = pick_gpu_order(devs, gpu_id)
+            gname = gpu_name(devs, order[0] if order else None)
+        else:
+            reasons.append("RIFE is not installed")
+    base, m_base = _cost("base", w, h)
+    if measure or not m_base or (mode == "blend" and not _cost("blend", w, h)[1]):
+        t0 = time.time()
+        try:
+            _run_with_timeout(lambda: calibrate_blend_cost(w, h), CALIBRATION_TIMEOUT)
+        except Exception as e:                             # noqa: BLE001
+            reasons.append(f"blend calibration failed: {e}")
+        t_cal += time.time() - t0
+        base, m_base = _cost("base", w, h)
+    extra, m_extra = (0.0, True) if mode == "dup" else _cost(mode, w, h, gname)
+    if mode == "rife" and exe and n_int and (measure or not m_extra):
+        t0 = time.time()
+        try:
+            got = measure_rife_cost(exe, w, h, n=2, gpu_id=gpu_id, workers=2, timeout=CALIBRATION_TIMEOUT)
+            gname = got["gpu"]
+        except Exception as e:                             # noqa: BLE001
+            reasons.append(f"RIFE calibration failed: {e}")
+        t_cal += time.time() - t0
+        extra, m_extra = _cost("rife", w, h, gname)
+    elif mode == "blend" and n_int:
+        extra, m_extra = _cost("blend", w, h)
     if n_int == 0:
         m_extra = True
-    return {"frames": n_out, "interpolated": n_int, "interp": mode, "gpu": gname,
-            "est_seconds": round(n_out * base + n_int * extra, 3),
-            "per_frame_s": round(base + (n_int / max(n_out, 1)) * extra, 4),
-            "estimated": not (m_base and m_extra)}
+    out = {"frames": n_out, "interpolated": n_int, "interp": mode, "gpu": gname,
+           "est_seconds": round(n_out * base + n_int * extra, 3),
+           "per_frame_s": round(base + (n_int / max(n_out, 1)) * extra, 4),
+           "estimated": not (m_base and m_extra)}
+    if t_cal:
+        out["calibration_s"] = round(t_cal, 2)
+    if out["estimated"]:
+        out["reason"] = "; ".join(reasons) or "no cached cost"
+    return out
 
 
 # --------------------------------------------------------------------------- frame plan
