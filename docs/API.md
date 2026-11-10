@@ -211,4 +211,17 @@ Options are clamped to the engine limits: `lead_s` 0-0.12, `max_speed_dev` 0-0.2
 Returns `{job_id, status: "running", options}` (the clamped options). A second request for the same (video, song) pair while one runs returns `409 {detail, job_id}`.
 Poll `GET /api/auto-sync/{job_id}`; when `status` is `done`, `result` is the auto_sync result verbatim (`steps`, `final` incl. `effort`, `fit_after_effort`, `tightness`, `plan`, `why_not_100`).
 
+Progress: while running, the job also carries `steps_so_far` (list of the step payloads `auto_sync` reported through its `progress_cb`, oldest first) and `current_step` (a short name taken from the latest step, `""` when none / finished). Both stay `[]` / `""` if the installed `autosync.auto_sync` has no `progress_cb` parameter (checked with `inspect.signature`).
+
+`POST /api/auto-sync/{job_id}/cancel` (Origin-guarded; 404 unknown job). Idempotent: returns `{job_id, status, cancelled}`. On a running job it sets the cancel flag that `auto_sync` polls through `should_cancel`; the job ends with `status: "cancelled"`, `result: null`, nothing is written to the cache, and the pair's 409 lock is released. If `auto_sync` has no `should_cancel` parameter the job is marked `cancelled` at once and the worker's eventual result is discarded. A job that already finished is returned unchanged (`cancelled` true only when its status is `cancelled`). `status` is therefore one of `running | done | error | cancelled`.
+
 Each finished run caches its `final` on disk (`.cache/autosync.json`, keyed by a hash of video, song and options, plus a per-pair "latest" entry). `/api/scan` and `/api/score-songs` results carry `auto_sync_cached` per song: the latest `final` for that pair, or `null`, so a UI can rank by `fit_after_effort`.
+
+## Native shell: open / reveal exports
+
+Desktop shell only (`window.pywebview.api`; `static/native.js` wraps them as `nativeOpen(path)` / `nativeReveal(path)`, which resolve `false` in a browser). Both take a path and return `true` if the OS command was launched, `false` otherwise:
+
+- `open_path(path)`: open the file or folder with the OS default app (`open` / `os.startfile` / `xdg-open`).
+- `reveal_path(path)`: show it in the file manager (macOS `open -R`, Windows `explorer /select,<path>`, Linux opens the parent folder).
+
+Validation (`paths.exports_member`): the path is `resolve()`d and must exist and be strictly inside the exports dir (`.exports/`), so `..` and symlinks leading out are rejected; the exports dir itself and anything else return `false` without running a command.

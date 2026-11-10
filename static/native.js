@@ -34,6 +34,10 @@
   }
   window.nativeDrop = paths => { const t = target; target = null; return handle(paths, t).catch(e => note(e.message, true)); };
 
+  // Open / reveal an export (the shell validates: only paths inside the exports dir). Resolves to true when launched.
+  window.nativeOpen = p => NATIVE() && pywebview.api.open_path ? pywebview.api.open_path(p) : Promise.resolve(false);
+  window.nativeReveal = p => NATIVE() && pywebview.api.reveal_path ? pywebview.api.reveal_path(p) : Promise.resolve(false);
+
   function wire() {
     if (!NATIVE()) return;
     document.body.classList.add('native');

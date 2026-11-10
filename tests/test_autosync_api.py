@@ -78,3 +78,100 @@ def test_job_result_verbatim_and_cached(tmp_path, monkeypatch):
     res = r.json()["results"] + r.json()["too_short"]
     assert res and all("auto_sync_cached" in x for x in res)
     assert [x for x in res if x["path"] == str(s.resolve())][0]["auto_sync_cached"]["fit_after_effort"] == 88.5
+
+
+def _wait(c, jid, want=("done", "error", "cancelled")):
+    for _ in range(300):
+        j = c.get(f"/api/auto-sync/{jid}").json()
+        if j["status"] in want:
+            return j
+        time.sleep(0.05)
+    return j
+
+
+def test_progress_and_cooperative_cancel(tmp_path, monkeypatch):
+    import threading
+    v, s = _setup(tmp_path, monkeypatch)
+    started = threading.Event()
+
+    def fake_auto(song, video, progress_cb=None, should_cancel=None, **kw):
+        progress_cb({"step": "retime"})
+        started.set()
+        for _ in range(200):
+            if should_cancel():
+                return {"cancelled": True}
+            time.sleep(0.02)
+        return {"final": {}}
+    monkeypatch.setattr(server._autosync, "auto_sync", fake_auto)
+    c = TestClient(server.app)
+    assert c.post("/api/auto-sync/nope/cancel").status_code == 404
+    jid = c.post("/api/auto-sync", json=_body(v, s)).json()["job_id"]
+    assert started.wait(10)
+    j = c.get(f"/api/auto-sync/{jid}").json()
+    assert j["steps_so_far"] == [{"step": "retime"}] and j["current_step"] == "retime"
+    assert c.post(f"/api/auto-sync/{jid}/cancel", headers={"Origin": "http://evil.example"}).status_code == 403
+    assert c.post(f"/api/auto-sync/{jid}/cancel").json()["cancelled"] is True
+    j = _wait(c, jid)
+    assert j["status"] == "cancelled" and j["result"] is None
+    assert c.post(f"/api/auto-sync/{jid}/cancel").json()["status"] == "cancelled"     # idempotent
+    for _ in range(100):
+        if not server._AUTOSYNC_RUNNING:
+            break
+        time.sleep(0.05)
+    assert not server._AUTOSYNC_RUNNING and jid not in server._AUTOSYNC_CANCEL
+
+
+def test_cancel_without_hooks_discards_result(tmp_path, monkeypatch):
+    import threading
+    v, s = _setup(tmp_path, monkeypatch)
+    go = threading.Event()
+
+    def old_auto(song, video, **kw):          # an autosync.py without the hooks
+        assert "progress_cb" not in kw and "should_cancel" not in kw
+        go.wait(10)
+        return {"final": {"total_pct": 1}}
+    monkeypatch.setattr(server._autosync, "auto_sync", old_auto)
+    c = TestClient(server.app)
+    jid = c.post("/api/auto-sync", json=_body(v, s)).json()["job_id"]
+    assert c.post(f"/api/auto-sync/{jid}/cancel").json()["status"] == "cancelled"
+    go.set()
+    time.sleep(0.5)
+    j = c.get(f"/api/auto-sync/{jid}").json()
+    assert j["status"] == "cancelled" and j["result"] is None
+    assert server._autosync_cached(v.resolve(), s.resolve()) is None
+
+
+def test_exports_member_validation(tmp_path, monkeypatch):
+    from amv_matcher import paths
+    ex = tmp_path / "exports"
+    ex.mkdir()
+    (ex / "a.mp4").write_bytes(b"x")
+    (ex / "sub").mkdir()
+    outside = tmp_path / "secret.txt"
+    outside.write_text("s")
+    (ex / "link").symlink_to(outside)
+    monkeypatch.setattr(paths, "EXPORTS", ex)
+    assert paths.exports_member(ex / "a.mp4") == (ex / "a.mp4").resolve()
+    assert paths.exports_member(ex / "sub") == (ex / "sub").resolve()
+    for bad in (ex, outside, ex / "missing.mp4", ex / ".." / "secret.txt", ex / "link", "", "/etc/passwd", None):
+        assert paths.exports_member(bad) is None
+
+
+def test_native_open_reveal_only_inside_exports(tmp_path, monkeypatch):
+    import app_main
+    from amv_matcher import paths
+    ex = tmp_path / "exports"
+    ex.mkdir()
+    f = ex / "a.mp4"
+    f.write_bytes(b"x")
+    monkeypatch.setattr(paths, "EXPORTS", ex)
+    calls = []
+    monkeypatch.setattr(app_main.Api, "_launch", staticmethod(lambda cmd: calls.append(cmd)))
+    monkeypatch.setattr(app_main.sys, "platform", "darwin")
+    api = app_main.Api()
+    assert api.open_path(str(f)) is True and calls[-1] == ["open", str(f.resolve())]
+    assert api.reveal_path(str(f)) is True and calls[-1] == ["open", "-R", str(f.resolve())]
+    n = len(calls)
+    assert api.open_path("/etc/passwd") is False and api.reveal_path(str(tmp_path / "x")) is False
+    assert api.open_path(str(ex / ".." / "exports" / ".." / "a.mp4")) is False
+    assert len(calls) == n

@@ -142,6 +142,45 @@ class Api:
         LOG.info("native save: %s -> %s", p.name, dest)
         return str(dest)
 
+    @staticmethod
+    def _launch(cmd):
+        import subprocess
+        subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def open_path(self, src):
+        """Open an export (file or folder inside the exports dir) with the OS default app. Returns True if launched."""
+        p = paths.exports_member(src)
+        if p is None:
+            return False
+        try:
+            if sys.platform == "darwin":
+                self._launch(["open", str(p)])
+            elif sys.platform == "win32":
+                os.startfile(str(p))   # noqa: S606
+            else:
+                self._launch(["xdg-open", str(p)])
+        except OSError as e:
+            LOG.info("open_path failed: %s", e)
+            return False
+        return True
+
+    def reveal_path(self, src):
+        """Show an export in the file manager (Finder `open -R`, Explorer `/select,`). Returns True if launched."""
+        p = paths.exports_member(src)
+        if p is None:
+            return False
+        try:
+            if sys.platform == "darwin":
+                self._launch(["open", "-R", str(p)])
+            elif sys.platform == "win32":
+                self._launch(["explorer", "/select," + str(p)])
+            else:
+                self._launch(["xdg-open", str(p if p.is_dir() else p.parent)])
+        except OSError as e:
+            LOG.info("reveal_path failed: %s", e)
+            return False
+        return True
+
     def log(self, msg):
         LOG.info("ui: %s", msg)
 

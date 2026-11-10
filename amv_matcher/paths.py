@@ -39,3 +39,16 @@ def default_export_dir() -> Path:
     home = Path.home()
     base = home / ("Videos" if sys.platform.startswith("win") else "Movies")
     return base / APP_NAME
+
+
+def exports_member(src):
+    """Resolved Path of an existing file/folder inside the exports dir, else None (resolve() + is_relative_to,
+    so `..` and symlinks out of the exports dir are rejected; the exports dir itself is not a member)."""
+    try:
+        p = Path(str(src)).expanduser().resolve()
+        root = EXPORTS.resolve()
+        if p != root and p.is_relative_to(root) and p.exists():
+            return p
+    except (OSError, ValueError, RuntimeError):
+        pass
+    return None

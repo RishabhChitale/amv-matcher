@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
+import json
 import os
 import re
 import urllib.parse
@@ -731,6 +733,32 @@ if _render.router is not None:
 AUTOSYNC_LIMITS = {"max_speed_dev": 0.25, "max_tempo_pct": 8.0, "max_cuts": 3, "budget_s": 60.0, "lead_s": 0.12}
 _AUTOSYNC_RUNNING: dict = {}      # (video, song) -> job id
 _autosync_cache_file = None       # tests may point this at a tmp file
+_AUTOSYNC_CANCEL: dict = {}       # job id -> threading.Event (set by POST .../cancel)
+
+
+def _autosync_hooks_supported() -> dict:
+    """Which optional auto_sync hooks the installed autosync.py has (progress_cb / should_cancel)."""
+    try:
+        ps = inspect.signature(_autosync.auto_sync).parameters
+    except (TypeError, ValueError):
+        return {"progress_cb": False, "should_cancel": False}
+    return {"progress_cb": "progress_cb" in ps, "should_cancel": "should_cancel" in ps}
+
+
+def _jsonable(x):
+    try:
+        return json.loads(json.dumps(x, default=str))
+    except Exception:
+        return str(x)
+
+
+def _step_name(st) -> str:
+    if isinstance(st, dict):
+        for k in ("step", "name", "label", "tool", "order"):
+            if st.get(k):
+                return str(st[k])
+        return ""
+    return str(st)
 
 
 def _as_cache():
@@ -798,9 +826,24 @@ def _run_autosync(job_id: str, vp: Path, sp: Path, opts: dict, pair):
         song = analyze_song(str(sp))
         video = _full_video(vp)
         job.update(stage="auto-sync", message="Auto-syncing")
+        ev = _AUTOSYNC_CANCEL.setdefault(job_id, threading.Event())
+        if ev.is_set():
+            raise _Cancelled()
+        kw = {}
+        sup = _autosync_hooks_supported()
+        if sup["progress_cb"]:
+            def _progress(*a, **k):
+                st = _jsonable(a[0] if len(a) == 1 and not k else (list(a) if a else k))
+                job["steps_so_far"] = job.get("steps_so_far", []) + [st]
+                job["current_step"] = _step_name(st)
+            kw["progress_cb"] = _progress
+        if sup["should_cancel"]:
+            kw["should_cancel"] = ev.is_set
         res = _autosync.auto_sync(song, video, budget_s=opts["budget_s"], max_speed_dev=opts["max_speed_dev"],
                                   max_tempo_dev=opts["max_tempo_pct"] / 100.0, max_cuts=opts["max_cuts"],
-                                  lead_s=opts["lead_s"], allow_loop=opts["allow_loop"])
+                                  lead_s=opts["lead_s"], allow_loop=opts["allow_loop"], **kw)
+        if ev.is_set() or job.get("status") == "cancelled" or (isinstance(res, dict) and res.get("cancelled")):
+            raise _Cancelled()
         try:
             c = _as_cache()
             entry = {"final": res.get("final"), "options": opts}
@@ -808,13 +851,20 @@ def _run_autosync(job_id: str, vp: Path, sp: Path, opts: dict, pair):
             c.set(_pair_key(vp, sp), entry)
         except Exception:
             pass      # the cache is a convenience; never fail the job over it
-        job.update(status="done", result=res, message="Done")
+        job.update(status="done", result=res, message="Done", current_step="")
+    except _Cancelled:
+        job.update(status="cancelled", result=None, message="Cancelled", current_step="")
     except Exception as e:
         job.update(status="error", error=f"{type(e).__name__}: {e}", message=str(e))
     finally:
+        _AUTOSYNC_CANCEL.pop(job_id, None)
         with _jobs_lock:
             if _AUTOSYNC_RUNNING.get(pair) == job_id:
                 del _AUTOSYNC_RUNNING[pair]
+
+
+class _Cancelled(Exception):
+    pass
 
 
 @app.post("/api/auto-sync", dependencies=[Depends(_origin_guard)])
@@ -829,10 +879,33 @@ def auto_sync_endpoint(req: AutoSyncRequest):
                                 status_code=409)
         job_id = uuid.uuid4().hex[:12]
         JOBS[job_id] = {"id": job_id, "status": "running", "stage": "starting", "done": 0, "total": 1,
-                        "message": "Starting", "options": opts, "result": None, "error": None}
+                        "message": "Starting", "options": opts, "result": None, "error": None,
+                        "steps_so_far": [], "current_step": ""}
         _AUTOSYNC_RUNNING[pair] = job_id
+        _AUTOSYNC_CANCEL[job_id] = threading.Event()
     _pool.submit(_run_autosync, job_id, vp, sp, opts, pair)
     return {"job_id": job_id, "status": "running", "options": opts}
+
+
+@app.post("/api/auto-sync/{job_id}/cancel", dependencies=[Depends(_origin_guard)])
+def auto_sync_cancel(job_id: str):
+    """Ask a running auto-sync to stop. Idempotent; a finished job is returned unchanged (200)."""
+    with _jobs_lock:
+        job = JOBS.get(job_id)
+        if not job or "options" not in job:
+            raise HTTPException(404, "Unknown job")
+        if job.get("status") != "running":
+            return {"job_id": job_id, "status": job["status"], "cancelled": job["status"] == "cancelled"}
+        ev = _AUTOSYNC_CANCEL.setdefault(job_id, threading.Event())
+        ev.set()
+        job.update(message="Cancelling", cancel_requested=True)
+        if not _autosync_hooks_supported()["should_cancel"]:
+            # no cooperative hook in autosync.py yet: the worker thread finishes on its own, its result is discarded
+            job.update(status="cancelled", result=None, message="Cancelled", current_step="")
+            for k, v in list(_AUTOSYNC_RUNNING.items()):
+                if v == job_id:
+                    del _AUTOSYNC_RUNNING[k]
+    return {"job_id": job_id, "status": job["status"], "cancelled": True}
 
 
 @app.get("/api/auto-sync/{job_id}")
