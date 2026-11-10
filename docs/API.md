@@ -30,24 +30,34 @@ Response: `{"job_id": "ae64f08cef79"}`
   "results": [
     {"rank": 1, "path": "/abs/music/click120.mp3", "name": "click120.mp3", "bpm": 120.04, "duration": 30.0,
      "eligible": true, "total_pct": 81, "tempo_pct": 100.0, "sync_pct": 100.0, "arc_pct": 53.4,
-     "best_offset_s": 20.0, "trim_start_s": 20.0, "trim_end_s": 30.0, "best_rate": 1.0}
+     "best_offset_s": 20.0, "trim_start_s": 20.0, "trim_end_s": 30.0, "best_rate": 1.0,
+     "tightness": {"tight_pct": 86.7, "median_err_ms": 12.4, "p90_err_ms": 38.0, "n_events": 24, "grid": "beat", "chance_pct": 17.0}}
   ],
   "too_short": [
     {"path": "/abs/music/short.wav", "name": "short.wav", "bpm": 100.0, "duration": 6.0,
      "eligible": false, "reason": "too_short", "song_duration": 6.0, "video_duration": 10.0,
      "total_pct": 0, "tempo_pct": 0.0, "sync_pct": 0.0, "arc_pct": 0.0,
-     "best_offset_s": 0.0, "trim_start_s": 0.0, "trim_end_s": 10.0, "best_rate": 1.0}
+     "best_offset_s": 0.0, "trim_start_s": 0.0, "trim_end_s": 10.0, "best_rate": 1.0,
+     "tightness": {"tight_pct": 0.0, "median_err_ms": null, "p90_err_ms": null, "n_events": 0, "grid": "beat", "chance_pct": 0.0}}
   ],
   "skipped": [{"path": "/abs/music/broken.mp3", "name": "broken.mp3", "reason": "NoBackendError: ..."}]
 }
 ```
-Notes: `results` = eligible songs only, ranked by `total_pct` (ties: `sync_pct`). `segments[].label` is calm | build | peak. `energy_curve` is 0-1 at `energy_hz`. `segments`/`lulls`/`peak_segments`/`shots` times are seconds. Segments overlap (1 s smoothing window); draw by `label`. `total_pct = round(0.20*tempo + 0.40*sync + 0.40*arc)` (constants in score.py). Higher `arc_pct` also counts peak-on-drop (±0.5 s) and lull-overlap bonuses.
+Notes: `results` = eligible songs only, ranked by `total_pct` (ties: `sync_pct`). `segments[].label` is calm | build | peak. `energy_curve` is 0-1 at `energy_hz`. `segments`/`lulls`/`peak_segments`/`shots` times are seconds. Segments overlap (1 s smoothing window); draw by `label`. `total_pct = round(0.20*tempo + 0.60*sync + 0.20*arc)` (constants in score.py). Higher `arc_pct` also counts peak-on-drop (±0.5 s) and lull-overlap bonuses.
+
+**`tightness`** (every score output, same shape in scan results, `/api/score`, splice/autosync scoring; pure and cheap, `score.tightness(song, video, offset)`): non-saturating alignment of the video's locked events (cuts + motion peaks, same cut/peak weights as the sync score) to the song's beat grid at the reported offset. Unlike `sync_pct` it does not saturate near the top, so use it to see fine improvements in auto-sync.
+- `tight_pct`: weighted % of events within ±40 ms of the grid.
+- `median_err_ms`, `p90_err_ms`: median / 90th percentile of the absolute distance (ms) from an event to the nearest grid line.
+- `n_events`: number of events used. `null` errors and 0 when there are no events or no grid.
+- `grid`: `"beat"`, or `"half_beat"` when the edit locks at 8ths (the events' 2nd-harmonic coherence beats the beat's), in which case beats plus midpoints are the grid.
+- `chance_pct`: tight_pct a random edit would get (80 ms / grid period), so compare `tight_pct` against it (the half-beat grid has twice the chance level).
 
 ## POST /api/score  (manual offset)
 Body: `{"video_path": str, "song_path": str, "offset": float}` (video must already be scanned; offset is clamped to `0..song_duration-video_duration`).
 ```json
 {"eligible": true, "total_pct": 74, "tempo_pct": 100.0, "sync_pct": 80.2, "arc_pct": 51.0,
- "best_offset_s": 12.3, "trim_start_s": 12.3, "trim_end_s": 22.3, "best_rate": 1.0}
+ "best_offset_s": 12.3, "trim_start_s": 12.3, "trim_end_s": 22.3, "best_rate": 1.0,
+ "tightness": {"tight_pct": 86.7, "median_err_ms": 12.4, "p90_err_ms": 38.0, "n_events": 24, "grid": "beat", "chance_pct": 17.0}}
 ```
 (`best_offset_s` here echoes the clamped offset you sent.)
 

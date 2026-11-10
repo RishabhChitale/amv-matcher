@@ -221,6 +221,43 @@ def _combine(tempo_pct, sync_pct, arc_pct):
     return W_TEMPO * tempo_pct + W_SYNC * sync_pct + W_ARC * arc_pct
 
 
+TIGHT_TOL_S = 0.040           # an event is "tight" when within +-40 ms of the grid
+
+
+def tightness(song: dict, video: dict, offset: float) -> dict:
+    """Non-saturating alignment of the video's locked events (cuts + peaks, same weights as
+    the sync score) to the song's beat grid at `offset`. Uses the half-beat grid when the
+    edit locks at 8ths (its 2nd harmonic is stronger than the beat's), else the beat grid.
+    tight_pct = weighted % of events within +-40 ms of the grid; median/p90 are the
+    unweighted absolute errors in ms."""
+    ev_t, ev_w = _events(video)
+    beats = _beats(song)
+    empty = {"tight_pct": 0.0, "median_err_ms": None, "p90_err_ms": None, "n_events": 0,
+             "grid": "beat", "chance_pct": 0.0}
+    if len(ev_t) == 0 or len(beats) < 2:
+        return empty
+    ref = np.asarray(beats, dtype=float)
+    T = float(np.median(np.diff(ref)))
+    w = ev_w / ev_w.sum()
+    t = ev_t + float(offset)
+    r1 = abs(np.sum(w * np.exp(2j * np.pi * t / T)))
+    r2 = abs(np.sum(w * np.exp(2j * np.pi * t / (T / 2))))
+    grid, per = "beat", T
+    if r2 > r1:
+        mids = (ref[:-1] + ref[1:]) / 2
+        ref = np.sort(np.concatenate([ref, mids]))
+        grid, per = "half_beat", T / 2
+    err = _dist_to(t, ref)
+    return {
+        "tight_pct": round(float(100.0 * np.sum(w[err <= TIGHT_TOL_S])), 1),
+        "median_err_ms": round(float(np.median(err)) * 1000.0, 1),
+        "p90_err_ms": round(float(np.percentile(err, 90)) * 1000.0, 1),
+        "n_events": int(len(ev_t)),
+        "grid": grid,
+        "chance_pct": round(100.0 * min(1.0, 2 * TIGHT_TOL_S / per), 1),
+    }
+
+
 def _pack(song, video, off, tempo_pct, rate, sync_pct, arc_pct):
     return {
         "eligible": True,
@@ -232,6 +269,7 @@ def _pack(song, video, off, tempo_pct, rate, sync_pct, arc_pct):
         "trim_start_s": round(off, 2),
         "trim_end_s": round(off + float(video["duration"]), 2),
         "best_rate": rate,
+        "tightness": tightness(song, video, off),
     }
 
 
@@ -297,7 +335,9 @@ def score(song: dict, video: dict, allow_negative: bool = False) -> dict:
         return {
             "eligible": False, "total_pct": 0, "tempo_pct": 0.0, "sync_pct": 0.0, "arc_pct": 0.0,
             "best_offset_s": 0.0, "trim_start_s": 0.0, "trim_end_s": round(vd, 2), "best_rate": 1.0,
-            "reason": "too_short", "song_duration": round(sd, 2), "video_duration": round(vd, 2),
+            "reason": "too_short",
+            "tightness": {"tight_pct": 0.0, "median_err_ms": None, "p90_err_ms": None,
+                          "n_events": 0, "grid": "beat", "chance_pct": 0.0}, "song_duration": round(sd, 2), "video_duration": round(vd, 2),
         }
     tempo_pct, rate = _tempo(song, video)
     ev_t, ev_w = _events(video)
