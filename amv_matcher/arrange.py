@@ -17,8 +17,8 @@ Rules:
     placed twice in a row, and starting on an intro / chorus / drop is preferred (soft penalty).
   * Search: beam search over section sequences ranked by a cheap energy-arc proxy against the
     video energy curve; every finished candidate (and the plain single trim, the baseline) is then
-    scored exactly with score.score_at() on the assembled song (with lead_s), minus a penalty per
-    move. The baseline wins unless an arrangement scores higher, so total_after >= total_before.
+    scored exactly with score.score_at() on the assembled song (with lead_s) and ranked like autosync:
+    total, then tight_pct, then median error, then fewer moves. Baseline wins ties, so total_after >= total_before.
 """
 from __future__ import annotations
 
@@ -118,12 +118,20 @@ def _assemble(song, segs, vd):
     return asm
 
 
+def _key(r, moves):
+    """Same lexicographic objective as autosync: displayed total, then tight_pct, then a lower
+    median error; fewer moves only as the last tie-breaker (no score points)."""
+    t = r.get("tightness") or {}
+    me = t.get("median_err_ms")
+    return (int(round(float(r["total_pct"]))), float(t.get("tight_pct") or 0.0),
+            -(float(me) if me is not None else 1e9), -moves)
+
+
 def _eval(song, video, segs, ncuts, lead_s=None):
     vd = float(video["duration"])
     asm = _assemble(song, segs, vd)
     r = S.score_at(asm, video, 0.0, lead_s=lead_s)
-    raw = S._combine(r["tempo_pct"], r["sync_pct"], r["arc_pct"])
-    return {"r": r, "obj": raw + SP._bonus(asm, video) - SP.CUT_PENALTY * ncuts}
+    return {"r": r, "key": _key(r, ncuts)}
 
 
 def _entries(song, secs, o2, off):
@@ -184,12 +192,12 @@ def plan_arrangement(song: dict, video: dict, max_moves: int = 3, lead_s: float 
                 "section_order": [secs[i]["i"] for i in order], "moves": moves,
                 "arc_before": base_arc, "arc_after": float(r["arc_pct"]),
                 "total_before": base_total, "total_after": int(r["total_pct"]),
-                "objective": round(obj, 3), "baseline": {"offset": off},
+                "objective": list(obj), "baseline": {"offset": off},
                 "improvement_pct": int(r["total_pct"]) - base_total}
 
     secs = _secs(song)
     base_r = _eval(song, video, base_segs, 0, lead_s)
-    best = (base_segs, [], base, base_r["obj"], 0)
+    best = (base_segs, [], base, base_r["key"], 0)
     if max_moves < 0 or len(secs) < 2 or float(song["duration"]) < vd:
         return pack(best[0], [], secs, best[2], best[3], 0)
 
@@ -262,8 +270,7 @@ def plan_arrangement(song: dict, video: dict, max_moves: int = 3, lead_s: float 
             if moves > max_moves:
                 continue
             e = _eval(song, video, merged, 0, lead_s)
-            pen = MOVE_PENALTY * moves + (0 if secs[o2[0]]["label"] in GOOD_START else START_PENALTY)
-            obj = e["obj"] - pen
-            if obj > best[3] and e["r"]["total_pct"] >= base_r["r"]["total_pct"]:
+            obj = e["key"]
+            if obj > best[3]:
                 best = (segs, o2, e["r"], obj, moves)
     return pack(best[0], best[1], secs, best[2], best[3], best[4])
