@@ -11,4 +11,9 @@ GitHub repo > Settings > Secrets and variables > Actions > New repository secret
 ## Download and decrypt
 1. Open the run on the Actions tab, scroll to Artifacts, download `AMV-Matcher-<label>-encrypted` (a zip containing the .7z).
 2. Unzip it, then `7z x AMV-Matcher-<label>.7z` and enter the password.
-3. Move the app where you like (first-launch warnings are in the README).
+3. **macOS:** the 7z contains an inner zip made with `ditto` so the app bundle (symlinks, permissions, extended attributes) survives. Extract it with `ditto -x -k AMV-Matcher-<label>.zip <dest>` (Archive Utility also works). Do not re-zip the app with other tools.
+4. **Windows:** extracting the 7z gives the app folder directly.
+5. Move the app where you like (first-launch warnings are in the README).
+
+## Password handling (honest note)
+The password is passed to `7z` on the runner's command line. GitHub masks it in logs, and the runner is ephemeral, but it is briefly visible in that runner's process list. The intermediate macOS zip is created outside `enc/` and deleted in the same step, so it is never uploaded.

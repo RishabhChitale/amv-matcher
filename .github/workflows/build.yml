@@ -62,7 +62,16 @@ jobs:
             SRC="dist/AMV Matcher"
           fi
           mkdir -p enc
-          "$SZ" a -t7z -mhe=on -p"$AMV_ARTIFACT_KEY" "enc/AMV-Matcher-${{ matrix.label }}.7z" "$SRC" > /dev/null
+          OUT="enc/AMV-Matcher-${{ matrix.label }}.7z"
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            # ditto keeps bundle symlinks, exec bits, xattrs; zip lives outside enc/
+            TMPZIP="${RUNNER_TEMP}/AMV-Matcher-${{ matrix.label }}.zip"
+            trap 'rm -f "$TMPZIP"' EXIT
+            ditto -c -k --sequesterRsrc --keepParent "$SRC" "$TMPZIP"
+            "$SZ" a -t7z -mhe=on -p"$AMV_ARTIFACT_KEY" "$OUT" "$TMPZIP" > /dev/null
+          else
+            "$SZ" a -t7z -mhe=on -p"$AMV_ARTIFACT_KEY" "$OUT" "$SRC" > /dev/null
+          fi
           echo "encrypted archive written"
       - name: Upload encrypted build
         uses: actions/upload-artifact@v4
