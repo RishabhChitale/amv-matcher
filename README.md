@@ -46,5 +46,7 @@ A native menu bar (File, Edit, View, Playback, Help) with the usual Cmd/Ctrl sho
 - `.venv/bin/python tools/ui_smoke.py` drives the UI in headless Chrome and prints PASS/FAIL per check. It needs Google Chrome installed.
 - `.venv/bin/python tools/real_suite.py` runs the scorer and auto-sync on real media. It reads a local, untracked `real_cases.json` that lists your videos and songs.
 
+Licenses: see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
 ## Privacy
 Everything is local. Nothing is uploaded. Your media is never copied: the app reads files where they are, and keeps only small caches (analysis, thumbnails, proxies) and exports in its own data folder. The one network use is the optional download of RIFE or Demucs, which you start yourself.
