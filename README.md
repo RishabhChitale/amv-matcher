@@ -9,6 +9,11 @@ Runs locally; it serves files only to your own browser (127.0.0.1, no login, no 
 ```
 This creates `.venv`, installs dependencies and starts the server. Open http://127.0.0.1:8765 (the script tries to open it for you). Paste the video path and the music folder path, then press Scan. Songs: .mp3 .wav .m4a .flac. Tests: `.venv/bin/python -m pytest`. Backend routes are in [docs/API.md](docs/API.md).
 
+### First launch
+The packaged app is unsigned (personal use), so the OS warns the first time:
+- **macOS:** right-click `AMV Matcher.app` > Open, then confirm Open.
+- **Windows:** SmartScreen > More info > Run anyway.
+
 ## Using the editor
 - **Results list**: ranked songs with a score ring, BPM and trim window; the list scrolls. Songs too short for the video are under "Too short", unreadable files under "Skipped". Clicking a row loads that song onto A1 at its best offset. It does not autoplay: press Space or Play to hear it in sync with the video.
 - **Timeline**: V1 shows the video's energy curve as a filled area, cuts as thin ticks, and calm/peak segments as tinted bands. A1 shows the selected song's waveform, beat ticks, drops as glowing diamonds, and a thin pump lane underneath.
