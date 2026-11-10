@@ -239,3 +239,4 @@ body.dragging #fit,body.dragging .ovwrap{opacity:.5;transition:opacity var(--eas
 @media(max-width:1000px){#media{max-height:320px}}
 
 #export.flash{outline:2px solid var(--c);outline-offset:2px}
+.m-skel{pointer-events:none}.m-skel .m-th,.m-skel .m-meta b,.m-skel .m-meta span{background:rgba(255,255,255,.08);border-radius:6px;color:transparent;animation:dzp 900ms infinite alternate}

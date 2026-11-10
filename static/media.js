@@ -27,7 +27,7 @@ async function loadRoots() {
   renderRoots(); if (!M.cur && M.roots[0]) openDir(M.roots[0].path);
 }
 async function openDir(p) {
-  M.cur = p; renderRoots();
+  M.cur = p; renderRoots(); skeleton();
   try {
     const j = await mapi('/api/fs/list?path=' + encodeURIComponent(p));
     M.parent = j.parent || null; M.folders = j.folders || []; M.files = (j.files || []).map(f => ({...f, kind: kindFrom(f)}));
@@ -46,18 +46,32 @@ function filtered() {
   const q = M.q.trim().toLowerCase(), by = {name: (a, b) => a.name.localeCompare(b.name, undefined, {numeric: true}), date: (a, b) => b.mtime - a.mtime, duration: (a, b) => (b.duration || 0) - (a.duration || 0)}[M.sort];
   return M.files.filter(f => !q || f.name.toLowerCase().includes(q)).sort(by);
 }
-function renderFiles() {
-  const box = $('m-list'); box.className = 'm-list ' + M.view;
+const SKEL = '<div class="m-item m-skel"><div class="m-th"></div><div class="m-meta"><b>&nbsp;</b><span>&nbsp;</span></div></div>';
+let renderTok = 0;
+function skeleton() { renderTok++; $('m-list').className = 'm-list ' + M.view; $('m-list').innerHTML = SKEL.repeat(8); }   // U3b: instant feedback while the listing loads
+const thumbIO = 'IntersectionObserver' in window ? new IntersectionObserver(es => es.forEach(en => {
+  if (!en.isIntersecting) return; const img = en.target; thumbIO.unobserve(img); if (img.dataset.src) { img.src = img.dataset.src; delete img.dataset.src; }
+}), {rootMargin: '120px'}) : null;
+function renderFiles() {   // U3b: rows are inserted 50 per animation frame; thumbnails load only when scrolled into view
+  const box = $('m-list'); box.className = 'm-list ' + M.view; const tok = ++renderTok;
   const rows = [];
   if (M.parent && !M.q) rows.push(`<div class="m-folder" data-p="${esc(M.parent)}">&#x2190; ..</div>`);
   if (!M.q) M.folders.forEach(d => rows.push(`<div class="m-folder" data-p="${esc(d.path)}">&#x1F4C1;&#xFE0E; ${esc(d.name)}</div>`));
   filtered().forEach(f => {
     const st = M.states[f.path] || 'none';
     rows.push(`<div class="m-item ${f.kind}" draggable="true" data-p="${esc(f.path)}" data-k="${f.kind}" data-n="${esc(f.name)}" data-dur="${f.duration || 0}" data-st="${st}">
-      <div class="m-th">${f.kind === 'video' ? `<img loading="lazy" alt="" src="${thumbUrl(f, null)}">` : '<span class="m-note">&#x266B;</span>'}<i class="m-dot" title="${st}"></i><em class="m-dur">${fmtDur(f.duration)}</em></div>
+      <div class="m-th">${f.kind === 'video' ? (thumbIO ? `<img alt="" data-src="${thumbUrl(f, null)}">` : `<img loading="lazy" alt="" src="${thumbUrl(f, null)}">`) :'<span class="m-note">&#x266B;</span>'}<i class="m-dot" title="${st}"></i><em class="m-dur">${fmtDur(f.duration)}</em></div>
       <div class="m-meta"><b title="${esc(f.name)}">${esc(f.name)}</b><span>${fmtB(f.size || 0)}${f.mtime ? ' &middot; ' + new Date(f.mtime * 1000).toLocaleDateString() : ''}</span>${sourceBadge(f)}</div></div>`);
   });
-  box.innerHTML = rows.join('') || '<div class="muted pad">No media here.</div>';
+  if (!rows.length) { box.innerHTML = '<div class="muted pad">No media here.</div>'; return; }
+  box.innerHTML = ''; let i = 0;
+  const step = () => {
+    if (tok !== renderTok) return;
+    box.insertAdjacentHTML('beforeend', rows.slice(i, i + 50).join('')); i += 50;
+    if (thumbIO) box.querySelectorAll('img[data-src]').forEach(im => { if (!im._o) { im._o = 1; thumbIO.observe(im); } });
+    if (i < rows.length) requestAnimationFrame(step);
+  };
+  step();
 }
 function setState(path, st) { M.states[path] = st; const el = [...document.querySelectorAll('.m-item')].find(e => e.dataset.p === path); if (el) { el.dataset.st = st; el.querySelector('.m-dot').title = st; } }
 async function pollJobs() {

@@ -125,12 +125,14 @@
     return `<div class="mr-rk">${x.state === 'short' ? '' : rank}</div>${rg}<div class="mr-n"><b title="${esc(x.name)}">${esc(x.name)}</b>${sub}</div><div class="mr-bpm">${r.bpm ? Math.round(r.bpm) + ' BPM' : ''}</div><div class="mr-dur">${fmtMS(r.song_duration)}</div><div class="mr-act">${act}</div>`;
   }
   const els = new Map();
-  function renderRes() {
+  let rrQ = 0;   // U3b: coalesce bursts of per-song updates into one render per frame
+  function renderRes() { if (!rrQ) rrQ = requestAnimationFrame(() => { rrQ = 0; renderResNow(); }); }
+  function renderResNow() {
     if ($$('mr').classList.contains('hidden')) return;
     const v = visible(), box = $$('mr-list'), n = M.rows.size;
     const rem = M.total - M.doneN, el = (Date.now() - M.t0) / 1000, eta = M.doneN ? fmtETA(el / M.doneN * rem / 2) : '…';
     $$('mr-head').textContent = `${M.videoName} · ${n} songs · ${M.doneN} analyzed${rem > 0 ? ' · ETA ' + eta : ''}`;
-    const old = new Map(); els.forEach((e, p) => old.set(p, e.getBoundingClientRect().top));
+    const old = new Map(); if (!reduce && els.size <= 80) els.forEach((e, p) => old.set(p, e.getBoundingClientRect().top));
     let rank = 0, prevGroup = '';
     const want = [];
     v.list.forEach(x => {
@@ -154,7 +156,7 @@
     });
     els.forEach((e, p) => { if (!seen.has(p)) { e.remove(); els.delete(p); } });
     frag.forEach((e, i) => { if (box.children[i] !== e) box.insertBefore(e, box.children[i] || null); });
-    if (!reduce) frag.forEach(e => { const p = e.dataset.path, o = old.get(p); if (o == null) return; const d = o - e.getBoundingClientRect().top; if (Math.abs(d) > 1) { e.style.transition = 'none'; e.style.transform = `translateY(${d}px)`; requestAnimationFrame(() => { e.style.transition = 'transform 320ms cubic-bezier(.2,.7,.2,1)'; e.style.transform = ''; }); } });
+    if (!reduce && frag.length <= 80) frag.forEach(e => { const p = e.dataset.path, o = old.get(p); if (o == null) return; const d = o - e.getBoundingClientRect().top; if (Math.abs(d) > 1) { e.style.transition = 'none'; e.style.transform = `translateY(${d}px)`; requestAnimationFrame(() => { e.style.transition = 'transform 320ms cubic-bezier(.2,.7,.2,1)'; e.style.transform = ''; }); } });
     $$('mr-empty').classList.toggle('hidden', !!v.list.length);
     markKb();
   }
