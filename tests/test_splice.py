@@ -167,3 +167,91 @@ def test_negative_offset_assemble_and_plan():
     assert r["eligible"] and r["lead_silence_s"] >= 0.0
     if r["lead_silence_s"] > 0:
         assert r["segments"][0]["src_start"] < 0
+
+
+# ---- _assemble carries every analysis key the scorer reads
+def _grid_song(duration=120.0, bpm=120.0):
+    from amv_matcher import score as S
+    s = make_song(duration=duration, bpm=bpm, drops=(40.0, 80.0))
+    beat = 60.0 / bpm
+    g = np.arange(0.0, duration, beat)
+    fps = 43.0
+    rng = np.random.default_rng(3)
+    env = np.abs(rng.normal(0, 0.1, int(duration * fps)))
+    env[(g * fps).astype(int)[g * fps < len(env)]] += 1.0
+    s.update({"beat_grid": g.tolist(), "grid_bpm": bpm, "grid_period": beat, "grid_used": True,
+              "beats_per_bar": 4, "bar_phase": 1, "onset_env": env.tolist(), "onset_env_fps": fps})
+    return s
+
+
+def _vid_for_grid(dur=30.0):
+    v = make_video(duration=dur, peaks=(8.0, 20.0))
+    cuts = np.arange(0.0, dur, 0.5)
+    v["cut_times"] = cuts.tolist()
+    v["shots"] = [{"start": float(c), "end": float(c) + 0.5} for c in cuts]
+    return v
+
+
+def test_assemble_single_trim_rescored_equals_direct():
+    from amv_matcher import score as S
+    from amv_matcher.splice import _assemble
+    song, video = _grid_song(), _vid_for_grid()
+    vd = video["duration"]
+    for o in (0.0, 12.5, 33.0):
+        asm = _assemble(song, [{"src_start": o, "src_end": o + vd, "dst_start": 0.0}], vd)
+        direct = S.score_at(song, video, o)["total_pct"]
+        again = S.score_at(asm, video, 0.0)["total_pct"]
+        assert abs(direct - again) <= 0.5, (o, direct, again)
+
+
+def test_assemble_carries_all_keys_and_remaps_repeat_and_lead():
+    from amv_matcher.splice import _assemble
+    song = _grid_song()
+    segs = [{"src_start": -2.0, "src_end": 6.0, "dst_start": 0.0},
+            {"src_start": 4.0, "src_end": 10.0, "dst_start": 8.0}]       # repeat of 4..6, lead silence
+    asm = _assemble(song, segs, 14.0)
+    for k in ("beat_times", "beat_strengths", "beat_grid", "grid_bpm", "grid_period", "grid_used",
+              "beats_per_bar", "bar_phase", "onset_env", "onset_env_fps", "energy_curve", "drops", "lulls"):
+        assert k in asm, k
+    assert len(asm["beat_strengths"]) == len(asm["beat_times"])
+    g = np.asarray(asm["beat_grid"])
+    assert g[0] == 2.0 and abs(g[1] - g[0] - 0.5) < 1e-9          # lead silence of 2 s, no grid before it
+    assert np.min(np.abs(g - 8.0)) < 1e-9                         # repeated source second 4.0 lands at 8.0
+    fps = asm["onset_env_fps"]
+    assert max(asm["onset_env"][:int(2 * fps) - 1]) == 0.0        # silent lead
+    # bar phase: the first kept grid point is source beat 4 (index 4, phase 1 -> bar starts at odd idx)
+    assert asm["bar_phase"] == (1 - 4) % 4 or asm["bar_phase"] in range(4)
+
+
+def test_apply_tempo_scales_grid():
+    from amv_matcher.tempo import apply_tempo
+    song = _grid_song()
+    out = apply_tempo(song, 1.05)
+    assert abs(out["grid_bpm"] - 126.0) < 1e-6 and abs(out["bpm"] - 126.0) < 1e-6
+    assert abs(out["beat_grid"][4] - song["beat_grid"][4] / 1.05) < 1e-9
+
+
+import glob as _glob
+import os as _os
+import pytest as _pytest
+
+_R = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+_RS = _glob.glob(_os.path.join(_R, ".uploads", "song", "*songS1*.mp3"))
+_RV = _glob.glob(_os.path.join(_R, ".uploads", "video", "*videoA*.mp4"))
+
+
+@_pytest.mark.skipif(not (_RS and _RV), reason="real songS1/videoA files missing")
+@_pytest.mark.skipif(_os.environ.get("AMV_REAL") != "1", reason="AMV_REAL=1 only")
+def test_assemble_trim_real_songS1_videoA():
+    from amv_matcher import score as S
+    from amv_matcher.audio import analyze_song
+    from amv_matcher.splice import _assemble
+    from amv_matcher.video import analyze_video
+    song, video = analyze_song(_RS[0]), analyze_video(_RV[0])
+    vd = float(video["duration"])
+    for o in (0.0, 20.0, 40.0):
+        asm = _assemble(song, [{"src_start": o, "src_end": o + vd, "dst_start": 0.0}], vd)
+        d = S.score_at(song, video, o)["total_pct"]
+        a = S.score_at(asm, video, 0.0)["total_pct"]
+        print("offset", o, "direct", d, "assembled", a)
+        assert abs(d - a) <= 0.5

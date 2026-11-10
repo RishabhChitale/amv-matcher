@@ -33,6 +33,14 @@ def apply_tempo(song: dict, ratio: float) -> dict:
     out["bpm"] = float(song["bpm"]) * ratio
     out["duration"] = float(song["duration"]) / ratio
     out["beat_times"] = (np.asarray(song["beat_times"], dtype=float) / ratio).tolist()
+    if song.get("beat_grid") is not None:
+        out["beat_grid"] = (np.asarray(song["beat_grid"], dtype=float) / ratio).tolist()
+        out["grid_bpm"] = float(song.get("grid_bpm") or 0) * ratio
+        out["grid_period"] = float(song.get("grid_period") or 0) / ratio
+        if "grid_t0" in song:
+            out["grid_t0"] = float(song["grid_t0"]) / ratio
+    if song.get("sections"):
+        out["sections"] = [dict(x, start=x["start"] / ratio, end=x["end"] / ratio) for x in song["sections"]]
     out["drops"] = [d / ratio for d in song.get("drops", [])]
     out["lulls"] = [[a / ratio, b / ratio] for a, b in song.get("lulls", [])]
     hz = S.ENERGY_HZ

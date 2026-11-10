@@ -16,6 +16,44 @@ from .splice import _assemble, lead_silence, plan_splice
 
 from .tempo import apply_tempo, plan_tempo
 
+# ---- effort: how much the plan had to bend the material to reach its score ----
+# effort_pct = min(100, EFFORT_W_RETIME * retimed_fraction * min(1, mean_abs_speed_dev / EFFORT_DEV_REF)
+#                       + EFFORT_W_SPLICE * min(1, splices / EFFORT_SPLICE_REF)
+#                       + EFFORT_W_TEMPO * min(1, tempo_stretch_pct / EFFORT_TEMPO_REF))
+# Monotone in every input; 0 only for an untouched plan (no retime, no splice, no tempo stretch).
+EFFORT_W_RETIME = 55.0    # points for retiming the whole video at the reference speed deviation
+EFFORT_DEV_REF = 0.15     # mean |speed-1| that counts as full retime effort
+EFFORT_W_SPLICE = 25.0
+EFFORT_SPLICE_REF = 3     # splices (= segments - 1) that count as full splice effort
+EFFORT_W_TEMPO = 20.0
+EFFORT_TEMPO_REF = 8.0    # tempo stretch % that counts as full tempo effort (the +-8% guardrail)
+# fit_after_effort = total - EFFORT_K * effort_pct: the ranking key that keeps naturally close songs
+# above songs that only "fit" after heavy retiming. Calibrated on the real suite (docs/real-suite-latest.md).
+EFFORT_K = 1.0            # any k > 0.48 separates the 6 real pairs (good above cross); 1.0 leaves a ~3.3-pt margin
+LENGTH_SLACK_S = 0.5      # a song up to this much shorter than the video still counts as covering it (own audio is a few ms short)
+SPEED_EPS = 0.01          # |speed-1| at or below this counts as not retimed
+
+
+def effort_of(plan: dict, video_duration: float) -> dict:
+    """final.effort block + effort_pct for a plan (see the formula above)."""
+    rt = (plan or {}).get("retime") or {}
+    secs = [s for s in rt.get("sections", []) if abs(float(s["speed"]) - 1.0) > SPEED_EPS]
+    vd = max(float(video_duration), 1e-9)
+    span = sum(float(s["v_end"]) - float(s["v_start"]) for s in secs)
+    frac = min(1.0, span / vd)
+    devs = [abs(float(s["speed"]) - 1.0) * (float(s["v_end"]) - float(s["v_start"])) for s in secs]
+    mean_dev = sum(devs) / span if span > 0 else 0.0
+    max_dev = max((abs(float(s["speed"]) - 1.0) for s in secs), default=0.0)
+    segs = (plan or {}).get("segments") or []
+    splices = max(0, len(segs) - 1)
+    stretch = abs(float((plan or {}).get("tempo_ratio", 1.0)) - 1.0) * 100.0
+    pct = EFFORT_W_RETIME * frac * min(1.0, mean_dev / EFFORT_DEV_REF) \
+        + EFFORT_W_SPLICE * min(1.0, splices / EFFORT_SPLICE_REF) \
+        + EFFORT_W_TEMPO * min(1.0, stretch / EFFORT_TEMPO_REF)
+    return {"sections": len(secs), "mean_abs_speed_dev": round(mean_dev, 4), "max_speed_dev": round(max_dev, 4),
+            "retimed_fraction": round(frac, 4), "splices": splices, "tempo_stretch_pct": round(stretch, 3),
+            "effort_pct": round(min(100.0, pct), 1)}
+
 
 def _tot(r):
     return S._combine(r["tempo_pct"], r["sync_pct"], r["arc_pct"])
@@ -132,7 +170,7 @@ ORDER_COST = ("tempo_only", "retime_only", "splice_first", "default", "retime_fi
 
 
 def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min_section_s, max_cuts,
-         min_gain, max_passes, allow_splice, lead_s=0.0):
+         min_gain, max_passes, allow_splice, lead_s=0.0, loop_segs=None):
     t0 = time.perf_counter()
     steps, limits = [], []
     vd = float(video["duration"])
@@ -151,8 +189,11 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
     cur_song, offset = song, 0.0
     cur_video = video                       # original video + retime (nudges are applied on top)
     tempo_ratio, segs, retime, nudges = 1.0, None, None, []
+    loop_segs_given = loop_segs
     r0 = S.score_at(song, video, 0.0, lead_s=lead_s)
-    if float(song["duration"]) >= vd:
+    if loop_segs_given:                     # looped song: segments fixed, offset locked at 0, no tempo/splice
+        segs = loop_segs_given
+    elif float(song["duration"]) >= vd:
         offset = _best_offset(song, video, lead_s=lead_s)
     else:
         limits.append("song_shorter_than_video")
@@ -259,12 +300,32 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
 
 def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20.0,
               max_speed_dev: float = 0.25, max_tempo_dev: float = 0.08, min_section_s: float = 0.75,
-              max_cuts: int = 3, min_gain: float = 0.5, max_passes: int = 2, allow_splice: bool = True, lead_s: float | None = None) -> dict:
+              max_cuts: int = 3, min_gain: float = 0.5, max_passes: int = 2, allow_splice: bool = True, lead_s: float | None = None,
+              allow_loop: bool = False) -> dict:
     """Try several tool orders (each from the baseline) and keep the best path, so the result is never
-    worse than any single tool applied directly."""
+    worse than any single tool applied directly.
+
+    Length rule: a song shorter than the video is INELIGIBLE (same as score.score): the result has
+    eligible False, total 0, reason 'song shorter than video', and nothing is retimed or filled.
+    allow_loop=True (default False) lifts that: the song is repeated end to end (as plan.segments,
+    crossfaded by the renderer) until it covers the video and its retime headroom; plan.looped is True
+    and plan.loop = {song_duration_s, repeats}. A looped plan uses retime + micro nudges only (offset
+    locked at 0, no tempo stretch, no splice), so the segments stay valid."""
     lead_s = S.PERCEPTUAL_LEAD_S if lead_s is None else lead_s
     lead_s = min(0.12, max(0.0, float(lead_s)))   # cuts/peaks land lead_s before the beat (0 = on it)
     t0 = time.perf_counter()
+    loop_info, loop_segs = None, None
+    if float(song["duration"]) < float(video["duration"]) - LENGTH_SLACK_S:
+        if not allow_loop:
+            return _ineligible(song, video, lead_s)
+        sd, vd = float(song["duration"]), float(video["duration"])
+        cover = vd / max(0.05, 1.0 - max_speed_dev) + 1.0       # enough for the slowest allowed retime
+        n = int(np.ceil(cover / max(sd, 1e-6)))
+        loop_segs = [{"src_start": 0.0, "src_end": min(sd, cover - k * sd), "dst_start": k * sd}
+                     for k in range(n)]
+        loop_info = {"song_duration_s": round(sd, 3), "repeats": n}
+        song = _assemble(song, loop_segs, n * sd)
+        allow_splice = False
     names = list(ORDER_COST)             # cheapest first; later (dearer) orders are pruned on budget
     best, pruned = None, False
     for i, name in enumerate(names):
@@ -273,7 +334,8 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
             pruned = True
             break
         run = _run(song, video, ORDERS[name], target, max(rem / max(1, len(names) - i), 2.0), max_speed_dev,
-                   max_tempo_dev, min_section_s, max_cuts, min_gain, max_passes, allow_splice, lead_s)
+                   max_tempo_dev, min_section_s, max_cuts, min_gain, max_passes, allow_splice, lead_s,
+                   loop_segs=loop_segs)
         run["path"] = name
         if best is None or _rank(run["cur"]) > _rank(best["cur"]):
             best = run
@@ -293,9 +355,32 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
     first = best["steps"][0] if best["steps"] else {}
     final["lead_s"] = lead_s
     final["tightness_start"] = first.get("tightness_before")
-    return {"steps": best["steps"], "final": final, "plan": best["plan"], "path": best["path"],
+    ef = effort_of(best["plan"], video["duration"])
+    final["eligible"] = True
+    final["effort"] = {k: v for k, v in ef.items() if k != "effort_pct"}
+    final["effort_pct"] = ef["effort_pct"]
+    final["fit_after_effort"] = round(max(0.0, final["total_pct"] - EFFORT_K * ef["effort_pct"]), 1)
+    if loop_info:
+        best["plan"]["looped"], best["plan"]["loop"] = True, loop_info
+    else:
+        best["plan"]["looped"] = False
+    return {"steps": best["steps"], "final": final, "eligible": True, "plan": best["plan"], "path": best["path"],
             "limits_hit": sorted(set(limits)), "pruned": pruned, "why_not_100": _why(final, target, limits),
             "elapsed_s": round(time.perf_counter() - t0, 2)}
+
+
+def _ineligible(song, video, lead_s):
+    sd, vd = float(song["duration"]), float(video["duration"])
+    final = {"eligible": False, "total_pct": 0, "tempo_pct": 0.0, "sync_pct": 0.0, "arc_pct": 0.0,
+             "tightness": None, "tight_pct": None, "median_err_ms": None, "out_duration_s": round(vd, 3),
+             "video_duration_s": round(vd, 3), "sync_headline": 0, "lead_s": lead_s, "tightness_start": None,
+             "effort": effort_of(None, vd), "effort_pct": 0.0, "fit_after_effort": 0.0,
+             "reason": "song shorter than video", "song_duration_s": round(sd, 3)}
+    final["effort"].pop("effort_pct")
+    return {"steps": [], "final": final, "eligible": False, "reason": "song shorter than video",
+            "plan": None, "path": None, "limits_hit": ["song_shorter_than_video"], "pruned": False,
+            "why_not_100": "Song is shorter than the video, so it is ineligible (pass allow_loop=True to repeat it).",
+            "elapsed_s": 0.0}
 
 
 def _why(final, target, limits):

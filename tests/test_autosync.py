@@ -262,3 +262,56 @@ def test_lead_s_clamped_recorded_and_zero_on_beat():
     b = np.asarray(song["beat_times"])
     err = np.abs(ev[:, None] - b[None, :]).min(axis=1)
     assert np.median(err) < 0.02
+
+
+# ---- round 5: length rule + effort ----
+
+def _short_pair():
+    return make_song(20.0), make_video(np.arange(1, 56) * 0.5, duration=30.0)
+
+
+def test_shorter_song_ineligible_by_default():
+    song, vid = _short_pair()
+    r = auto_sync(song, vid)
+    f = r["final"]
+    assert f["eligible"] is False and r["eligible"] is False
+    assert f["total_pct"] == 0 and f["fit_after_effort"] == 0
+    assert "song shorter than video" in (f.get("reason") or r.get("reason"))
+    assert r["plan"] is None
+
+
+def test_shorter_song_allow_loop_repeats():
+    song, vid = _short_pair()
+    r = auto_sync(song, vid, allow_loop=True)
+    assert r["final"]["eligible"] is True and r["plan"]["looped"] is True
+    segs = r["plan"]["segments"]
+    assert len(segs) >= 2
+    assert max(s["dst_start"] + (s["src_end"] - s["src_start"]) for s in segs) >= vid["duration"] - 1e-6
+    assert r["plan"]["loop"]["repeats"] >= 2
+
+
+def test_long_song_not_looped():
+    r = auto_sync(make_song(90.0), make_video(np.arange(1, 56) * 0.5, duration=30.0))
+    assert r["plan"]["looped"] is False
+
+
+def test_untouched_plan_zero_effort():
+    from amv_matcher.autosync import EFFORT_K, effort_of
+    plan = {"tempo_ratio": 1.0, "segments": [{"src_start": 0, "src_end": 30, "dst_start": 0}], "retime": None}
+    e = effort_of(plan, 30.0)
+    assert e["effort_pct"] == 0 and e["sections"] == 0 and e["splices"] == 0
+    heavy = {"tempo_ratio": 1.05, "segments": [{}, {}, {}],
+             "retime": {"sections": [{"v_start": 0, "v_end": 15, "speed": 1.3}]}}
+    assert effort_of(heavy, 30.0)["effort_pct"] > e["effort_pct"]
+    assert 0 < EFFORT_K
+    r = auto_sync(make_song(60.0), make_video(np.arange(1, 56) * 0.5, duration=30.0))
+    f = r["final"]
+    assert 0 <= f["effort_pct"] <= 100
+    assert abs(f["fit_after_effort"] - max(0, f["total_pct"] - EFFORT_K * f["effort_pct"])) <= 0.1
+
+
+def test_heavy_retime_effort_penalised():
+    r = auto_sync(make_song(), make_video(slow_section_cuts()), min_gain=0.05)
+    f = r["final"]
+    assert f["effort"]["sections"] > 0 and f["effort"]["retimed_fraction"] > 0
+    assert f["effort_pct"] > 0 and f["fit_after_effort"] < f["total_pct"]

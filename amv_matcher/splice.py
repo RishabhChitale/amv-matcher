@@ -90,19 +90,36 @@ def lead_silence(segments):
 
 
 def _assemble(song, segments, vd):
-    """Build a song dict as heard after splicing (output time 0..vd).
+    """Build a song dict as heard after splicing (output time 0..vd), carrying EVERY analysis key
+    score.py reads, remapped through the segments (repeats and seams included):
+    beat_times/beat_strengths, beat_grid (+ grid_bpm/grid_period/grid_used/beats_per_bar carried,
+    bar_phase recomputed as the position of the first kept downbeat), onset_env (+fps), energy_curve,
+    drops, lulls, sections (clipped). Scalars bpm and duration: bpm carried, duration = vd.
 
     A segment with src_start < 0 means the song starts AFTER that segment's start: the first
-    -src_start seconds of the segment are silence (zero energy, no beats). Only the first
-    segment (dst_start == 0) may do this; plan_splice reports it as plan["lead_silence_s"]."""
+    -src_start seconds of the segment are silence (zero energy, no beats, zero onset). Only the first
+    segment (dst_start == 0) may do this; plan_splice reports it as plan["lead_silence_s"].
+    Segments are hard cuts (no crossfade in the model), so seams need no special handling."""
     hz = S.ENERGY_HZ
     se = np.asarray(song["energy_curve"], dtype=float)
     n_out = int(math.ceil(vd * hz))
     en = np.zeros(n_out)
     bt = np.asarray(song["beat_times"], dtype=float)
+    bs = song.get("beat_strengths")
+    bs = np.asarray(bs, dtype=float) if bs is not None and len(bs) == len(bt) else None
+    g = np.asarray(song.get("beat_grid") if song.get("beat_grid") is not None else [], dtype=float)
+    bpb = int(song.get("beats_per_bar") or 4)
+    ph = int(song.get("bar_phase") or 0) % bpb
     drops = np.asarray(song.get("drops", []), dtype=float)
     lulls = song.get("lulls", [])
-    beats, dr, lu = [], [], []
+    env = song.get("onset_env")
+    fps = float(song.get("onset_env_fps") or 0)
+    has_env = env is not None and len(env) > 0 and fps > 0
+    if has_env:
+        env = np.asarray(env, dtype=float)
+        oe = np.zeros(int(math.ceil(vd * fps)) + 1)
+    beats, strengths, grid, dr, lu, secs = [], [], [], [], [], []
+    first_bar = None
     for sg in segments:
         a, b, d0 = sg["src_start"], sg["src_end"], sg["dst_start"]
         i0, o0 = int(round(a * hz)), int(round(d0 * hz))
@@ -112,14 +129,45 @@ def _assemble(song, segments, vd):
         n = min(int(round((b - a) * hz)), n_out - o0, max(0, len(se) - i0))
         if n > 0:
             en[o0:o0 + n] = se[i0:i0 + n]
-        beats += list(bt[(bt >= a) & (bt < b)] - a + d0)
+        if has_env:
+            j0, p0 = int(round(a * fps)), int(round(d0 * fps))
+            if j0 < 0:
+                p0 -= j0
+                j0 = 0
+            m = min(int(round((b - a) * fps)), len(oe) - p0, len(env) - j0)
+            if m > 0:
+                oe[p0:p0 + m] = env[j0:j0 + m]
+        sel = (bt >= a) & (bt < b)
+        beats += list(bt[sel] - a + d0)
+        if bs is not None:
+            strengths += list(bs[sel])
+        for k in np.nonzero((g >= a) & (g < b))[0]:
+            if first_bar is None and int(k) % bpb == ph:
+                first_bar = len(grid)
+            grid.append(float(g[k] - a + d0))
         dr += list(drops[(drops >= a) & (drops < b)] - a + d0)
         for la, lb in lulls:
             ca, cb = max(la, a), min(lb, b)
             if cb > ca:
                 lu.append([ca - a + d0, cb - a + d0])
-    return {"bpm": song["bpm"], "duration": vd, "beat_times": sorted(beats), "energy_curve": en.tolist(),
-            "energy_hz": hz, "drops": sorted(dr), "lulls": lu}
+        for s in song.get("sections") or []:
+            ca, cb = max(s["start"], a), min(s["end"], b)
+            if cb - ca > 1e-6:
+                secs.append(dict(s, start=ca - a + d0, end=cb - a + d0))
+    order = np.argsort(beats, kind="stable") if len(beats) else []
+    out = {"bpm": song["bpm"], "duration": vd, "beat_times": [beats[i] for i in order],
+           "energy_curve": en.tolist(), "energy_hz": hz, "drops": sorted(dr), "lulls": lu}
+    if bs is not None:
+        out["beat_strengths"] = [strengths[i] for i in order]
+    if "beat_grid" in song:
+        out.update({"beat_grid": grid, "grid_bpm": song.get("grid_bpm", 0.0),
+                    "grid_period": song.get("grid_period", 0.0), "grid_used": song.get("grid_used", False),
+                    "beats_per_bar": bpb, "bar_phase": (first_bar or 0) % bpb})
+    if has_env:
+        out["onset_env"], out["onset_env_fps"] = oe.tolist(), fps
+    if "sections" in song:
+        out["sections"] = secs
+    return out
 
 
 def _bonus(asm, video):

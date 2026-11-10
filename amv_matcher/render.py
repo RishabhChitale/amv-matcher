@@ -636,8 +636,9 @@ def frame_plan(warp, out_duration: float, fps: float, src_frames: int):
 
 # --------------------------------------------------------------------------- audio
 
-def _tempo_wav(song_path, ratio: float, out: Path) -> None:
-    """Whole song at `ratio` x speed through PyAV's atempo (chained for ratios outside 0.5..2)."""
+def _tempo_wav(song_path, ratio: float, out: Path, max_in_s: Optional[float] = None) -> None:
+    """Song at `ratio` x speed through PyAV's atempo (chained for ratios outside 0.5..2). Only the first
+    `max_in_s` input seconds are processed when given (an excerpt must not tempo a whole long track)."""
     g = av.filter.Graph()
     src = g.add_abuffer(sample_rate=SR, format="fltp", layout="stereo", time_base=Fraction(1, SR))
     chain, r = [], ratio
@@ -678,6 +679,8 @@ def _tempo_wav(song_path, ratio: float, out: Path) -> None:
                 pts += r_.samples
                 src.push(r_)
                 drain()
+            if max_in_s is not None and pts / SR >= max_in_s:
+                break
     src.push(None)
     drain()
     y = np.concatenate(chunks, axis=1) if chunks else np.zeros((2, 0), np.float32)
@@ -691,7 +694,11 @@ def build_audio(song_path, plan: dict, out_duration: float, out_wav: Path) -> No
     tmp = None
     if abs(ratio - 1.0) > 1e-6:
         tmp = out_wav.with_name(out_wav.stem + ".tempo.wav")
-        _tempo_wav(song_path, ratio, tmp)
+        ends = [float(g["src_end"]) for g in (plan.get("segments") or []) if "src_end" in g]
+        if not ends:
+            off = float(plan.get("offset") or 0.0)
+            ends = [max(0.0, off) + out_duration]
+        _tempo_wav(song_path, ratio, tmp, max_in_s=max(ends) * ratio + 2.0)   # segments are on the tempo'd timeline
         src = tmp
     try:
         segs = plan.get("segments")

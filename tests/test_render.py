@@ -328,3 +328,19 @@ def test_prune_and_marker(tmp_path, monkeypatch):
     monkeypatch.setattr(render, "rife_exe", lambda: d / render._asset()["exe"])
     render.prune_rife()
     assert sorted(p.name for p in d.iterdir()) == sorted(["LICENSE", "rife-v4.6", render._asset()["exe"]])
+
+
+def test_tempo_wav_excerpt_stops_early(tmp_path):
+    """An excerpt render must not tempo a whole long track (the 511 s 'A own audio' outlier)."""
+    import numpy as np
+    import soundfile as sf
+    from amv_matcher import render
+    sr = render.SR
+    wav = tmp_path / "long.wav"
+    sf.write(str(wav), (0.1 * np.sin(np.arange(sr * 60) * 0.05)).astype(np.float32).repeat(2).reshape(-1, 2), sr)
+    full, part = tmp_path / "full.wav", tmp_path / "part.wav"
+    render._tempo_wav(wav, 1.03, full)
+    render._tempo_wav(wav, 1.03, part, max_in_s=7.0)
+    n_full, n_part = sf.info(str(full)).duration, sf.info(str(part)).duration
+    assert abs(n_full - 60 / 1.03) < 0.5
+    assert 6.0 / 1.03 <= n_part < 12.0 / 1.03     # ~ max_in_s / ratio, not the whole 58 s
