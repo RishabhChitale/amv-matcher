@@ -340,12 +340,12 @@ Separation is one at a time (single worker). Providers: `demucs` (needs the Demu
 
 - `POST /api/stems` (guarded) body `{"song_path", "provider": "auto"}` -> job: `{id, song_path, provider, status: running|done|error|cancelled, progress 0-1, message, error, stems: {name: wav path}|null, stem_names, started, cached?, seconds?}`. A running job for the same song and provider is returned instead of a new one; a cache hit returns `status: "done", cached: true`. 400 bad provider, 409 `Demucs is not installed`, 507 less than 3 GB free.
 ```json
-{"id": "a1b2c3d4e5f6", "song_path": "/abs/music/song.mp3", "provider": "hpss", "status": "running", "progress": 0.0, "message": "Starting", "error": null, "stems": null, "stem_names": ["drums", "harmonic"], "started": 1760000000.0}
+{"id": "a1b2c3d4e5f6", "song_path": "/abs/music/song.mp3", "provider": "hpss", "status": "running", "progress": 0.0, "message": "Starting", "error": null, "stems": null, "stem_names": ["drums", "music"], "started": 1760000000.0}
 ```
 - `POST /api/stems/cancel` (guarded) body `{"song_path", "provider"}` (provider ignored) -> `{"cancelled": <number of running jobs stopped>}`.
 - `GET /api/stems/status?song_path=` -> `{capabilities: {demucs_installed, free_gb, install}, available: {provider: [stem names]}, state: "running"|"ready"|"none", running?, provider?, stems?, last?}`.
 ```json
-{"capabilities": {"demucs_installed": false, "free_gb": 120.5, "install": {"status": "idle", "progress": 0.0, "message": "", "error": null}}, "available": {"hpss": ["drums", "harmonic"]}, "state": "ready", "provider": "hpss", "stems": ["drums", "harmonic"]}
+{"capabilities": {"demucs_installed": false, "free_gb": 120.5, "install": {"status": "idle", "progress": 0.0, "message": "", "error": null}}, "available": {"hpss": ["drums", "music"]}, "state": "ready", "provider": "hpss", "stems": ["drums", "music"]}
 ```
 - `GET /api/stem-audio?song_path=&stem=&provider=` -> `audio/wav`. Empty `provider` uses the first cached one (demucs, then hpss); 404 `No stems separated for this song yet` or `Unknown stem`.
 - `GET /api/stem-features?song_path=&provider=` -> per-stem feature curves from `stems.features_for` (same provider rule and 404).
