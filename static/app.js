@@ -27,12 +27,12 @@ function songTime() { const a = window.asSongT && window.asSongT(); if (a != nul
 // Audio element follows the video clock. Hard seeks restart buffering (WebKit then plays only short bursts), so they are
 // rate-limited (max 1 per 2 s unless the user seeks), skipped while the element is still seeking/buffering, and the drift
 // threshold is generous; small drift is trimmed with a gentle playbackRate nudge instead. __audLog keeps the last events.
-const AUD = {lastSeek: -1e9, lastRate: -1e9, log: [], seeks: 0, rates: 0, nudging: 0};
+const AUD = {lastSeek: -1e9, lastRate: -1e9, log: [], seeks: 0, rates: 0, nudging: 0, offSince: 0, fixes: 0, lead: 0};
 // Pitch must never follow playbackRate (WebView2 sounds pitchy/static otherwise): force it on both media elements.
 [vid, aud].forEach(m => { m.preservesPitch = true; m.webkitPreservesPitch = true; m.mozPreservesPitch = true; });
 window.__aud = AUD;
 function audLog(k, v) { AUD.log.push([Math.round(performance.now()), k, v]); if (AUD.log.length > 300) AUD.log.shift(); }
-function audSeek(t) { AUD.nudging = 0; AUD.lastSeek = performance.now(); AUD.seeks++; audLog('seek', +t.toFixed(3)); try { aud.currentTime = t; } catch (e) {} }
+function audSeek(t) { AUD.offSince = 0; AUD.lastSeek = performance.now(); AUD.seeks++; audLog('seek', +t.toFixed(3)); try { aud.currentTime = t; } catch (e) {} }
 function audRate(r) { if (Math.abs(aud.playbackRate - r) < 1e-3) return; AUD.lastRate = performance.now(); AUD.rates++; audLog('rate', +r.toFixed(3)); aud.playbackRate = r; }
 function syncAudio(force) {
   if (!S.sel) return;
@@ -42,17 +42,20 @@ function syncAudio(force) {
   if (force) { if (ad > 0.05 || aud.paused) audSeek(st); audRate(S.rate); }
   else if (aud.seeking || aud.readyState < 2) return;   // still buffering from the last seek: leave it alone
   else if (ad > 0.3 && now - AUD.lastSeek > 2000) { audSeek(st); audRate(S.rate); }
-  else if (S.playing && S.rate === 1 && (ad > 0.15 || (AUD.nudging && ad > 0.03))) {
-    // hysteresis: start trimming only on real drift (>150 ms), hold one constant rate until back within 30 ms, then restore 1.0
-    const want = 1 - Math.sign(d) * 0.03;
-    if (!AUD.nudging || Math.abs(aud.playbackRate - want) > 1e-3) { AUD.nudging = 1; audRate(want); }
+  else if (S.playing && S.rate === 1 && ad > 0.02) {
+    // steady offset: no rate nudging (it crackles). Once it has persisted ~1.5 s, correct it with ONE seek; the seek target
+    // adds the lag measured so far (output/seek latency) so the audio lands on the video clock instead of ~70 ms behind it.
+    if (!AUD.offSince) AUD.offSince = now;
+    if (now - AUD.offSince > 1500 && now - AUD.lastSeek > 3000 && AUD.fixes < 4) {
+      AUD.fixes++; AUD.lead = Math.max(-0.25, Math.min(0.25, AUD.lead - d)); audSeek(st + AUD.lead); audLog('fix', +d.toFixed(3));
+    }
   }
-  else if (aud.playbackRate !== S.rate && (ad <= 0.03 || !S.playing || S.rate !== 1)) { AUD.nudging = 0; audRate(S.rate); }
-  else if (ad <= 0.03) AUD.nudging = 0;
+  else { AUD.offSince = 0; if (aud.playbackRate !== S.rate) audRate(S.rate); }
   if (S.playing && aud.paused && !aud.seeking) aud.play().catch(() => {});
 }
 function play() {
   if (!S.dur || !S.video) return;
+  AUD.fixes = 0; AUD.offSince = 0;
   S.playing = true; $('b-play').innerHTML = '&#x23F8;';
   if (vid.currentTime >= S.dur - 0.05) vid.currentTime = 0;
   vid.playbackRate = aud.playbackRate = S.rate;

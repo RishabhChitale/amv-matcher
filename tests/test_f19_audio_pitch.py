@@ -9,8 +9,9 @@ def test_preserves_pitch_on_both_elements():
         assert f"m.{k} = true" in SRC
 
 
-def test_nudge_has_hysteresis():
-    assert "ad > 0.15" in SRC and "AUD.nudging" in SRC
+def test_steady_offset_fixed_by_one_seek_not_rate_nudge():
+    assert "AUD.offSince" in SRC and "AUD.fixes" in SRC and "ad > 0.02" in SRC
+    assert "0.97" not in SRC and "Math.sign(d) * 0.03" not in SRC
     assert "ad > 0.04 && ad <= 0.3" not in SRC
 
 

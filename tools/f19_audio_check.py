@@ -230,6 +230,9 @@ def main():
             fail.append("video did not play (advanced %.1f s of %.0f)" % (advanced, a.secs))
         if per_s > a.max_rate_changes_per_s:
             fail.append("audio rate changed %.2f/s after settle (limit %.2f)" % (per_s, a.max_rate_changes_per_s))
+        tail = [x["drift_ms"] for x in window[-10:]]
+        if tail and abs(sorted(tail)[len(tail) // 2]) > 25:
+            fail.append("steady audio/video drift %d ms after settle (limit 25)" % sorted(tail)[len(tail) // 2])
         if c.errors:
             fail.append("%d JS errors" % len(c.errors))
         if post["pe"] or post["aerr"] or post["verr"]:
