@@ -54,7 +54,7 @@
     rows.forEach(r => add(r.group || 'More', row(r.color, r.shape, r.label, r.desc)));
     $('mk-lg-body').innerHTML = Object.keys(groups).map(g => '<div class="mk-g"><h4>' + g + '</h4>' + groups[g].join('') + '</div>').join('');
   }
-  function fit() { const b = $('mk-lg-btn').getBoundingClientRect(); $('mk-lg-body').style.maxHeight = Math.max(80, Math.min(300, innerHeight - b.bottom - 30)) + 'px'; }
+  function fit() {}
   function setOpen(o) { $('mk-lg-body').classList.toggle('hidden', !o); $('mk-lg-btn').setAttribute('aria-expanded', o ? 'true' : 'false'); root.classList.toggle('open', o); if (o) { build(); fit(); } try { localStorage.setItem('mkLegendOpen', o ? '1' : ''); } catch (e) {} }
 
   // tooltip providers for the markers that exist today
@@ -165,10 +165,10 @@
 
   function init() {
     const wrap = $('tl-wrap'), cv = $('tl'); if (!wrap || !cv || $('mk-legend')) return;
-    wrap.appendChild(root); document.body.appendChild(tip); build();
+    wrap.appendChild(root); wrap.insertAdjacentElement('afterend', $('mk-lg-body')); document.body.appendChild(tip); build(); // body docks in flow under the timeline: never over a lane, label or control
     $('mk-lg-btn').onclick = () => setOpen(!root.classList.contains('open'));
     cv.addEventListener('mousemove', show); cv.addEventListener('mouseleave', hide);
-    cv.addEventListener('mouseenter', () => root.classList.add('fade')); cv.addEventListener('mouseleave', () => root.classList.remove('fade')); // the open legend never blocks or hides what the pointer is on
+    
     let o = false; try { o = !!localStorage.getItem('mkLegendOpen'); } catch (e) {} if (o) setOpen(true);
     const place = () => { root.style.left = (cv.offsetLeft + cv.clientWidth - 6) + 'px'; root.style.top = (cv.offsetTop + 3) + 'px'; };
     place(); addEventListener('resize', () => { place(); fit(); }); setInterval(() => { place(); refresh(); }, 800);
