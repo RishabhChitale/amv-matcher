@@ -107,6 +107,7 @@ $('scan').onclick = async () => {
 };
 function fail(m) { clearInterval(timer); $('scan').disabled = false; $('progress').classList.add('hidden'); $('status').textContent = m; $('status').title = m; }
 function poll(id) {
+  let shownPartial = 0;
   const tick = async () => {
     try {
       const j = await (await fetch('/api/scan/' + id)).json();
@@ -114,6 +115,11 @@ function poll(id) {
       $('progress-bar').style.width = (j.total ? 100 * j.done / j.total : 5) + '%';
       $('status').textContent = j.message || '';
       if (j.status === 'error') return fail(j.error);
+      if (j.status === 'running' && (j.partial || []).length !== shownPartial) {   // fill the list as songs score (final ranking still comes with 'done')
+        shownPartial = j.partial.length;
+        S.results = j.partial.filter(r => r.eligible).sort((a, b) => (b.natural_total_pct - a.natural_total_pct) || (b.sync_pct - a.sync_pct));
+        renderResults({too_short: [], skipped: []});
+      }
       if (j.status === 'done') {
         clearInterval(timer); $('scan').disabled = false; $('progress').classList.add('hidden');
         if (!S.video) loadVideo(j);

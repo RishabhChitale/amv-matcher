@@ -195,9 +195,15 @@ def _cached_for(video_path, song_path):
 TEMPO_SWEEP_TOP = 5       # best-tempo sweep runs only for the top N ranked songs (keeps scans fast)
 
 
+def _publish_partial(job: dict, r: dict):
+    """Stream a scored song (a private copy, unranked, in scan order) so a polling UI can fill its list early.
+    The final ranked `results` are computed as before, so the end result is unchanged."""
+    job["partial"] = job.get("partial", []) + [dict(r)]
+
+
 def _score_songs(job: dict, video: dict, songs: list):
     """Analyze + score songs into job (results/too_short/skipped); shared by scan and score-songs."""
-    job.update(stage="songs", total=len(songs), done=0)
+    job.update(stage="songs", total=len(songs), done=0, partial=[])
     results, skipped = [], []
     orig = video.get("original_audio")
     if orig:      # the video's own soundtrack: already aligned, so offset 0 is fixed
@@ -212,6 +218,7 @@ def _score_songs(job: dict, video: dict, songs: list):
                             "bpm": song["bpm"], "duration": song["duration"], **sc,
                             "natural_total_pct": sc.get("total_pct"),
                             "auto_sync_cached": _cached_for(job.get("video_path"), orig["path"])})
+            _publish_partial(job, results[-1])
         except Exception as e:
             skipped.append({"path": orig["path"], "name": orig["name"], "source": "original",
                             "reason": f"{type(e).__name__}: {e}"})
@@ -223,6 +230,7 @@ def _score_songs(job: dict, video: dict, songs: list):
             results.append({"path": str(p), "name": p.name, "source": "song", "bpm": song["bpm"],
                             "duration": song["duration"], **sc, "natural_total_pct": sc.get("total_pct"),
                             "auto_sync_cached": _cached_for(job.get("video_path"), p)})
+            _publish_partial(job, results[-1])
         except Exception as e:  # reported, never silently skipped
             skipped.append({"path": str(p), "name": p.name, "reason": f"{type(e).__name__}: {e}"})
     ok = [r for r in results if r["eligible"]]
@@ -243,7 +251,7 @@ def _score_songs(job: dict, video: dict, songs: list):
         except Exception:
             pass
     short.sort(key=lambda r: r["duration"], reverse=True)
-    job.update(done=len(songs), reference=reference, results=ok, too_short=short, skipped=skipped, status="done",
+    job.update(done=len(songs), reference=reference, results=ok, too_short=short, skipped=skipped, partial=[], status="done",
                message=f"Done: {len(ok)} ranked, {len(skipped)} skipped")
 
 
@@ -290,7 +298,7 @@ def scan(req: ScanRequest):
     with _jobs_lock:
         JOBS[job_id] = {"id": job_id, "status": "running", "stage": "starting", "done": 0,
                         "total": 0, "message": "Starting", "video": None,
-                        "results": None, "reference": None, "too_short": [], "skipped": [], "error": None}
+                        "results": None, "partial": [], "reference": None, "too_short": [], "skipped": [], "error": None}
         ALLOWED_DIRS.add(winsafe.norm_case_path(md.resolve()))
         ALLOWED_VIDEOS.add(winsafe.norm_case_path(vp.resolve()))
     _pool.submit(_run_job, job_id, req)
@@ -709,7 +717,7 @@ def score_songs(req: ScoreSongsRequest):
     with _jobs_lock:
         JOBS[job_id] = {"id": job_id, "status": "running", "stage": "starting", "done": 0,
                         "total": 0, "message": "Starting", "video": None,
-                        "results": None, "reference": None, "too_short": [], "skipped": [], "error": None}
+                        "results": None, "partial": [], "reference": None, "too_short": [], "skipped": [], "error": None}
     if len(songs) <= 1:      # synchronous (0 songs = video analysis only): finished job inline
         _run_score_songs(job_id, vp, songs)
         return JSONResponse({"job_id": job_id, **JOBS[job_id]})

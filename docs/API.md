@@ -76,7 +76,7 @@ Body: `{"video_path": str, "music_dir": str, "recursive": bool=false}`. Video ex
 Response: `{"job_id": "ae64f08cef79"}`
 
 ## GET /api/scan/{job_id}  (poll every ~400 ms)
-`status`: running | done | error. `stage`: starting | video | songs. `video` appears once the video is analyzed (before songs finish). `results`/`too_short`/`skipped` are filled when `status=done` (`results` is null before).
+`status`: running | done | error. `stage`: starting | video | songs. `video` appears once the video is analyzed (before songs finish). `results`/`too_short`/`skipped` are filled when `status=done` (`results` is null before). While `status=running` and `stage=songs`, `partial` lists the songs scored so far (same per-song shape as `results`, scan order, unranked, ineligible ones included; `done`/`total` give progress). It only grows, is emptied at `status=done`, and the final `results` are identical to a scan without streaming (same ranking), so a UI may show `partial` early but must replace it with `results`. Same for `/api/score-songs` jobs.
 ```json
 {
   "id": "ae64f08cef79", "status": "done", "stage": "songs", "done": 3, "total": 3,
