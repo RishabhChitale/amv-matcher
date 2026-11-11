@@ -285,6 +285,7 @@ def http(port, path, body=None, timeout=60):
 
 def launch(exe, work, tag, par, data, tmp, startup_timeout=180):
     env = dict(os.environ, AMV_DATA_DIR=str(data), TMPDIR=str(tmp), TEMP=str(tmp), TMP=str(tmp))
+    env["PYTHONFAULTHANDLER"] = "1"                      # native crash -> Python traceback in stdout-<tag>.txt
     env.pop("AMV_SCAN_PAR", None)
     if par is not None:
         env["AMV_SCAN_PAR"] = str(par)
@@ -357,6 +358,29 @@ def scan(proc, port, video, music, settle, timeout=1800):
             "det": [[Path(r["path"]).name, r.get("bpm"), r.get("total_pct"), r.get("tempo_pct"), r.get("sync_pct")] for r in res]}
 
 
+def crash_report(proc, work, tag, data, err):
+    """The app died or dropped the socket mid-scan: print its exit code, output tails, app.log tail and (Windows) WER / event log."""
+    print("scan_timing_crash %s: %r | exit code %s (None = still running)" % (tag, err, proc.poll()), flush=True)
+    for name, f in (("stdout", work / ("stdout-%s.txt" % tag)), ("app.log", data / "app.log")):
+        try:
+            lines = f.read_text(errors="replace").splitlines()[-40:]
+        except OSError:
+            continue
+        print("scan_timing_crash %s tail (%d lines):" % (name, len(lines)))
+        for ln in lines:
+            print("  | " + ln[:300])
+    if sys.platform == "win32":
+        ps = ("Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=(Get-Date).AddMinutes(-10)} -ErrorAction SilentlyContinue | "
+              "Where-Object { $_.ProviderName -match 'Application Error|Windows Error Reporting|\\.NET' } | Select-Object -First 8 | "
+              "ForEach-Object { $_.TimeCreated.ToString('s') + ' ' + $_.ProviderName + ': ' + ($_.Message -replace '\\s+', ' ') }")
+        try:
+            r = subprocess.run(["pwsh", "-NoProfile", "-Command", ps], capture_output=True, text=True, timeout=60)
+            for ln in (r.stdout or "").splitlines():
+                print("scan_timing_crash event: " + ln[:500])
+        except Exception as e:
+            print("scan_timing_crash event log unavailable: %r" % (e,))
+
+
 def run_config(exe, work, cfg, par, video, music, settle):
     data = work / ("data-" + cfg)
     tmp = work / ("tmp-" + cfg)
@@ -368,6 +392,9 @@ def run_config(exe, work, cfg, par, video, music, settle):
         proc, port, startup = launch(exe, work, "%s-%s" % (cfg, phase), par, data, tmp)
         try:
             r = scan(proc, port, video, music, settle)
+        except BaseException as e:
+            crash_report(proc, work, "%s-%s" % (cfg, phase), data, e)
+            raise
         finally:
             kill_tree(proc)
         r["startup_s"] = round(startup, 2)
