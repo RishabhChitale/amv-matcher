@@ -371,8 +371,8 @@ def run_window() -> int:
     return 0
 
 
-def _rss_mb() -> float:
-    """Resident memory of this process in MB (Windows: ctypes GetProcessMemoryInfo, no extra dependency)."""
+def _win_rss_bytes(pid: int) -> int:
+    """Working set of one process (Windows, ctypes). Raises OSError when it cannot be read (never returns a fake 0)."""
     import ctypes
     from ctypes import wintypes
 
@@ -381,11 +381,93 @@ def _rss_mb() -> float:
             (n, ctypes.c_size_t) for n in ("PeakWorkingSetSize", "WorkingSetSize", "QuotaPeakPagedPoolUsage",
                                            "QuotaPagedPoolUsage", "QuotaPeakNonPagedPoolUsage",
                                            "QuotaNonPagedPoolUsage", "PagefileUsage", "PeakPagefileUsage")]
-    pmc = PMC()
-    pmc.cb = ctypes.sizeof(pmc)
-    h = ctypes.windll.kernel32.GetCurrentProcess()
-    ctypes.windll.psapi.GetProcessMemoryInfo(h, ctypes.byref(pmc), pmc.cb)
-    return pmc.WorkingSetSize / 1048576
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    fn = k32.K32GetProcessMemoryInfo    # kernel32 export on Win7+; avoids a separate psapi.dll load
+    fn.restype = wintypes.BOOL
+    fn.argtypes = [wintypes.HANDLE, ctypes.POINTER(PMC), wintypes.DWORD]
+    h = k32.OpenProcess(0x1000, False, pid)    # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        raise OSError(ctypes.get_last_error(), f"OpenProcess({pid}) failed")
+    try:
+        pmc = PMC()
+        pmc.cb = ctypes.sizeof(pmc)
+        if not fn(h, ctypes.byref(pmc), pmc.cb):
+            raise OSError(ctypes.get_last_error(), f"GetProcessMemoryInfo({pid}) failed")
+        return int(pmc.WorkingSetSize)
+    finally:
+        k32.CloseHandle(h)
+
+
+def _win_parent_map() -> dict:
+    """{pid: parent_pid} for every process (CreateToolhelp32Snapshot)."""
+    import ctypes
+    from ctypes import wintypes
+
+    class PE(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ProcessID", wintypes.DWORD),
+                    ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wintypes.DWORD),
+                    ("cntThreads", wintypes.DWORD), ("th32ParentProcessID", wintypes.DWORD),
+                    ("pcPriClassBase", ctypes.c_long), ("dwFlags", wintypes.DWORD), ("szExeFile", ctypes.c_wchar * 260)]
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    k32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    k32.Process32FirstW.argtypes = k32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PE)]
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    snap = k32.CreateToolhelp32Snapshot(0x2, 0)    # TH32CS_SNAPPROCESS
+    if not snap or snap == ctypes.c_void_p(-1).value:
+        raise OSError(ctypes.get_last_error(), "CreateToolhelp32Snapshot failed")
+    out: dict = {}
+    try:
+        pe = PE()
+        pe.dwSize = ctypes.sizeof(pe)
+        ok = k32.Process32FirstW(snap, ctypes.byref(pe))
+        while ok:
+            out[int(pe.th32ProcessID)] = int(pe.th32ParentProcessID)
+            ok = k32.Process32NextW(snap, ctypes.byref(pe))
+    finally:
+        k32.CloseHandle(snap)
+    return out
+
+
+def measure_tree_rss(root_pid: int, read_rss=None, parent_map=None) -> dict:
+    """Working set (MB) of root_pid and of root_pid plus every descendant process (the WebView2 helpers are
+    children of the host process, so they are included when the parent chain is intact; 'nproc' says how many were
+    attributed). read_rss(pid)->bytes and parent_map()->{pid: ppid} are injectable for tests. Raises OSError/ValueError
+    if the root itself cannot be read or reads as 0: a vacuous measurement must never look like a pass."""
+    read_rss = read_rss or _win_rss_bytes
+    parent_map = parent_map or _win_parent_map
+    own = read_rss(root_pid)
+    if own <= 0:
+        raise ValueError(f"RSS of pid {root_pid} read as {own}")
+    kids: dict = {}
+    for pid, ppid in parent_map().items():
+        kids.setdefault(ppid, []).append(pid)
+    total, n, seen, todo = own, 1, {root_pid}, [root_pid]
+    while todo:
+        for c in kids.get(todo.pop(), []):
+            if c in seen:
+                continue
+            seen.add(c)
+            todo.append(c)
+            try:
+                total += read_rss(c)
+                n += 1
+            except OSError:
+                pass    # exited or protected helper: skipped, nproc reflects it
+    return {"own_mb": own / 1048576, "tree_mb": total / 1048576, "nproc": n}
+
+
+def check_rss_result(r: dict, own_limit_mb: float = 600, tree_limit_mb: float = 2500) -> str:
+    """Assert on the sampled result of the RSS watch; raises AssertionError when it is vacuous or over the limits."""
+    assert r.get("samples", 0) > 0 and not r.get("error"), f"RSS check did not run: {r.get('error') or 'no samples'}"
+    assert r["peak_mb"] > 0, "RSS read as 0 MB (vacuous check)"
+    assert r["peak_mb"] < own_limit_mb, f"RSS {r['peak_mb']:.0f} MB after page load (js_api walk runaway?)"
+    assert r.get("peak_tree_mb", 0) < tree_limit_mb, f"process-tree RSS {r['peak_tree_mb']:.0f} MB"
+    return (f"peak RSS {r['peak_mb']:.0f} MB own, {r['peak_tree_mb']:.0f} MB with {r['nproc']} process(es) "
+            f"(tree incl. WebView2 children when attributed), {r['samples']} samples")
 
 
 def check_native_hooks(url: str, timeout: float = 45.0) -> dict:
@@ -396,7 +478,7 @@ def check_native_hooks(url: str, timeout: float = 45.0) -> dict:
     api = Api()   # exactly like the real launch (js_api=Api()): a public non-callable attr on it makes pywebview recurse
     win = webview.create_window("selftest", url + "/", hidden=True, js_api=api)
     api._window = win
-    oom: dict = {"errors": [], "peak_mb": 0.0}
+    oom: dict = {"errors": [], "peak_mb": 0.0, "peak_tree_mb": 0.0, "nproc": 0, "samples": 0, "error": ""}
     import logging
 
     class _H(logging.Handler):
@@ -420,7 +502,15 @@ def check_native_hooks(url: str, timeout: float = 45.0) -> dict:
             if sys.platform == "win32":   # CI-verified only: the runaway walk took GBs within a minute
                 t1 = time.time()
                 while time.time() - t1 < 20:
-                    oom["peak_mb"] = max(oom["peak_mb"], _rss_mb())
+                    try:
+                        m = measure_tree_rss(os.getpid())
+                        oom["peak_mb"] = max(oom["peak_mb"], m["own_mb"])
+                        oom["peak_tree_mb"] = max(oom["peak_tree_mb"], m["tree_mb"])
+                        oom["nproc"] = max(oom["nproc"], m["nproc"])
+                        oom["samples"] += 1
+                    except Exception as e:  # noqa: BLE001
+                        oom["error"] = f"{type(e).__name__}: {e}"
+                        break
                     time.sleep(0.5)
         finally:
             out["oom"] = oom
@@ -553,12 +643,13 @@ def selftest(log_path: str = "") -> int:
         print("selftest ok: worker pool job (probe) -> done in", round(time.time() - t2, 1), "s")
         # the loaded page must expose the native hooks (a broken native.js/shell.js ships a dead drop/menu)
         found = check_native_hooks(s.url)
-        oom = found.pop("oom", {"errors": [], "peak_mb": 0.0})
+        oom = found.pop("oom", {"errors": [], "error": "probe did not return"})
         assert found == {"nativeDrop": "function", "nativeMenu": "function"}, f"native hooks missing in the page: {found}"
         assert not oom["errors"], f"pywebview js_api walk errors (public attribute on Api?): {oom['errors'][:2]}"
-        assert oom["peak_mb"] < 600, f"RSS {oom['peak_mb']:.0f} MB after page load (js_api walk runaway?)"
-        print("selftest ok: page hooks window.nativeDrop + window.nativeMenu present | js_api clean, peak RSS",
-              round(oom["peak_mb"]), "MB")
+        rss_note = "RSS watch skipped (Windows-only)"
+        if sys.platform == "win32":
+            rss_note = check_rss_result(oom)
+        print("selftest ok: page hooks window.nativeDrop + window.nativeMenu present | js_api clean |", rss_note)
         s.stop()
         return 0
     except Exception as e:  # noqa: BLE001
