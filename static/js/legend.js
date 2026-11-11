@@ -26,6 +26,7 @@
     ['Song', 'encore', 'encore', 'A drop again, may have no build-up.', 'var(--mk-encore)', 'tick'],
     ['Video', 'visual', 'visual boom', 'A visual impact: motion burst, flash, zoom punch or whip pan.', 'var(--mk-visual)', 'tick'],
     ['Video', 'camera', 'camera whip', 'A fast camera whip (span from start to end).', 'var(--mk-camera)', 'bar'],
+    ['Video', 'unused', 'unused video', 'Dimmed part of the video that the shorter song does not use. The label on V1 says how much is used.', 'rgba(14,15,18,.85)', 'box'],
     ['Video', 'peak', 'high energy', 'A stretch of very high motion energy.', 'var(--mk-peak)', 'box'],
     ['Song', 'cut', 'splice cut', 'Where the song is cut and crossfaded (scissors + wedge).', '#fff', 'wedge'],
     ['Song', 'pump-d', 'pump (drop)', 'Pump-lane bar at a drop; height = strength of the boom.', 'var(--mk-drop)', 'bar'],
@@ -104,9 +105,28 @@
   function lullsPeaks() { const S_ = window.S, V = S_.video, W_ = S_.wf; D.lulls = ((W_ && W_.lulls) || []); D.peaks = ((V && V.peak_segments) || []); }
   const isMain = b => b.main || (D.main != null && Math.abs(b.t - D.main) < 0.01);
   const bcol = b => b.class === 'initial_boom' ? '--mk-initial' : b.class === 'encore' ? '--mk-encore' : '--mk-drop';
+  // F2: a song shorter than the video uses only a stretch of it; dim the rest on V1 and label it.
+  function videoWindow() {
+    const S_ = window.S, A = window.AS, run = A && A.curRun && A.curRun(), res = run && run.result, sel = S_ && S_.sel;
+    const u = (res && ((res.plan && res.plan.video_window) || (res.final && res.final.video_use))) || (sel && (sel.video_use || (sel.auto_sync_cached && sel.auto_sync_cached.video_use)));
+    if (!u || !(u.end_s > u.start_s) || !S_.dur) return null;
+    const a = Math.max(0, u.start_s), b = Math.min(S_.dur, u.end_s);
+    return (a <= 0.05 && b >= S_.dur - 0.05) ? null : {a, b, label: u.label || ('uses ' + fmt(b - a).replace(/\.\d$/, '') + ' of ' + fmt(S_.dur).replace(/\.\d$/, '') + ' video')};
+  }
+  D.vw = null;
+  function drawUnused(ctx, v0, V1H_, t2x_, W) {
+    const w = D.vw = videoWindow(); if (!w) return;
+    const xa = t2x_(w.a), xb = t2x_(w.b);
+    ctx.save(); ctx.fillStyle = 'rgba(14,15,18,.72)'; ctx.fillRect(0, v0, Math.max(0, xa), V1H_); ctx.fillRect(xb, v0, Math.max(0, W - xb), V1H_);
+    ctx.strokeStyle = 'rgba(255,255,255,.55)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(xa + .5, v0); ctx.lineTo(xa + .5, v0 + V1H_); ctx.moveTo(xb - .5, v0); ctx.lineTo(xb - .5, v0 + V1H_); ctx.stroke();
+    ctx.font = '11px sans-serif'; const tw = ctx.measureText(w.label).width, room = xb - xa;
+    const lx = room >= tw + 12 ? xa + 6 : (W - xb >= tw + 12 ? xb + 6 : xa - tw - 6 >= 0 ? xa - tw - 6 : 4);
+    ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(lx - 3, v0 + 4, tw + 6, 16); ctx.fillStyle = '#fff'; ctx.fillText(w.label, lx, v0 + 16); ctx.restore();
+  }
   window.mkDraw = function (ctx, RULER_, V1H_, A1H_, t2x_, W) {
     const S_ = window.S; if (!S_ || !S_.dur) return; lullsPeaks();
     const toT = mapA(), a0 = RULER_ + V1H_ + 4, a1 = a0 + A1H_ - 8, v0 = RULER_;
+    drawUnused(ctx, v0, V1H_, t2x_, W);
     ctx.save();
     if (S_.wf) {
       ctx.fillStyle = css('--mk-lull') || 'rgba(139,92,246,.12)';
@@ -126,6 +146,7 @@
     const inV1 = c.y >= RULER && c.y <= RULER + V1H, inA1 = c.y > RULER + V1H && c.y <= RULER + V1H + A1H;
     if (inA1) { const toT = mapA(); D.booms.forEach(b => { const t = toT(b.t); if (!near(t)) return; const nm = isMain(b) ? 'Main drop' : b.class === 'initial_boom' ? 'Initial boom' : b.class === 'encore' ? 'Encore' : 'Drop'; out.push({text: nm + ' · ' + mmss(t) + ' · ' + pct(b.conf)}); });
       D.lulls.forEach(l => { const s = toT(Array.isArray(l) ? l[0] : l.start), e = toT(Array.isArray(l) ? l[1] : l.end); if (c.t >= s && c.t <= e && !out.length) out.push({text: 'Quiet stretch · ' + span(s, e)}); }); }
+    if (inV1 && D.vw && (c.t < D.vw.a || c.t > D.vw.b)) out.push({text: 'Unused video · ' + D.vw.label + ' · the song is shorter than the video, so this part is not used'});
     if (inV1) { D.vbooms.forEach(b => { if (near(b.t)) out.push({text: 'Visual boom · ' + mmss(b.t) + ' · ' + kindText(b.kind) + ' · ' + pct(b.conf)}); });
       D.cams.forEach(k => { if (c.x >= t2x(k.start) - tol && c.x <= t2x(k.end) + tol) out.push({text: 'Camera whip · ' + span(k.start, k.end) + (k.speed != null ? ' · speed ' + (+k.speed).toFixed(2) : '')}); });
       if (!out.length) D.peaks.forEach(p => { const s = Array.isArray(p) ? p[0] : p.start, e = Array.isArray(p) ? p[1] : p.end; if (c.t >= s && c.t <= e && !out.length) out.push({text: 'High energy · ' + span(s, e)}); }); }

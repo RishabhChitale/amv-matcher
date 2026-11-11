@@ -1192,11 +1192,26 @@ def main():
             tr = c.ev("(()=>{const r=document.getElementById('mk-tip').getBoundingClientRect();return {l:r.left,r:r.right,t:r.top,b:r.bottom,w:innerWidth,h:innerHeight}})()")
             check("legend: quiet stretch starting before t=0 shows no negative time", bool(__import__('re').fullmatch(r"Quiet stretch · \d+:\d\d\.\d-\d+:\d\d\.\d", tx.strip())), tx)
             check("legend: tooltip stays inside the viewport", bool(tr and tr["l"] >= 0 and tr["t"] >= 0 and tr["r"] <= tr["w"] and tr["b"] <= tr["h"]), str(tr))
+            # F2: video-use dimming: a 20 s song on a longer video dims the unused part of V1, with a label + tooltip
+            c.ev("(()=>{window.__vu=S.sel.video_use;const d=S.dur,a=d*.1,u=d*.4;S.sel.video_use={start_s:a,end_s:a+u,used_s:u,video_duration_s:d,label:'uses '+fmtMS(u)+' of '+fmtMS(d)+' video'};draw();})()")
+            vu = c.ev("(()=>{const cv=document.getElementById('tl').getBoundingClientRect(),w=MKLegend.detected.vw;if(!w)return null;const x=cv.left+t2x(Math.min(S.dur-1,w.b+(S.dur-w.b)/2)),y=cv.top+26+40;"
+                      "const el=document.elementFromPoint(x,y);return {x,y,top:el&&el.id,lbl:w.label,a:w.a,b:w.b,dur:S.dur}})()")
+            check("F2: unused video window computed for a song shorter than the video", bool(vu) and abs((vu["b"] - vu["a"]) - 0.4 * vu["dur"]) < 0.01 and vu["b"] < vu["dur"], str(vu))
+            if vu:
+                check("F2: dimmed V1 area is on top (elementFromPoint = timeline canvas)", vu["top"] == "tl", str(vu))
+                px = c.ev("(()=>{const cv=document.getElementById('tl'),k=cv.width/cv.getBoundingClientRect().width,w=MKLegend.detected.vw,g=cv.getContext('2d');"
+                          "const f=t=>{const d=g.getImageData(Math.round(t2x(t)*k),Math.round((26+60)*k),1,1).data;return d[0]+d[1]+d[2]};return {used:f((w.a+w.b)/2),unused:f(w.b+(S.dur-w.b)/2)}})()")
+                check("F2: unused part of V1 is visibly darker than the used part", bool(px) and px["unused"] < px["used"], str(px))
+                c.mouse("mouseMoved", vu["x"], vu["y"]); c.pump(0.4)
+                tx = c.ev("document.getElementById('mk-tip').innerText") or ""; tv = vis("#mk-tip")
+                check("F2: hovering the dimmed part explains it ('Unused video · uses M:SS of M:SS video')", bool(tv and tv["w"] > 0 and not tv["hid"]) and bool(__import__('re').search(r"Unused video · uses \d+:\d\d of \d+:\d\d video", tx)), tx)
+            c.ev("(()=>{if(window.__vu===undefined)delete S.sel.video_use;else S.sel.video_use=window.__vu;draw();})()")
+            c.mouse("mouseMoved", 5, 5); c.pump(0.3)
             c.ev("(()=>{const d=MKLegend.detected;if(S.wf)S.wf.lulls=window.__wfl;d.key='';draw();})()")
             c.mouse("mouseMoved", 5, 5); c.pump(0.3)
             real_click("#mk-lg-btn")
             lt = c.ev("document.getElementById('mk-lg-body').innerText") or ""
-            check("F7: legend lists main drop / initial boom / encore / visual boom / camera whip / high energy", all(k in lt.lower() for k in ("main drop", "initial boom", "encore", "visual boom", "camera whip", "high energy")), lt[:200])
+            check("F7: legend lists main drop / initial boom / encore / visual boom / camera whip / high energy", all(k in lt.lower() for k in ("main drop", "initial boom", "encore", "visual boom", "camera whip", "high energy", "unused video")), lt[:200])
             check("F7: --mk-* tokens defined", c.ev("getComputedStyle(document.documentElement).getPropertyValue('--mk-visual').trim()") == "#fbbf24")
             real_click("#mk-lg-btn")
             c.ev("(()=>{const d=MKLegend.detected;d.booms=[];d.vbooms=[];d.main=null;d.busy=false;d.key='';})()")
