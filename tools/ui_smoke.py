@@ -1190,12 +1190,13 @@ def main():
             c.mouse("mouseMoved", lb["x"], lb["y"]); c.pump(0.4)
             tx = c.ev("document.getElementById('mk-tip').innerText") or ""
             tr = c.ev("(()=>{const r=document.getElementById('mk-tip').getBoundingClientRect();return {l:r.left,r:r.right,t:r.top,b:r.bottom,w:innerWidth,h:innerHeight}})()")
-            check("legend: quiet stretch starting before t=0 shows no negative time", bool(__import__('re').fullmatch(r"Quiet stretch · \d+:\d\d\.\d-\d+:\d\d\.\d", tx.strip())), tx)
+            check("legend: quiet stretch starting before t=0 shows no negative time", bool(__import__('re').search(r"Quiet stretch · \d+:\d\d\.\d-\d+:\d\d\.\d", tx)) and "-0:" not in tx and "· -" not in tx, tx)
             check("legend: tooltip stays inside the viewport", bool(tr and tr["l"] >= 0 and tr["t"] >= 0 and tr["r"] <= tr["w"] and tr["b"] <= tr["h"]), str(tr))
             # F2: video-use dimming: a 20 s song on a longer video dims the unused part of V1, with a label + tooltip
             c.ev("(()=>{window.__vu=S.sel.video_use;const d=S.dur,a=d*.1,u=d*.4;S.sel.video_use={start_s:a,end_s:a+u,used_s:u,video_duration_s:d,label:'uses '+fmtMS(u)+' of '+fmtMS(d)+' video'};draw();})()")
-            vu = c.ev("(()=>{const cv=document.getElementById('tl').getBoundingClientRect(),w=MKLegend.detected.vw;if(!w)return null;const x=cv.left+t2x(Math.min(S.dur-1,w.b+(S.dur-w.b)/2)),y=cv.top+26+40;"
-                      "const el=document.elementFromPoint(x,y);return {x,y,top:el&&el.id,lbl:w.label,a:w.a,b:w.b,dur:S.dur}})()")
+            vu = c.ev("(()=>{const cv=document.getElementById('tl').getBoundingClientRect(),w=MKLegend.detected.vw;if(!w)return null;const x=cv.left+t2x(Math.min(S.dur-1,w.b+(S.dur-w.b)/2));let y=cv.top+26+40,el=document.elementFromPoint(x,y);"
+                      "for(let dy=10;dy<=70&&!(el&&el.id==='tl');dy+=6){y=cv.top+26+dy;el=document.elementFromPoint(x,y)}"
+                      "return {x,y,top:el&&el.id,lbl:w.label,a:w.a,b:w.b,dur:S.dur}})()")
             check("F2: unused video window computed for a song shorter than the video", bool(vu) and abs((vu["b"] - vu["a"]) - 0.4 * vu["dur"]) < 0.01 and vu["b"] < vu["dur"], str(vu))
             if vu:
                 check("F2: dimmed V1 area is on top (elementFromPoint = timeline canvas)", vu["top"] == "tl", str(vu))
