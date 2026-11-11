@@ -13,8 +13,8 @@ try { Object.assign(AS.guard, JSON.parse(localStorage.getItem(LS) || '{}')); } c
 const saveGuard = () => { try { localStorage.setItem(LS, JSON.stringify(AS.guard)); } catch (e) {} };
 const sleep = ms => new Promise(z => setTimeout(z, ms));
 const post = (u, b) => jpost(u, b || {});
-const STEPS = ['offset', 'tempo', 'splice', 'arrange', 'retime', 'micro'];
-const STEPNAME = {offset: 'Start point', tempo: 'Tempo match', splice: 'Splice', arrange: 'Arrange sections', retime: 'Retime video', micro: 'Micro-nudges'};
+const STEPS = ['offset', 'tempo', 'boom', 'splice', 'arrange', 'retime', 'micro'];
+const STEPNAME = {offset: 'Start point', tempo: 'Tempo match', boom: 'Boom match', splice: 'Splice', arrange: 'Arrange sections', retime: 'Retime video', micro: 'Micro-nudges'};
 
 // ---------- current pair / plan ----------
 const curRun = () => (S.videoPath && S.sel) ? AS.runs[pk(S.videoPath, S.sel.path)] : null;
@@ -110,6 +110,7 @@ function liveSteps(j) {
   if (Object.keys(raw).length) {
     let last = -1; STEPS.forEach((n, i) => { if (raw[n]) last = i; });
     el('as-steps').innerHTML = STEPS.map((n, i) => {
+      if (n === 'boom' && !raw[n]) return '';   // no boom step when either side has no booms
       const ends = (j.steps_so_far || []).filter(e => e.step === n && e.status === 'end');
       const open = raw[n] && raw[n].status !== 'end' ? raw[n] : null;
       if (open) return `<li class="act"><b>${STEPNAME[n]}</b><span class="muted">working... ${Math.round(open.score_before)}%</span></li>`;
@@ -129,6 +130,7 @@ function finalSteps(res) {
   const rt = res.plan && res.plan.retime && res.plan.retime.sections ? res.plan.retime.sections.length : 0;
   el('as-steps').innerHTML = STEPS.map(n => {
     if (n === 'offset') return `<li class="ok"><b>${STEPNAME[n]}</b><span class="muted">${off}</span></li>`;
+    if (n === 'boom' && !by[n]) return '';
     const list = by[n]; if (!list) return `<li class="skip"><b>${STEPNAME[n]}</b><span class="muted">skipped</span></li>`;
     return stepRow(n, list, n === 'retime' && rt ? rt + ' section' + (rt > 1 ? 's' : '') : '');
   }).join('');

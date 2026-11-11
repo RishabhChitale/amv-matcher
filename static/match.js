@@ -132,13 +132,15 @@
     return {done, pend, sh, sk, list: done.concat(pend, sh, sk)};
   }
   const chip = r => `tempo ${Math.round(r.tempo_pct)} · sync ${Math.round(r.sync_pct)} · energy ${Math.round(r.arc_pct)}`;
+  // F2: a song shorter than the video is eligible; show how much of the video it covers.
+  const useLbl = r => { const c = r && r.auto_sync_cached, u = (c && c.video_use) || (r && r.video_use); return u && u.label ? u.label : (r && r.partial_video ? 'uses part of the video' : ''); };
   function rowHTML(x, rank) {
     const r = x.r;
     if (x.state === 'pending') return `<div class="mr-sp"></div><div class="mr-n"><b title="${esc(x.name)}">${esc(x.name)}</b><span class="muted">analyzing…</span></div>`;
     if (x.state === 'skipped') return `<div class="mr-rk">–</div><div class="mr-n"><b title="${esc(x.name)}">${esc(x.name)}</b><span class="muted">skipped: ${esc(x.reason)}</span></div>`;
     const p = x.state === 'short' ? 0 : r.total_pct, af = after(r);
     const rg = x.state === 'short' ? '<div class="mr-rg dim">–</div>' : `<div class="mr-rg">${ring(p)}</div>`;
-    const sub = x.state === 'short' ? `<span class="muted">Too short: ${fmtMS(r.song_duration)} vs video ${fmtMS(r.video_duration)}</span>` : `<span class="mr-chip">${chip(r)}</span>${af != null ? `<span class="mr-chip aft">after auto-sync ${Math.round(af)}%</span>` : ''}${window.ASA ? ASA.rowHTML(x) : ''}`;
+    const sub = x.state === 'short' ? `<span class="muted">Too short: ${fmtMS(r.song_duration)} vs video ${fmtMS(r.video_duration)}</span>` : `<span class="mr-chip">${chip(r)}</span>${useLbl(r) ? `<span class="mr-chip use" title="Song is shorter than the video: only this part of the video is used">${esc(useLbl(r))}</span>` : ''}${af != null ? `<span class="mr-chip aft">after auto-sync ${Math.round(af)}%</span>` : ''}${window.ASA ? ASA.rowHTML(x) : ''}`;
     const act = x.state === 'short' ? '' : `<button class="mr-use" title="Use this audio (Enter)">Use this audio</button><button class="mr-as" title="Auto-sync this song">${x.syncing ? 'Syncing…' : 'Auto-sync'}</button>`;
     return `<div class="mr-rk">${x.state === 'short' ? '' : rank}</div>${rg}<div class="mr-n"><b title="${esc(x.name)}">${esc(x.name)}</b>${sub}</div><div class="mr-bpm">${r.bpm ? Math.round(r.bpm) + ' BPM' : ''}</div><div class="mr-dur">${fmtMS(r.song_duration)}</div><div class="mr-act">${act}</div>${x.state === 'done' && window.PVS ? PVS.html(x) : ''}`;
   }

@@ -278,3 +278,4 @@ body.dragging #fit,body.dragging .ovwrap{opacity:.5;transition:opacity var(--eas
 .mk-row{display:flex;align-items:center;gap:8px;height:16px}.mk-row i{flex:none;display:inline-block}.mk-row b{font-weight:400;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .mk-tip{position:fixed;z-index:60;max-width:220px;padding:4px 8px;border-radius:5px;background:rgba(14,16,26,.96);border:1px solid var(--line);font-size:11px;pointer-events:none}
 .mk-tip.hidden{display:none}.mk-tip b{font-weight:600}.mk-tip span{color:var(--mut)}
+.bd-row.bd-boom{margin-top:3px;padding-top:3px;border-top:1px dashed rgba(255,255,255,.18);opacity:.85}.bd-note{color:var(--mut);font-size:10px;margin:-1px 0 0 68px}

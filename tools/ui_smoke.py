@@ -6,7 +6,7 @@ Usage: .venv/bin/python tools/ui_smoke.py [--url http://127.0.0.1:8765]
 Needs: websocket-client, a local Google Chrome.app, and a running server (./run.sh).
 Prints one PASS/FAIL line per check and exits non-zero if any fails.
 """
-import argparse, json, os, shutil, subprocess, sys, tempfile, time, urllib.request
+import argparse, json, os, re, shutil, subprocess, sys, tempfile, time, urllib.request
 import websocket
 
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
@@ -211,8 +211,6 @@ def main():
         i120 = next((i for i, n in enumerate(order) if "click120" in n), 99)
         i97 = next((i for i, n in enumerate(order) if "click97" in n), 99)
         check("click120 ranks above click97", i120 < i97, f"order={[n[:24] for n in order]}")
-        short = c.ev("document.getElementById('short').textContent") or ""
-        check("'Too short' group lists short.wav", "short" in short.lower(), short[:60].replace("\n", " "))
         vc = c.ev("document.getElementById('vcard') ? document.getElementById('vcard').innerText : ''") or ""
         check("video info card filled", "BPM" in vc.upper() or any(ch.isdigit() for ch in vc), vc[:60].replace("\n", " "))
         check("rings and percent pills rendered", bool(c.ev("document.querySelectorAll('.res .ring').length>0 && document.querySelectorAll('.res .pill .pp').length>=3")))
@@ -717,6 +715,9 @@ def main():
             sc = c.ev("[...document.querySelectorAll('#mr-list .mr-row.done .ring b')].map(b=>parseInt(b.textContent))")
             check("scores sorted best first", len(sc) >= 2 and sc == sorted(sc, reverse=True), str(sc))
             check("short songs sit greyed at the bottom with lengths", c.ev("(()=>{const r=document.querySelector('#mr-list .mr-row.short');return !r || /Too short.*vs video/.test(r.innerText)})()") is True)
+            # F2: a song shorter than the video (>= 4 s) is eligible and its row says how much of the video it uses
+            use = c.ev("(()=>{const r=[...document.querySelectorAll('#mr-list .mr-row')].find(e=>/short/i.test(e.innerText));return r?(r.querySelector('.mr-chip.use')||{}).innerText||'':null})()")
+            check("short song row shows 'uses X of Y video'", isinstance(use, str) and bool(re.search(r"uses .* of .* video", use)), str(use)[:60])
             check("sidebar list is filled too", c.ev("document.querySelectorAll('#results .res').length") >= 2)
             c.ev("document.getElementById('mr-sort').value='after';document.getElementById('mr-sort').dispatchEvent(new Event('change'))"); c.pump(0.5)
             check("sort 'After auto-sync' works without errors", not c.errors)
@@ -984,6 +985,16 @@ def main():
             check("F5: breakdown is visible after a run", bool(bd and bd["w"] > 0 and not bd["hid"]), str(bd))
             bdt = c.ev("(()=>{const e=document.getElementById('as-bd');return e?e.innerText:''})()")
             check("F5: breakdown shows before->after for Tempo/Sync/Energy, not only Tightness", bool(bdt) and bdt.count("\u2192") + bdt.count("->") >= 3, (bdt or "")[:120])
+            # boom is shown as its own row and is not part of the %; the 'boom' step has a label
+            brow = c.ev("(()=>{const r=ASBreakdown.rows({eligible:true,final:{tempo_pct:50,sync_pct:50,arc_pct:50,tight_pct:50,boom_pct:70,n_booms:2}},{boom_pct:40});const b=r&&r.find(x=>x.name==='Boom');return b?{before:b.before,after:b.after,note:b.note,tip:b.tip}:null})()")
+            check("boom: separate row, labelled as not part of the %", bool(brow) and brow.get("after") == 70 and "not" in (brow.get("tip") or "").lower(), str(brow))
+            bnote = c.ev("(()=>{const b=document.querySelector('#as-bd .bd-boom');return b?b.nextElementSibling&&b.nextElementSibling.innerText:null})()")
+            check("boom: row (when present) is followed by the 'not part of the %' note", bnote is None or "not part of" in bnote, str(bnote))
+            c.ev("window.__stepsHTML=document.getElementById('as-steps').innerHTML")
+            c.ev("AS.finalSteps({steps:[{step:'boom',tool:'boom',kept:true,score_before:60,score_after:66,params:{}}],plan:{offset:1}})")
+            btxt = c.ev("[...document.querySelectorAll('#as-steps li')].map(l=>l.innerText).join('|')") or ""
+            check("boom: auto-sync step label rendered", "Boom match" in btxt, btxt[:80])
+            c.ev("document.getElementById('as-steps').innerHTML=window.__stepsHTML")
             lg = vis("#v1-legend")
             check("F11: V1 legend is visible", bool(lg and lg["w"] > 0 and not lg["hid"]), str(lg))
             # F11: every label at the top-right of V1 sits in one row: no overlaps, inside the track, clear of the remove button

@@ -16,6 +16,11 @@
       ['Tightness', ts.tight_pct, f.tight_pct, 'How tight the cut timing is to the beat (median error ' + (num(f.median_err_ms) != null ? Math.round(f.median_err_ms) + ' ms' : 'n/a') + ')'],
     ];
     const out = defs.map(([name, b, a, tip]) => ({ name, before: num(b), after: num(a), tip })).filter((r) => r.after != null);
+    // Boom: shown for information only; boom_pct is NOT part of the total % (BOOM_IN_TOTAL=False).
+    const bm = num(f.boom_pct);
+    if (out.length && bm != null && (f.n_booms == null || f.n_booms > 0 || bm > 0))
+      out.push({ name: 'Boom', before: num(sel && sel.boom_pct), after: bm, extra: 'bd-boom', note: 'not in %',
+        tip: 'Boom (drop) alignment. Shown for information only: it is NOT part of the total match %' });
     return out.length ? out : null;
   }
   const fmt = (v) => (v == null ? '–' : Math.round(v) + '%');
@@ -34,10 +39,11 @@
     box.innerHTML = data.map((d) => {
       const dl = d.before != null ? Math.round(d.after) - Math.round(d.before) : null;
       const cls = dl == null || dl === 0 ? '' : dl > 0 ? ' up' : ' down';
-      return `<div class="bd-row" title="${d.tip}"><span class="bd-n">${d.name}</span>` +
+      return `<div class="bd-row${d.extra ? ' ' + d.extra : ''}" title="${d.tip}"><span class="bd-n">${d.name}</span>` +
         `<div class="bar bd-bar">${d.before != null ? `<u style="width:${clamp(d.before)}%"></u>` : ''}<i style="width:${clamp(d.after)}%"></i></div>` +
         `<span class="bd-v">${d.before != null ? fmt(d.before) + ' → ' : ''}<b>${fmt(d.after)}</b></span>` +
-        `<span class="bd-d${cls}">${dl == null ? '' : (dl > 0 ? '+' : '') + dl}</span></div>`;
+        `<span class="bd-d${cls}">${dl == null ? '' : (dl > 0 ? '+' : '') + dl}</span></div>` +
+        (d.note ? `<div class="bd-note">Boom is not part of the % above</div>` : '');
     }).join('');
   }
   window.ASBreakdown = { rows, render };
