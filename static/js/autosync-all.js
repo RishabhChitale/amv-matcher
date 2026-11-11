@@ -1,68 +1,57 @@
 'use strict';
-// F4: "Auto-sync all" for the scan list. Talks to the proposed batch API (docs/API.md "Auto-sync all"); with ?mockbatch=1 (or
-// window.ASA_MOCK = true) a timer-driven mock answers instead, so the UI works before the server endpoint exists.
+// F4: "Auto-sync all" for the scan list: a client-side queue (concurrency 1, list order) over the existing per-song /api/auto-sync job.
 // Per song: {status: queued|running|done|error|cancelled, progress 0..1, natural_pct, auto_pct}. Finished songs also write
 // x.r.auto_sync_cached = {total_pct}, so the existing "After auto-sync" sort and chip keep working.
 (function () {
   const $$ = id => document.getElementById(id);
-  const mock = () => window.ASA_MOCK || /[?&]mockbatch=1/.test(location.search);
-  const A = {id: '', status: 'idle', total: 0, done: 0, songs: new Map(), timer: 0, mockT: 0};
+    const A = {id: '', status: 'idle', total: 0, done: 0, songs: new Map(), cur: '', cancelled: false};
   const rows = () => (window.MATCH ? [...window.MATCH.M.rows.values()].filter(x => x.state === 'done') : []);
   const redraw = () => { paint(); if (window.MATCH && window.MATCH.render) window.MATCH.render(); };
   const busy = () => A.status === 'running';
 
-  // ---- transport (real + mock) ----
-  async function apiStart(video, paths) {
-    if (mock()) return mockStart(paths);
-    const r = await POST('/api/auto-sync-batch', {video_path: video, song_paths: paths}), j = await r.json();
-    if (!r.ok) throw new Error(j.detail || r.statusText); return j;
-  }
-  async function apiGet() { if (mock()) return mockGet(); const r = await fetch('/api/auto-sync-batch/' + A.id); return r.json(); }
-  async function apiCancel() { if (mock()) return mockCancel(); const r = await POST('/api/auto-sync-batch/' + A.id + '/cancel', {}); return r.json(); }
-  const MK = {songs: [], t0: 0, cancelled: false};
-  function mockStart(paths) {
-    const by = new Map(rows().map(x => [x.path, x]));
-    MK.songs = paths.map((p, i) => { const n = by.get(p).r.total_pct; return {path: p, natural_pct: n, auto_pct: Math.min(99, n + 4 + (i * 7) % 15), dur: 1800 + (i % 4) * 700}; });
-    MK.t0 = Date.now(); MK.cancelled = false; return {batch_id: 'mock', total: paths.length, status: 'running'};
-  }
-  function mockView() {
-    const el = Date.now() - MK.t0; let t = 0;   // songs run two at a time
-    const songs = MK.songs.map((s, i) => {
-      const lane = i % 2, start = MK.songs.filter((q, k) => k < i && k % 2 === lane).reduce((a, q) => a + q.dur, 0), pr = Math.max(0, Math.min(1, (el - start) / s.dur));
-      let st = pr >= 1 ? 'done' : pr > 0 ? 'running' : 'queued';
-      if (MK.cancelled && st !== 'done') st = 'cancelled';
-      return {path: s.path, status: st, progress: MK.cancelled && st === 'cancelled' ? 0 : pr, natural_pct: s.natural_pct, auto_pct: st === 'done' ? s.auto_pct : null};
-    });
-    const done = songs.filter(s => s.status === 'done').length;
-    return {batch_id: 'mock', status: MK.cancelled ? 'cancelled' : done === songs.length ? 'done' : 'running', total: songs.length, done, songs};
-  }
-  const mockGet = () => mockView();
-  function mockCancel() { MK.cancelled = true; return mockView(); }
-
-  // ---- state ----
-  function apply(j) {
-    A.status = j.status; A.total = j.total; A.done = j.done != null ? j.done : j.songs.filter(s => s.status === 'done').length;
-    j.songs.forEach(s => {
-      A.songs.set(s.path, s);
-      const x = window.MATCH && window.MATCH.M.rows.get(s.path);
-      if (x && x.r && s.status === 'done' && s.auto_pct != null) x.r.auto_sync_cached = Object.assign({}, x.r.auto_sync_cached, {total_pct: s.auto_pct});
-    });
-  }
-  async function poll() {
-    clearTimeout(A.timer);
-    try { apply(await apiGet()); } catch (e) { A.status = 'error'; }
-    redraw(); if (busy()) A.timer = setTimeout(poll, mock() ? 250 : 800);
+  // ---- real client-side queue over the existing per-song job (/api/auto-sync), concurrency 1, list order ----
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const finalPct = j => { const f = j && j.result && j.result.final; return f && f.total_pct != null ? f.total_pct : null; };
+  async function runSong(x, s) {
+    const body = {video_path: window.MATCH.M.videoPath, song_path: x.path};
+    const r = await POST('/api/auto-sync', body), j0 = await r.json();
+    const id = j0.job_id; if (!id) throw new Error(j0.detail || 'Auto-sync failed to start');
+    A.cur = id; s.status = 'running'; redraw();
+    try {
+      for (;;) {
+        const j = await (await fetch('/api/auto-sync/' + id)).json();
+        if (A.cancelled || j.status === 'cancelled') { s.status = 'cancelled'; s.progress = 0; return; }
+        if (j.status === 'error') throw new Error(j.error || 'Auto-sync failed');
+        if (j.status !== 'running') {
+          const p = finalPct(j); if (p == null) throw new Error('no result');
+          s.status = 'done'; s.progress = 1; s.auto_pct = p;
+          if (x.r) x.r.auto_sync_cached = Object.assign({}, x.r.auto_sync_cached, j.result.final);
+          return;
+        }
+        s.progress = j.total ? Math.min(0.99, (j.done || 0) / j.total) : s.progress; redraw();
+        await sleep(600);
+      }
+    } finally { A.cur = ''; }
   }
   async function start() {
     if (busy() || !window.MATCH) return;
     const list = rows(); if (!list.length) return;
-    A.songs.clear(); A.status = 'running'; A.total = list.length; A.done = 0;
+    A.songs.clear(); A.status = 'running'; A.total = list.length; A.done = 0; A.cancelled = false;
     list.forEach(x => A.songs.set(x.path, {path: x.path, status: 'queued', progress: 0, natural_pct: x.r.total_pct, auto_pct: null}));
     redraw();
-    try { const j = await apiStart(window.MATCH.M.videoPath, list.map(x => x.path)); A.id = j.batch_id; poll(); }
-    catch (e) { A.status = 'error'; A.songs.clear(); if (window.note) note(e.message, true); redraw(); }
+    for (const x of list) {
+      const s = A.songs.get(x.path);
+      if (A.cancelled) { s.status = 'cancelled'; continue; }
+      try { await runSong(x, s); } catch (e) { s.status = 'error'; s.err = e.message; if (window.note) note((e.message || 'Auto-sync failed'), true); }
+      A.done = [...A.songs.values()].filter(q => q.status === 'done').length; redraw();
+    }
+    A.status = A.cancelled ? 'cancelled' : 'done'; redraw();
   }
-  async function cancel() { if (!busy()) return; try { apply(await apiCancel()); } catch (e) {} clearTimeout(A.timer); redraw(); }
+  async function cancel() {
+    if (!busy()) return; A.cancelled = true;
+    if (A.cur) { try { await POST('/api/auto-sync/' + A.cur + '/cancel', {}); } catch (e) {} }
+    A.songs.forEach(s => { if (s.status === 'queued') s.status = 'cancelled'; }); redraw();
+  }
 
   // ---- row hooks (used by match.js rowHTML / sig) ----
   const sig = x => { const s = A.songs.get(x.path); return s ? s.status + ':' + Math.round(s.progress * 20) + ':' + s.auto_pct : ''; };

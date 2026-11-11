@@ -21,7 +21,7 @@
     if (!paths || !paths.length) return;
     const j = await register(paths);
     let vids = j.videos, songs = j.songs;
-    if (tgt === 'video') songs = []; else if (tgt === 'song') vids = [];
+    if (tgt === 'video') songs = []; else if (tgt === 'song' && songs.length) vids = [];
     if (!vids.length && !songs.length) return note('Nothing usable in that drop (video: mp4 mov mkv webm avi m4v; audio: mp3 wav m4a flac ogg aac)', true);
     if (NATIVE() && window.pywebview.api.log) window.pywebview.api.log(`native ${vids.length} video(s), ${songs.length} song(s) registered in place`);
     if (vids.length) enqueue(() => doVideo(fake(vids[0])));

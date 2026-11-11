@@ -310,7 +310,7 @@ Validation (`paths.exports_member`): the path is `resolve()`d and must exist and
 
 ## Auto-sync all (PROPOSAL, F4; not implemented yet)
 Batch version of `/api/auto-sync` for the scan list: one video, many songs, run through the worker pool, cancellable as a whole.
-The UI (`static/js/autosync-all.js`) is built against this shape and runs a mock of it with `?mockbatch=1`.
+The UI (`static/js/autosync-all.js`) does NOT use this yet: it runs a client-side queue over the per-song `/api/auto-sync` job.
 
 - `POST /api/auto-sync-batch` `{video_path, song_paths:[str], options?}` (Origin-guarded; same path validation and option clamping as `/api/auto-sync`)
   -> `{batch_id, total, status:"running"}`. Songs whose pair already has a running job are attached to it, not re-run; songs with a cached `final` for the same options finish immediately (`cached:true`).

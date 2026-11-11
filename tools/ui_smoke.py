@@ -749,8 +749,7 @@ def main():
             tk = c.ev("[...document.querySelectorAll('#mr-list .mr-row.playing .pvs-tick')].map(e=>{const r=e.getBoundingClientRect();return [r.width,r.height]})")
             check("F8 marker ticks render from the hook and are visible", isinstance(tk, list) and len(tk) == 2 and all(w > 0 and h > 0 for w, h in tk), str(tk) + c.ev("JSON.stringify({a:PVS.active(),pl:document.querySelectorAll('#mr-list .mr-row.playing').length,max:(document.querySelector('#mr-list .mr-row.playing .pvs-rng')||{}).max,ti:(document.querySelector('#mr-list .mr-row.playing .pvs-ticks')||{}).innerHTML})"))
             check("F8 pointer click on pause stops it", tap(".pvs-btn", "#mr-list .mr-row.playing") and c.ev("PVS.active()===''") is True)
-            # F4: Auto-sync all (mock batch transport; real pointer events, visibility asserted)
-            c.ev("window.ASA_MOCK=true")
+            # F4: Auto-sync all (real per-song jobs on the real server; real pointer events, visibility asserted)
             v_all = vis("#mr-asall", "#mr")
             check("F4 Auto-sync all button is visible with its label", bool(v_all and v_all.get("vis")) and c.ev("document.getElementById('mr-asall').textContent") == "Auto-sync all", json.dumps(v_all))
             check("F4 tap starts the batch: button turns into Cancel, overall progress shows", tap("#mr-asall", "#mr") and c.ev("document.getElementById('mr-asall').textContent") == "Cancel auto-sync all"
@@ -769,7 +768,6 @@ def main():
             tap("#mr-asall", "#mr"); wait_for(c, "ASA.state.status==='running'", 5); c.pump(0.4)
             check("F4 tap on Cancel stops the batch (rest cancelled, label restored)", tap("#mr-asall", "#mr") and wait_for(c, "ASA.state.status==='cancelled'", 10)
                   and c.ev("document.getElementById('mr-asall').textContent") == "Auto-sync all" and "Cancelled" in (c.ev("document.getElementById('mr-asp').innerText") or ""), c.ev("document.getElementById('mr-asp').innerText"))
-            c.ev("window.ASA_MOCK=false")
             c.ev("document.getElementById('mr-list').focus()")
             for k in ("ArrowDown", "ArrowDown", "ArrowUp"):
                 c.ev("window.dispatchEvent(new KeyboardEvent('keydown',{key:%s,bubbles:true}))" % json.dumps(k))
@@ -807,6 +805,24 @@ def main():
             check("drop guard: swallowed only while a render runs", c.ev("window.__dseen") == 1 and c.ev("DELIVER_UI.locked()") is True)
             c.ev("AS.rd = null"); c.ev("window.__fire()")
             check("drop guard: drops reach the handler again once the render ends", c.ev("window.__dseen") == 2 and c.ev("DELIVER_UI.locked()") is False)
+            # F12: user's exact scenario. Finished scan, select the video clip, Backspace removes it, then drops must SET the video.
+            c.ev("document.getElementById('nm-close').click()")
+            c.ev("MATCH.closeRes && MATCH.closeRes()")
+            c.ev("window.AS && (AS.rd = null)")
+            c.ev("selectClip('v')"); c.pump(0.2)
+            c.key("Backspace", code="Backspace", vk=8)
+            check("F12: Backspace removes the selected video (placeholder visible)", wait_for(c, "!S.video && !document.getElementById('vid').getAttribute('src')", 5)
+                  and c.ev("(()=>{const e=document.getElementById('empty'),r=e.getBoundingClientRect();return !e.classList.contains('hidden')&&r.width>0&&r.height>0&&/Drop video/.test(e.textContent)})()") is True)
+            print("F12 state:", c.ev("JSON.stringify({sel:!!S.sel,selClip:S.selClip,page:DELIVER_UI.page,locked:DELIVER_UI.locked(),rd:!!(window.AS&&AS.rd),nm:document.getElementById('nm').className,mr:document.getElementById('mr').className,dvp:D.videoPath,queue:D.queue.length,results:S.results.length})"))
+            c.ev("window.__trace=[];(()=>{const w=window.nativeDrop;window.__ndlog=[];window.addEventListener('drop',e=>__ndlog.push('dom-drop target='+(e.target.id||e.target.tagName)+' defaultPrevented='+e.defaultPrevented),false)})()")
+            for zone in ("#stage", "#tl-wrap", "#results-panel", "body"):
+                c.ev("document.querySelector('#vid') && (document.getElementById('vid').pause())")
+                c.ev("(()=>{const t=document.querySelector(%s)||document.body;for(const ty of ['dragenter','dragover','drop']){const dt=new DataTransfer();dt.items.add(new File(['x'],'clip.mp4',{type:'video/mp4'}));t.dispatchEvent(new DragEvent(ty,{bubbles:true,cancelable:true,dataTransfer:dt}))}})()" % json.dumps(zone))
+                c.ev("nativeDrop(%s)" % json.dumps([vpath]))
+                ok = wait_for(c, "!!S.video && S.videoPath && document.getElementById('empty').classList.contains('hidden')", 60)
+                check(f"F12: drop on {zone} with no video sets the video (flow: {c.ev('JSON.stringify(window.__ndlog.slice(-2))')})", ok, c.ev("JSON.stringify({v:!!S.video,vp:S.videoPath,src:document.getElementById('vid').getAttribute('src'),nm:document.getElementById('nm').className,toasts:[...document.querySelectorAll('.toast')].map(t=>t.innerText)})"))
+                if zone != "body":
+                    c.ev("selectClip('v')"); c.pump(0.2); c.key("Backspace", code="Backspace", vk=8); wait_for(c, "!S.video", 5)
             check("no console errors after the popups", not c.errors, "; ".join(c.errors[:3]))
         else:
             print("SKIP  match popup checks (read-only server or fixtures missing)")

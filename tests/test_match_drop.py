@@ -24,7 +24,7 @@ def _run(scenario):
     js = """
 const calls = []; const listeners = {};
 const window = {addEventListener: (n, f) => { listeners[n] = f; }};
-let dropKind = null; const setFromPaths = (k, p) => calls.push(['set', k, p]);
+const $$ = id => ({classList: {contains: () => true}}); let dropKind = null; const setFromPaths = (k, p) => calls.push(['set', k, p]);
 %s
 const out = {};
 %s
@@ -48,7 +48,7 @@ def test_native_drop_defined_late_is_still_reached():
 def test_native_drop_defined_before_still_forwarded():
     r = subprocess.run([NODE, "-e", """
 const calls=[]; const listeners={}; const window={addEventListener:(n,f)=>{listeners[n]=f;}};
-let dropKind=null; const setFromPaths=(k,p)=>calls.push(['set',k,p]);
+const $$=id=>({classList:{contains:()=>true}}); let dropKind=null; const setFromPaths=(k,p)=>calls.push(['set',k,p]);
 window.nativeDrop = p => calls.push(['base', p]);
 %s
 window.nativeDrop(['/d']); dropKind='dir'; window.nativeDrop(['/e']); listeners.load(); window.nativeDrop(['/f']);
