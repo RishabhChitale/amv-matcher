@@ -155,6 +155,23 @@ class Api:
         LOG.info("native save: %s -> %s", p.name, dest)
         return str(dest)
 
+    def save_text(self, name, text):
+        """Save a small text file (timeline export JSON/CSV) where the user picks. Returns the saved path or ''."""
+        import webview
+        name = Path(str(name)).name or "timelines.txt"
+        ext = Path(name).suffix.lower()
+        if ext not in (".json", ".csv") or len(str(text)) > 5_000_000:
+            return ""
+        r = self._window.create_file_dialog(webview.SAVE_DIALOG, directory=str(paths.default_export_dir()), save_filename=name)
+        if not r:
+            return ""
+        dest = Path(r if isinstance(r, str) else r[0])
+        if dest.suffix.lower() != ext:
+            dest = dest.with_suffix(ext)
+        dest.write_text(str(text), encoding="utf-8", newline="")
+        LOG.info("native save text: %s", dest.name)
+        return str(dest)
+
     @staticmethod
     def _launch(cmd):
         winsafe.popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

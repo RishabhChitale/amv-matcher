@@ -1002,8 +1002,84 @@ def main():
                     print("SKIP  F11 no-overlap %dx%d (no legend for this pair)" % (fw, fh))
                 else:
                     check("F11: V1 top-right labels do not overlap at %dx%d" % (fw, fh), not r.get("bad") and (r.get("n") or 0) >= 2, str(r))
+            # hit-test: each control must be rendered AND topmost at its centre (not clipped/overlapped); real pointer events elsewhere
+            HIT = ("(sel=>{const out=[];const els=[...document.querySelectorAll(sel)];if(!els.length)return {missing:1};"
+                   "for(const e of els){e.scrollIntoView({block:'center',inline:'center'});const r=e.getBoundingClientRect();const cs=getComputedStyle(e);"
+                   "const id=e.id||e.className||e.tagName;"
+                   "if(r.width<=0||r.height<=0||cs.display==='none'||cs.visibility==='hidden'||e.classList.contains('hidden')){out.push(id+': not rendered');continue}"
+                   "const x=r.left+r.width/2,y=r.top+r.height/2;const t=document.elementFromPoint(x,y);"
+                   "if(!t||!(t===e||e.contains(t)))out.push(id+' covered by '+(t?(t.tagName+'#'+t.id+'.'+t.className):'nothing (offscreen)'))}"
+                   "return {n:els.length,bad:out}})")
+            HIT_SELS = ["#a1-mode [data-m=orig]", "#a1-mode [data-m=synced]", "#stage #fs-btn", "#v1-legend .lg", "#as-bd .bd-row", "#g-energy", "#g-ramps"]
+            for (fw, fh) in ((1280, 720), (1440, 900), (1920, 1080)):
+                c.call("Emulation.setDeviceMetricsOverride", width=fw, height=fh, deviceScaleFactor=1, mobile=False)
+                c.ev("window.dispatchEvent(new Event('resize'))"); c.pump(0.8)
+                c.ev("(()=>{const d=document.getElementById('g-energy');const dt=d&&d.closest('details');if(dt)dt.open=true})()"); c.pump(0.3)
+                for hs in HIT_SELS:
+                    r = c.ev("(%s)(%s)" % (HIT, json.dumps(hs))) or {}
+                    if r.get("missing"):
+                        print("SKIP  hit-test %s %dx%d (not present)" % (hs, fw, fh)); continue
+                    check("hit-test: %s topmost and unclipped at %dx%d" % (hs, fw, fh), not r.get("bad"), str(r.get("bad")))
+                    if hs.startswith("#g-") and r.get("bad"):
+                        print("      detail:", c.ev("(()=>{const e=document.querySelector(%s);const r=e.getBoundingClientRect();const t=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);return JSON.stringify({r:[r.left,r.top,r.width,r.height],t:t&&t.outerHTML.slice(0,120),p:t&&t.parentElement&&t.parentElement.outerHTML.slice(0,80),vh:innerHeight})})()" % json.dumps(hs)))
+            c.ev("window.scrollTo(0,0)")
             c.call("Emulation.setDeviceMetricsOverride", width=1440, height=900, deviceScaleFactor=1, mobile=False)
             c.ev("window.dispatchEvent(new Event('resize'))"); c.pump(0.5)
+            # ---- F6d bookmarks: visible controls, real pointer/keyboard events, markers drawn, drag, B key, delete, export round trip
+            if c.ev("!!window.BM && !!S.dur"):
+                for (fw, fh) in ((1280, 720), (1920, 1080)):
+                    c.call("Emulation.setDeviceMetricsOverride", width=fw, height=fh, deviceScaleFactor=1, mobile=False)
+                    c.ev("window.dispatchEvent(new Event('resize'))"); c.pump(0.6)
+                    for hs in ("#bm-mark", "#bm-perfect", "#bm-export", "#bm-import", "#bm-legend .bm-lg"):
+                        r = c.ev("(%s)(%s)" % (HIT, json.dumps(hs))) or {}
+                        check("bookmarks: %s visible and topmost at %dx%d" % (hs, fw, fh), not r.get("missing") and not r.get("bad"), str(r))
+                c.call("Emulation.setDeviceMetricsOverride", width=1440, height=900, deviceScaleFactor=1, mobile=False)
+                c.ev("window.dispatchEvent(new Event('resize'))"); c.pump(0.6)
+                c.ev("BM.load({items:[]}); document.getElementById('tl').scrollIntoView({block:'center'})"); c.pump(0.3)
+                tlr = lambda: c.ev("(()=>{const r=document.getElementById('tl').getBoundingClientRect();return {l:r.left,t:r.top,w:r.width}})()")
+                r = tlr(); vy, ay = r["t"] + 26 + 40, r["t"] + 26 + 84 + 4 + 40
+                bx = lambda f: r["l"] + r["w"] * f
+                # Mark mode: a real click on V1 then A1 adds a bookmark on each track
+                mk = c.ev("(()=>{const r=document.getElementById('bm-mark').getBoundingClientRect();return [r.left+r.width/2,r.top+r.height/2]})()")
+                c.mouse("mousePressed", mk[0], mk[1]); c.mouse("mouseReleased", mk[0], mk[1]); c.pump(0.2)
+                check("bookmarks: Mark button turns mark mode on", c.ev("BM.markMode") is True)
+                c.mouse("mousePressed", bx(.3), vy); c.mouse("mouseReleased", bx(.3), vy); c.pump(0.2)
+                c.mouse("mousePressed", bx(.6), ay); c.mouse("mouseReleased", bx(.6), ay); c.pump(0.2)
+                its = c.ev("BM.items.map(b=>[b.track,b.t])") or []
+                check("bookmarks: click on V1 adds a video bookmark, click on A1 an audio one", [i[0] for i in its] == ["video", "audio"], str(its))
+                check("bookmarks: editor popover visible and topmost", not (c.ev("(%s)('#bm-pop')" % HIT) or {}).get("bad") and not (c.ev("(%s)('#bm-p-type')" % HIT) or {}).get("bad"), str(c.ev("(%s)('#bm-p-type')" % HIT)))
+                c.ev("(()=>{const s=document.getElementById('bm-p-type');s.value='drop';s.dispatchEvent(new Event('change',{bubbles:true}))})()"); c.pump(0.2)
+                check("bookmarks: type change applied", c.ev("BM.items[1].type") == "drop")
+                c.key("Escape", "Escape", vk=27); c.pump(0.2)
+                mk = c.ev("(()=>{const r=document.getElementById('bm-mark').getBoundingClientRect();return [r.left+r.width/2,r.top+r.height/2]})()")
+                c.mouse("mousePressed", mk[0], mk[1]); c.mouse("mouseReleased", mk[0], mk[1]); c.pump(0.2)   # mark mode off
+                check("bookmarks: second click on Mark turns mark mode off", c.ev("BM.markMode") is False)
+                c.ev("BM.update(BM.items[0].id,{type:'drop'})"); c.pump(0.2)
+                # marker is actually drawn: sample canvas pixels at the V1 marker centre
+                px = c.ev("(()=>{const cv=document.getElementById('tl'),b=BM.items[0],x=Math.round(t2x(b.t)),y=RULER+12;const d=cv.getContext('2d').getImageData(x*devicePixelRatio,y*devicePixelRatio,1,1).data;return [d[0],d[1],d[2]]})()")
+                check("bookmarks: V1 marker drawn in its type colour (not the track background)", px and max(px) > 150, str(px))
+                # drag the V1 marker 100 px right with the pointer
+                r = tlr(); t0 = c.ev("BM.items[0].t"); mx, my = bx(.3), r["t"] + 26 + 12
+                c.mouse("mousePressed", mx, my); c.mouse("mouseMoved", mx + 50, my); c.mouse("mouseMoved", mx + 100, my); c.mouse("mouseReleased", mx + 100, my); c.pump(0.3)
+                t1 = c.ev("BM.items[0].t")
+                check("bookmarks: dragging a marker moves it", t1 > t0 + 0.01 and c.ev("BM.items.length") == 2, "%s -> %s" % (t0, t1))
+                # B key adds at the playhead on the focused track
+                c.ev("document.activeElement&&document.activeElement.blur();window.getSelection&&getSelection().removeAllRanges()"); c.pump(0.1)
+                c.key("b", "KeyB", vk=66, text="b"); c.pump(0.3)
+                check("bookmarks: B adds a bookmark at the playhead", c.ev("BM.items.length") == 3, str(c.ev("BM.items.length")))
+                c.key("Escape", "Escape", vk=27); c.pump(0.2)
+                # export/import round trip + project fields
+                js = c.ev("BM.toJSON()"); cs = c.ev("BM.toCSV()")
+                back = c.ev("(()=>{const a=BM.parseImport(BM.toJSON(),'x.json'),b=BM.parseImport(BM.toCSV(),'x.csv');return [a.items.length,b.items.length,a.items.map(i=>i.type).join()===b.items.map(i=>i.type).join()]})()")
+                check("bookmarks: JSON and CSV export re-import to the same bookmarks", back == [3, 3, True] and "timeline_t" in js and cs.startswith("id,track,t,"), str(back))
+                c.ev("document.getElementById('bm-perfect').click()"); c.pump(0.2)
+                pj = c.ev("PROJECT_UI.collect().then(d=>JSON.stringify([d.bookmarks,d.perfect_sync_example]))")
+                check("bookmarks: saved in the project with the perfect-sync flag", pj and pj.endswith(',true]') and pj.count('"track"') == 3, str(pj)[:120])
+                c.ev("document.getElementById('bm-perfect').click()")
+                # Delete removes the selected bookmark (not the clip)
+                c.ev("BM.sel=BM.items[2].id"); c.key("Delete", "Delete", vk=46); c.pump(0.3)
+                check("bookmarks: Delete removes the selected bookmark only", c.ev("BM.items.length") == 2 and bool(c.ev("S.videoPath")))
+                c.ev("BM.load({items:[]})")
             if el_ok and c.ev("(AS.runs[S.videoPath+'|'+S.sel.path].result.plan.retime||{sections:[]}).sections.length") > 0:
                 check("V1 retime bands drawn", (c.ev("AS.bands") or 0) > 0, str(c.ev("AS.bands")))
                 c.ev("document.querySelector('#as-mode [data-m=orig]').click()"); c.pump(0.4)

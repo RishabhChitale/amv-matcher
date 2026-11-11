@@ -23,7 +23,7 @@
   function sig() {
     const A = window.AS || {};
     return JSON.stringify([S.videoPath, (S.results || []).map(r => r.path), (S.dropDirs || []), S.inUse && S.inUse.path, +(S.offset || 0).toFixed(3), S.sp && S.sp.on, S.sp && S.sp.max,
-      A.guard, FX, A.quality, planOf() ? 1 : 0, P.name]);
+      A.guard, FX, A.quality, planOf() ? 1 : 0, P.name, window.BM ? BM.sig() : '']);
   }
   async function collect() {
     const songs = (S.results || []).filter(r => r.source !== 'original').map(r => r.path);
@@ -40,6 +40,7 @@
       autosync: {plan: planOf(), guardrails: guards(), lead_s: (A.guard ? A.guard.lead : 60) / 1000},
       effects: {boom: FX.boom, decay: FX.decay, drops_only: !!FX.drops, shake: !!FX.shake},
       export: {quality: A.quality || 'blend'},
+      ...(window.BM ? BM.snapshot() : {bookmarks: [], perfect_sync_example: false}),
       ui: {},
     };
   }
@@ -48,6 +49,7 @@
   const wait = async (fn, ms = 20000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (fn()) return true; await new Promise(z => setTimeout(z, 120)); } return false; };
 
   async function restore(d) {
+    if (window.BM) BM.load({bookmarks: d.bookmarks, perfect_sync_example: d.perfect_sync_example});
     const vpath = d.video && d.video.path;
     const songs = (d.sources || []).filter(s => !s.missing).map(s => s.path);
     if (d.music_dirs && d.music_dirs[0]) g('music-dir').value = d.music_dirs[0];

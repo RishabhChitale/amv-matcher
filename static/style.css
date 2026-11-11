@@ -262,3 +262,9 @@ body.dragging #fit,body.dragging .ovwrap{opacity:.5;transition:opacity var(--eas
 .a1-mode button{padding:2px 8px;line-height:16px}
 .a1-mode button:disabled{opacity:.45;cursor:not-allowed}
 .a1-mode.hidden{display:none}
+/* F6d bookmarks */
+.bm-bar{display:flex;align-items:center;gap:8px;flex-wrap:nowrap;padding:3px 8px;margin-bottom:4px;font-size:11px;white-space:nowrap}.bm-bar .btn,.bm-bar button{padding:2px 8px;font-size:11px;line-height:1.3}
+.bm-sp{flex:1}.bm-leg{display:inline-flex;gap:8px;flex-wrap:nowrap;min-width:0}.bm-lg{display:inline-flex;align-items:center;gap:3px;color:var(--mut)}
+.bm-sw{width:14px;height:14px}@media (max-width:1399px){.bm-lt{display:none}}.bm-mark{min-width:56px}#tl.bm-marking{cursor:crosshair}
+.bm-pop{position:absolute;z-index:30;width:230px;padding:8px;display:flex;flex-direction:column;gap:6px;background:var(--panel)}
+.bm-pop.hidden{display:none}.bm-pop-h{display:flex;justify-content:space-between;gap:8px}.bm-pop-f{display:flex;justify-content:space-between}
