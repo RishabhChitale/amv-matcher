@@ -7,10 +7,19 @@ import numpy as np
 
 # F15 (story gate cap, story/key-moment fields) is held out of releases. Off by default; AMV_F15=1 turns it on.
 F15_ENABLED = os.environ.get("AMV_F15", "") == "1"
-# Beat-following warp lock (half-beat phase flips in spliced audio, tempo drift). Off by default for now;
-# AMV_WARPLOCK=1 turns it on. Turning it on by default changes the determinism hash.
-WARPLOCK_DEFAULT = False
-WARPLOCK_ENABLED = os.environ.get("AMV_WARPLOCK", "1" if WARPLOCK_DEFAULT else "") == "1"
+# Beat-following warp lock (half-beat phase flips in spliced audio, tempo drift). On by default since v0.9.5;
+# AMV_WARPLOCK=0 turns it off (AMV_WARPLOCK=1 forces it on).
+WARPLOCK_DEFAULT = True
+
+
+def _warplock_flag(env: str | None, default: bool = WARPLOCK_DEFAULT) -> bool:
+    """AMV_WARPLOCK value -> on/off: unset or empty keeps the default, "0" is off, anything else is on."""
+    if env is None or env.strip() == "":
+        return default
+    return env.strip() != "0"
+
+
+WARPLOCK_ENABLED = _warplock_flag(os.environ.get("AMV_WARPLOCK"))
 
 W_TEMPO = 0.20
 W_SYNC = 0.60

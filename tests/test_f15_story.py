@@ -61,11 +61,27 @@ def test_f15_off_by_default():
         assert sc.F15_ENABLED is False
 
 
-def test_warplock_off_by_default():
+def test_warplock_on_by_default():
     import os
-    assert sc.WARPLOCK_DEFAULT is False
-    if os.environ.get("AMV_WARPLOCK", "") != "1":
-        assert sc.WARPLOCK_ENABLED is False
+    assert sc.WARPLOCK_DEFAULT is True
+    if os.environ.get("AMV_WARPLOCK", "").strip() in ("", "1"):
+        assert sc.WARPLOCK_ENABLED is True
+
+
+@pytest.mark.parametrize("env,want", [(None, True), ("", True), ("1", True), ("0", False), (" 0 ", False)])
+def test_warplock_env_parsing(env, want):
+    assert sc._warplock_flag(env) is want
+    assert sc._warplock_flag(None, default=False) is False     # unset keeps whatever the default is
+
+
+@pytest.mark.parametrize("f15", [False, True])
+def test_warp_lock_used_by_default(monkeypatch, f15):
+    monkeypatch.setattr(sc, "WARPLOCK_ENABLED", sc._warplock_flag(None))
+    monkeypatch.setattr(sc, "F15_ENABLED", f15)
+    song, ev = _jumpy_case()
+    on = sc._sync_pct_at(song, ev, np.ones(len(ev)), 30.0, 0.0)
+    monkeypatch.setattr(sc, "_lock_warp", lambda *a, **k: None)
+    assert on > sc._sync_pct_at(song, ev, np.ones(len(ev)), 30.0, 0.0) + 20
 
 
 def test_warp_lock_follows_half_beat_jumps(monkeypatch, warp_on):
@@ -85,7 +101,7 @@ def test_warp_lock_follows_half_beat_jumps(monkeypatch, warp_on):
 
 @pytest.mark.parametrize("f15", [False, True])
 def test_warp_lock_unused_when_warplock_off(monkeypatch, f15):
-    monkeypatch.setattr(sc, "WARPLOCK_ENABLED", False)
+    monkeypatch.setattr(sc, "WARPLOCK_ENABLED", sc._warplock_flag("0"))   # AMV_WARPLOCK=0
     monkeypatch.setattr(sc, "F15_ENABLED", f15)          # the story gate flag does not turn the warp on
     song, ev = _jumpy_case()
     off = sc._sync_pct_at(song, ev, np.ones(len(ev)), 30.0, 0.0)
