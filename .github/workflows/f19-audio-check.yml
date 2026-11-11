@@ -1,0 +1,70 @@
+name: f19-audio-check
+# Manual only. Builds the frozen Windows app at one commit and checks the player's audio sync (F19) with synthetic media:
+# audio.playbackRate must stay put while audio and video are in sync (window.__aud.rates), no JS errors, and the original
+# song must play through the plain /api/audio URL (never a planned/spliced render). tools/f19_audio_check.py comes from
+# the dispatched ref. Mode 'webview2' drives the app's own WebView2 over DevTools; 'browser' drives headless Edge against
+# the frozen app's local server. Synthetic media only; no secrets; nothing is released.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Full commit SHA to build and check'
+        required: true
+      secs:
+        description: 'Seconds of playback to sample'
+        default: '30'
+concurrency:
+  group: f19-audio-check-${{ github.ref }}
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [webview2, browser]
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Same check tool (from the dispatched ref)
+        uses: actions/checkout@v5
+        with:
+          path: _tool
+          sparse-checkout: tools
+      - uses: actions/setup-python@v6
+        with: {python-version: "3.11", cache: pip}
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+      - name: Build
+        run: python -m PyInstaller --noconfirm amv_matcher.spec
+      - name: Check audio sync in the frozen app
+        shell: pwsh
+        timeout-minutes: 15
+        env:
+          REF: ${{ inputs.ref }}
+          MODE: ${{ matrix.mode }}
+          SECS: ${{ inputs.secs }}
+        run: |
+          $w = Join-Path $env:RUNNER_TEMP "amv-f19"
+          $edge = "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe"
+          # PYTHONPATH: the tool imports tests/synth.py from the checkout next to it
+          $env:PYTHONPATH = (Get-Location).Path
+          python _tool\tools\f19_audio_check.py --exe "dist\AMV Matcher\AMV Matcher.exe" --mode $env:MODE --browser "$edge" --work $w --secs $env:SECS --ref $env:REF 2>&1 | ForEach-Object { Write-Host $_ }
+          if ($LASTEXITCODE -ne 0) { throw "f19 check failed on $env:REF mode=$env:MODE (exit $LASTEXITCODE)" }
+      - name: Upload logs
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: f19-audio-${{ matrix.mode }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/amv-f19/data/app.log
+            ${{ runner.temp }}/amv-f19/stdout-*.txt
+          if-no-files-found: ignore
+          retention-days: 7
