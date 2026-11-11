@@ -371,9 +371,37 @@ def run_window() -> int:
         # Dev aids (env only): feed paths through the same hand-off a native drop uses, then snapshot / exit.
         fake = os.environ.get("AMV_TEST_DROP")
         if fake:
-            time.sleep(2.0)
+            ready = False
+            for _ in range(120):   # cold CI VMs can take well over 2 s to load the page
+                try:
+                    ready = win.evaluate_js("typeof window.nativeDrop === 'function'") is True
+                except Exception:
+                    ready = False
+                if ready:
+                    break
+                time.sleep(0.5)
+            LOG.info("test drop: page hook ready=%s", ready)
             LOG.info("native drop (simulated via AMV_TEST_DROP): %s", fake.split(os.pathsep))
             win.evaluate_js("window.nativeDrop && window.nativeDrop(%s)" % json.dumps(fake.split(os.pathsep)))
+            probe = ("(function(){function p(q){var e=document.querySelector(q);if(!e)return null;var r=e.getBoundingClientRect();"
+                     "var s=getComputedStyle(e);return {vis:s.display!=='none'&&s.visibility!=='hidden'&&r.width>0&&r.height>0,"
+                     "x:Math.round(r.x),y:Math.round(r.y),w:Math.round(r.width),h:Math.round(r.height)};}"
+                     "return JSON.stringify({a1:p('#a1-mode,.a1-mode'),fs:p('#fs-btn,.fs-btn'),v1:p('#v1-legend,.v1-legend'),"
+                     "iw:innerWidth,ih:innerHeight});})()")
+            res = None
+            for _ in range(180):   # first-result state: A1 toggle appears once songs are ranked
+                try:
+                    res = json.loads(win.evaluate_js(probe) or "{}")
+                except Exception:
+                    res = None
+                if res and res.get("a1") and res["a1"].get("vis"):
+                    break
+                time.sleep(0.5)
+            ok = bool(res) and all(res.get(k) and res[k].get("vis") for k in ("a1", "fs", "v1"))
+            LOG.info("test probe: %s hooks_visible=%s", res, ok)
+            if os.environ.get("AMV_TEST_OPEN_MENU") and sys.platform == "win32":
+                time.sleep(1.0)
+                windark.open_menu(win, 0)
         shot = os.environ.get("AMV_SNAPSHOT")
         if shot:
             time.sleep(float(os.environ.get("AMV_SNAPSHOT_DELAY", "4")))

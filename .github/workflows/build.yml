@@ -112,25 +112,39 @@ jobs:
           $m = Join-Path $env:RUNNER_TEMP "amv-dark-media"; New-Item -ItemType Directory -Force $m | Out-Null
           python -I -c "import av,numpy as np,soundfile as sf,sys; o=av.open(sys.argv[1]+'/v.mp4','w'); s=o.add_stream('libx264',rate=24); s.width,s.height,s.pix_fmt=320,240,'yuv420p'; [o.mux(p) for i in range(144) for p in s.encode(av.VideoFrame.from_ndarray(np.full((240,320,3),255 if (i//12)%2==0 else 20,np.uint8),format='rgb24'))]; [o.mux(p) for p in s.encode(None)]; o.close(); y=np.zeros(22050*20,np.float32); [y.__setitem__(slice(int(k*.5*22050),int(k*.5*22050)+400),np.hanning(400)*.9) for k in range(40)]; sf.write(sys.argv[1]+'/click.wav',y,22050)" $m
           Add-Type -AssemblyName System.Windows.Forms, System.Drawing
-          foreach ($sz in "1280x720","1920x1080") {
-            $env:AMV_WINDOW_SIZE = $sz
-            $env:AMV_DATA_DIR = Join-Path $env:RUNNER_TEMP "amv-dark-data-$sz"
-            $env:AMV_TEST_DROP = "$m\v.mp4;$m\click.wav"
-            $app = Start-Process -FilePath "dist\AMV Matcher\AMV Matcher.exe" -PassThru
-            Start-Sleep -Seconds 35
-            $b = [System.Windows.Forms.SystemInformation]::VirtualScreen
-            $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
-            [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
-            $bmp.Save("windows-dark-$sz.png", [System.Drawing.Imaging.ImageFormat]::Png)
-            Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
-            Start-Sleep -Seconds 3
-          }
+          Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public struct RECT{public int L,T,R,B;}public static class W{[DllImport("user32.dll")]public static extern bool GetWindowRect(IntPtr h,out RECT r);}'
+          # Hosted runner screens are 1024x768 and cannot be resized, so one 1000x700 window, captured by its own bounds.
+          $env:AMV_WINDOW_SIZE = "1000x700"
+          $env:AMV_DATA_DIR = Join-Path $env:RUNNER_TEMP "amv-dark-data"
+          $env:AMV_TEST_DROP = "$m\v.mp4;$m\click.wav"
+          $env:AMV_TEST_OPEN_MENU = "1"
+          $log = Join-Path $env:AMV_DATA_DIR "app.log"
+          $app = Start-Process -FilePath "dist\AMV Matcher\AMV Matcher.exe" -PassThru
+          $deadline = (Get-Date).AddSeconds(150)
+          while ((Get-Date) -lt $deadline -and -not ((Test-Path $log) -and (Select-String -Path $log -Pattern 'windark: open_menu' -Quiet))) { Start-Sleep -Seconds 2 }
+          Start-Sleep -Seconds 3
+          $app.Refresh()
+          $r = New-Object RECT
+          [void][W]::GetWindowRect($app.MainWindowHandle, [ref]$r)
+          $w = $r.R - $r.L; $h = $r.B - $r.T
+          if ($w -lt 200 -or $h -lt 200) { $v = [System.Windows.Forms.SystemInformation]::VirtualScreen; $r.L = $v.X; $r.T = $v.Y; $w = $v.Width; $h = $v.Height }
+          $bmp = New-Object System.Drawing.Bitmap $w, $h
+          [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($r.L, $r.T, 0, 0, (New-Object System.Drawing.Size $w, $h))
+          $bmp.Save("windows-dark-1000x700.png", [System.Drawing.Imaging.ImageFormat]::Png)
+          Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
+          if (Test-Path $log) { Copy-Item $log "windows-dark-app.log"; Select-String -Path $log -Pattern 'windark|test drop|test probe|native drop' | ForEach-Object { $_.Line } }
+          else { throw "no app.log at $log" }
+          if (-not (Select-String -Path $log -Pattern 'windark: menu recolour ok dark=True' -Quiet)) { throw "menu recolour did not report ok" }
+          if (Select-String -Path $log -Pattern 'FAILED' -Quiet) { throw "windark logged a FAILED line" }
+          if (-not (Select-String -Path $log -Pattern 'test probe: .*hooks_visible=True' -Quiet)) { throw "V1 legend / A1 toggle / fullscreen button not all visible" }
       - name: Upload dark-mode screenshot
         if: runner.os == 'Windows' && always()
         uses: actions/upload-artifact@v4
         with:
           name: windows-dark-screenshot
-          path: windows-dark-*.png
+          path: |
+            windows-dark-*.png
+            windows-dark-app.log
           retention-days: 7
           if-no-files-found: ignore
       - name: Package encrypted (macOS/Windows)
