@@ -729,6 +729,7 @@ def main():
             for k in ("ArrowDown", "ArrowDown", "ArrowUp"):
                 c.ev("window.dispatchEvent(new KeyboardEvent('keydown',{key:%s,bubbles:true}))" % json.dumps(k))
             check("arrow keys move the highlighted row", c.ev("MATCH.M.kb") == 0 and c.ev("!!document.querySelector('#mr-list .mr-row.kb')") is True, str(c.ev("MATCH.M.kb")))
+            check("F3: fullscreen button present on the player", c.ev("!!document.querySelector('#stage #fs-btn')") is True)
             c.ev("window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))")
             check("Esc closes the popup, results stay in the sidebar", c.ev("document.getElementById('mr').classList.contains('hidden')") is True and c.ev("document.querySelectorAll('#results .res').length") >= 2)
             c.ev("document.getElementById('b-mres').click()")
@@ -877,6 +878,33 @@ def main():
             c.pump(0.8)
             el_ok = c.ev("!!AS.runs[S.videoPath+'|'+S.sel.path]") is True
             check("run stored for the pair", el_ok)
+            # F10: corner toggle on A1 switches mode, keeps the playhead
+            c.pump(0.5)
+            t0 = c.ev("vid.currentTime")
+            c.ev("document.querySelector('#a1-mode [data-m=orig]').click()"); c.pump(0.6)
+            m1 = c.ev("AS.mode"); t1 = c.ev("vid.currentTime")
+            c.ev("document.querySelector('#a1-mode [data-m=synced]').click()"); c.pump(0.6)
+            m2 = c.ev("AS.mode")
+            check("F10: A1 corner toggle switches Original/Auto-synced", m1 == "orig" and m2 == "synced", "%s %s" % (m1, m2))
+            check("F10: toggle keeps playhead position", abs((t1 or 0) - (t0 or 0)) < 0.5, "%s -> %s" % (t0, t1))
+            # F11: every label at the top-right of V1 sits in one row: no overlaps, inside the track, clear of the remove button
+            F11 = ("(()=>{const cv=document.getElementById('tl').getBoundingClientRect();const x=document.getElementById('x-v');x.classList.add('show');"
+                   "const bx=document.getElementById('v1-legend');if(!bx||bx.classList.contains('hidden'))return {skip:1};"
+                   "const rs=[...bx.querySelectorAll('.lg')].map(e=>e.getBoundingClientRect()).filter(r=>r.width>0&&r.top<bx.getBoundingClientRect().bottom-1);"
+                   "rs.push(x.getBoundingClientRect());let bad=[];"
+                   "for(let i=0;i<rs.length;i++){const a=rs[i];if(a.left<cv.left-1||a.right>cv.right+1)bad.push('out'+i);"
+                   "for(let j=i+1;j<rs.length;j++){const b=rs[j];if(a.left<b.right-.5&&b.left<a.right-.5&&a.top<b.bottom-.5&&b.top<a.bottom-.5)bad.push(i+'x'+j)}}"
+                   "x.classList.remove('show');return {n:rs.length,bad:bad}})()")
+            for (fw, fh) in ((1280, 720), (1920, 1080)):
+                c.call("Emulation.setDeviceMetricsOverride", width=fw, height=fh, deviceScaleFactor=1, mobile=False)
+                c.ev("window.dispatchEvent(new Event('resize'))"); c.pump(0.8)
+                r = c.ev(F11) or {}
+                if r.get("skip"):
+                    print("SKIP  F11 no-overlap %dx%d (no legend for this pair)" % (fw, fh))
+                else:
+                    check("F11: V1 top-right labels do not overlap at %dx%d" % (fw, fh), not r.get("bad") and (r.get("n") or 0) >= 2, str(r))
+            c.call("Emulation.setDeviceMetricsOverride", width=1440, height=900, deviceScaleFactor=1, mobile=False)
+            c.ev("window.dispatchEvent(new Event('resize'))"); c.pump(0.5)
             if el_ok and c.ev("(AS.runs[S.videoPath+'|'+S.sel.path].result.plan.retime||{sections:[]}).sections.length") > 0:
                 check("V1 retime bands drawn", (c.ev("AS.bands") or 0) > 0, str(c.ev("AS.bands")))
                 c.ev("document.querySelector('#as-mode [data-m=orig]').click()"); c.pump(0.4)

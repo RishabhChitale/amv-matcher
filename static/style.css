@@ -246,3 +246,19 @@ body.dragging #fit,body.dragging .ovwrap{opacity:.5;transition:opacity var(--eas
 .rl-pad{width:30px;flex:none}.rl-cvs{flex:1;min-width:0}.rl-cvs canvas{width:100%;height:44px;display:block}
 .as-cmp{margin-top:8px;font-size:12px}.as-cmp h4{margin:0 0 4px;font-size:12px}.as-cmp table{border-collapse:collapse}
 .as-cmp th,.as-cmp td{padding:2px 10px 2px 0;text-align:left}.as-cmp td.win{font-weight:800;color:var(--c)}
+.as-bd{display:grid;gap:3px;margin:6px 0}.bd-row{display:grid;grid-template-columns:62px 1fr 78px 30px;gap:6px;align-items:center;font-size:11px}
+.bd-n{color:var(--mut)}.bd-bar{position:relative;height:6px}.bd-bar u{position:absolute;left:0;top:0;bottom:0;background:rgba(255,255,255,.22);z-index:1}.bd-bar i{position:relative;z-index:2;opacity:.9}
+.bd-v{font:11px ui-monospace,Menlo,monospace;text-align:right;color:var(--mut)}.bd-v b{color:var(--txt)}.bd-d{font:600 10px ui-monospace,Menlo,monospace;text-align:right;color:var(--mut)}.bd-d.up{color:#34d399}.bd-d.down{color:var(--red)}
+.fs-btn{position:absolute;right:8px;bottom:8px;z-index:6;width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:8px;border:1px solid rgba(255,255,255,.18);background:rgba(0,0,0,.45);color:#fff;cursor:pointer;opacity:0;transition:opacity .15s}
+.stage:hover .fs-btn,.fs-btn:focus-visible{opacity:1}.fs-btn:hover{background:rgba(0,0,0,.7)}
+.stage.is-fs{width:100vw;height:100vh;max-width:none;aspect-ratio:auto;margin:0}
+
+/* F11: V1 legend row (wraps, ellipsizes; sits left of the remove button) */
+.v1-legend{position:absolute;z-index:4;display:flex;flex-wrap:wrap;justify-content:flex-end;align-content:flex-start;gap:2px 4px;max-height:34px;overflow:hidden;pointer-events:none;font-size:10px;color:#ddd}
+.v1-legend.hidden{display:none}
+.v1-legend .lg{display:inline-flex;align-items:center;gap:4px;min-width:0;max-width:100%;padding:0 5px;height:14px;border-radius:3px;background:rgba(0,0,0,.5);pointer-events:auto}
+.v1-legend .lg i{width:8px;height:8px;flex:none}.v1-legend .lg b{font-weight:400;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.a1-mode{position:absolute;z-index:6;display:flex;font-size:11px}
+.a1-mode button{padding:2px 8px;line-height:16px}
+.a1-mode button:disabled{opacity:.45;cursor:not-allowed}
+.a1-mode.hidden{display:none}

@@ -46,14 +46,22 @@
     return out.sort((a, b) => a.v - b.v);
   }
 
-  function legend(ctx, x, y) {
-    const L = [['slowed', C.slow], ['sped up', C.fast], ['seam', C.seam], ['tempo', C.tempo], ['nudge', C.nudge], ['stem lock', C.stem]];
-    ctx.save(); ctx.font = '10px Inter, system-ui, sans-serif'; ctx.textBaseline = 'middle';
-    let w = 6; L.forEach((l) => { w += 12 + ctx.measureText(l[0]).width + 8; });
-    ctx.fillStyle = 'rgba(0,0,0,.5)'; ctx.fillRect(x - w, y, w, 14);
-    let cx = x - w + 5;
-    L.forEach((l) => { ctx.fillStyle = l[1]; ctx.fillRect(cx, y + 3, 8, 8); ctx.fillStyle = '#ddd'; ctx.fillText(l[0], cx + 11, y + 7.5); cx += 12 + ctx.measureText(l[0]).width + 8; });
-    ctx.restore();
+  // F11: legend as one DOM flex row over the V1 track's top-right (wraps / ellipsizes, tooltips), clear of the remove button.
+  const LEG = [['slowed', C.slow, 'Video slowed down here'], ['sped up', C.fast, 'Video sped up here'], ['seam', C.seam, 'Splice / arrange seam'],
+    ['tempo', C.tempo, 'Tempo change applied to the song'], ['nudge', C.nudge, 'Nudged event'], ['stem lock', C.stem, 'Stem-target lock']];
+  function legendDOM(show, W) {
+    const cv = el('tl'), wrap = el('tl-wrap'); if (!cv || !wrap) return;
+    let box = el('v1-legend');
+    if (!box) {
+      box = document.createElement('div'); box.id = 'v1-legend'; box.className = 'v1-legend';
+      LEG.forEach((l) => { const c = document.createElement('span'); c.className = 'lg'; c.title = l[2];
+        c.innerHTML = '<i style="background:' + l[1] + '"></i><b></b>'; c.lastChild.textContent = l[0]; box.appendChild(c); });
+      wrap.appendChild(box);
+    }
+    box.classList.toggle('hidden', !show); if (!show) return;
+    const R = (typeof RULER === 'number') ? RULER : 26;
+    box.style.left = cv.offsetLeft + 'px'; box.style.top = (cv.offsetTop + R + 3) + 'px';
+    box.style.width = Math.max(60, (W || cv.clientWidth) - 34) + 'px';
   }
 
   function drawMarks(ctx, y0, h, t2x, onA1, W) {
@@ -86,10 +94,10 @@
   const v1 = window.asDrawV1, a1 = window.asDrawA1;
   window.asDrawV1 = function (ctx, y0, h, t2x) {
     if (v1) v1.apply(this, arguments);
-    if (!run() || !plan()) return;
+    if (!run() || !plan()) { legendDOM(false); return; }
     const W = ctx.canvas ? ctx.canvas.clientWidth || ctx.canvas.width : 1e5;
     drawMarks(ctx, y0, h, t2x, false, W);
-    legend(ctx, W - 8, y0 + 2);
+    legendDOM(true, W);
   };
   window.asDrawA1 = function (ctx, y0, h, t2x, W) {
     if (a1) a1.apply(this, arguments);
