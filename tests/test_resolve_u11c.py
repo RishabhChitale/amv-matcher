@@ -29,7 +29,11 @@ def _ramp():
 
 
 def _xml(plan):
-    return R.build_fcpxml(Path("/x/vid.mp4"), VD, FPS, 1920, 1080, plan, SONG, VIDEO, "audio/song.wav", 40.0)
+    xml = R.build_fcpxml(Path("/x/vid.mp4"), VD, FPS, 1920, 1080, plan, SONG, VIDEO, "audio/song.wav", 40.0)
+    # The exporter correctly resolves the media path to an absolute file URI, which gains a drive
+    # letter on Windows (file:///C:/x/vid.mp4). Normalise only that URI so the golden hashes below
+    # stay byte-exact and identical across OSes.
+    return xml.replace(Path("/x/vid.mp4").resolve().as_uri(), "file:///x/vid.mp4")
 
 
 @pytest.mark.parametrize("key", ["retime", "retime_ramps"])
