@@ -538,13 +538,29 @@ def measure_tree_rss(root_pid: int, read_rss=None, parent_map=None) -> dict:
     return {"own_mb": own / 1048576, "tree_mb": total / 1048576, "nproc": n}
 
 
-def check_rss_result(r: dict, own_limit_mb: float = 600, tree_limit_mb: float = 2500) -> str:
-    """Assert on the sampled result of the RSS watch; raises AssertionError when it is vacuous or over the limits."""
+def rss_growth(series) -> dict:
+    """series = [(seconds, own_mb), ...] sampled over the watch window. A real js_api runaway CLIMBS (GBs a minute);
+    a stable but high baseline (e.g. after the 12-song scan in the same process) does not."""
+    if len(series) < 2:
+        return {"growth_mb": 0.0, "slope_mb_s": 0.0, "first_mb": series[0][1] if series else 0.0}
+    t0, v0 = series[0]
+    peak = max(v for _, v in series)
+    t1, v1 = series[-1]
+    return {"growth_mb": peak - v0, "slope_mb_s": (v1 - v0) / max(1e-6, t1 - t0), "first_mb": v0}
+
+
+def check_rss_result(r: dict, own_limit_mb: float = 1024, tree_limit_mb: float = 2500, growth_limit_mb: float = 100) -> str:
+    """Assert on the sampled result of the RSS watch; raises AssertionError when it is vacuous, climbing, or over
+    the ceilings. The own-process ceiling (1 GB) covers the synthetic scan that runs earlier in the same process."""
     assert r.get("samples", 0) > 0 and not r.get("error"), f"RSS check did not run: {r.get('error') or 'no samples'}"
     assert r["peak_mb"] > 0, "RSS read as 0 MB (vacuous check)"
+    g = rss_growth(r.get("series") or [])
+    assert g["growth_mb"] < growth_limit_mb, (f"RSS climbed {g['growth_mb']:.0f} MB in the watch window "
+                                              f"({g['slope_mb_s']:.1f} MB/s, from {g['first_mb']:.0f} MB): js_api walk runaway or leak")
     assert r["peak_mb"] < own_limit_mb, f"RSS {r['peak_mb']:.0f} MB after page load (js_api walk runaway?)"
     assert r.get("peak_tree_mb", 0) < tree_limit_mb, f"process-tree RSS {r['peak_tree_mb']:.0f} MB"
-    return (f"peak RSS {r['peak_mb']:.0f} MB own, {r['peak_tree_mb']:.0f} MB with {r['nproc']} process(es) "
+    return (f"peak RSS {r['peak_mb']:.0f} MB own (growth {g['growth_mb']:.0f} MB, slope {g['slope_mb_s']:.2f} MB/s, "
+            f"{len(r.get('errors') or [])} js_api errors), {r['peak_tree_mb']:.0f} MB with {r['nproc']} process(es) "
             f"(tree incl. WebView2 children when attributed), {r['samples']} samples")
 
 
@@ -556,7 +572,7 @@ def check_native_hooks(url: str, timeout: float = 45.0) -> dict:
     api = Api()   # exactly like the real launch (js_api=Api()): a public non-callable attr on it makes pywebview recurse
     win = webview.create_window("selftest", url + "/", hidden=True, js_api=api)
     api._window = win
-    oom: dict = {"errors": [], "peak_mb": 0.0, "peak_tree_mb": 0.0, "nproc": 0, "samples": 0, "error": ""}
+    oom: dict = {"errors": [], "peak_mb": 0.0, "peak_tree_mb": 0.0, "nproc": 0, "samples": 0, "error": "", "series": []}
     import logging
 
     class _H(logging.Handler):
@@ -589,6 +605,7 @@ def check_native_hooks(url: str, timeout: float = 45.0) -> dict:
                         oom["peak_tree_mb"] = max(oom["peak_tree_mb"], m["tree_mb"])
                         oom["nproc"] = max(oom["nproc"], m["nproc"])
                         oom["samples"] += 1
+                        oom["series"].append((round(time.time() - t1, 1), round(m["own_mb"], 1)))
                     except Exception as e:  # noqa: BLE001
                         oom["error"] = f"{type(e).__name__}: {e}"
                         break
@@ -762,6 +779,7 @@ def selftest(log_path: str = "") -> int:
         assert not oom["errors"], f"pywebview js_api walk errors (public attribute on Api?): {oom['errors'][:2]}"
         rss_note = "RSS watch skipped (Windows-only)"
         if sys.platform == "win32":
+            print("selftest rss series (s, MB):", oom["series"][::2], "| js_api errors:", len(oom["errors"]))
             rss_note = check_rss_result(oom)
         print("selftest ok: page hooks window.nativeDrop + window.nativeMenu present | api.toggle_fullscreen fn | fs-btn/a1-mode/v1-legend in idle DOM:",
               extra["fsBtn"], extra["a1Mode"], extra["v1Legend"], "| js_api clean |", rss_note)

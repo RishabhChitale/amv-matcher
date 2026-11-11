@@ -42,7 +42,7 @@ def test_parent_cycle_terminates():
     {"samples": 0, "peak_mb": 0.0, "peak_tree_mb": 0.0, "nproc": 0, "error": ""},
     {"samples": 0, "peak_mb": 0.0, "error": "OSError: boom"},
     {"samples": 5, "peak_mb": 0.0, "peak_tree_mb": 0.0, "nproc": 1, "error": ""},
-    {"samples": 5, "peak_mb": 700.0, "peak_tree_mb": 800.0, "nproc": 1, "error": ""},
+    {"samples": 5, "peak_mb": 1100.0, "peak_tree_mb": 1200.0, "nproc": 1, "error": ""},
     {"samples": 5, "peak_mb": 100.0, "peak_tree_mb": 3000.0, "nproc": 4, "error": ""},
 ])
 def test_vacuous_or_runaway_fails(bad):
@@ -59,3 +59,22 @@ def test_good_result_passes_and_reports():
 def test_real_reader_nonzero_on_windows():
     import os
     assert app_main.measure_tree_rss(os.getpid())["own_mb"] > 1
+
+
+def _r(series, **kw):
+    peak = max(v for _, v in series)
+    return {"samples": len(series), "peak_mb": peak, "peak_tree_mb": peak, "nproc": 1, "series": series, "error": "", **kw}
+
+
+def test_stable_high_baseline_after_scan_passes():
+    app_main.check_rss_result(_r([(i * 0.5, 636.0 + (i % 3)) for i in range(40)]))
+
+
+def test_climbing_series_fails_even_below_ceiling():
+    with pytest.raises(AssertionError, match="climbed"):
+        app_main.check_rss_result(_r([(i * 0.5, 400.0 + i * 8) for i in range(40)]))      # +312 MB in 20 s
+
+
+def test_absolute_ceiling_still_enforced():
+    with pytest.raises(AssertionError, match="runaway"):
+        app_main.check_rss_result(_r([(i * 0.5, 1100.0) for i in range(10)]))
