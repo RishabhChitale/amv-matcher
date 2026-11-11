@@ -75,8 +75,8 @@ def test_threaded_reformat_close_early_stops_workers():
 
 def test_reformat_threads_env(monkeypatch):
     monkeypatch.delenv("AMV_REFORMAT_THREADS", raising=False)
-    assert video._reformat_threads() == video._REFORMAT_THREADS == 2
-    monkeypatch.setenv("AMV_REFORMAT_THREADS", "1")
-    assert video._reformat_threads() == 1
-    monkeypatch.setenv("AMV_REFORMAT_THREADS", "x")
+    assert video._reformat_threads() == video._REFORMAT_THREADS == 1
+    monkeypatch.setenv("AMV_REFORMAT_THREADS", "2")
     assert video._reformat_threads() == 2
+    monkeypatch.setenv("AMV_REFORMAT_THREADS", "x")
+    assert video._reformat_threads() == 1

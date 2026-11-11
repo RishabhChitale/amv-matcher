@@ -219,14 +219,14 @@ def _frames(path: str):
 
 
 def _reformat_threads() -> int:
-    """Downscale threads for the video stage: 2 (env AMV_REFORMAT_THREADS, 1 = serial)."""
+    """Downscale threads for the video stage: 1 = serial (default); env AMV_REFORMAT_THREADS opts in."""
     try:
         return max(1, min(8, int(os.environ.get("AMV_REFORMAT_THREADS", "") or _REFORMAT_THREADS)))
     except ValueError:
         return _REFORMAT_THREADS
 
 
-_REFORMAT_THREADS = 2   # 1080p -> 160 px swscale is most of the video stage; it releases the GIL
+_REFORMAT_THREADS = 1   # 2 threads was slower on the Windows runner (scan-flake 43049643464); opt-in only
 
 _PIX = "bgr24"    # "bgr24" + cv2.cvtColor gives exact parity with the old reader (~+10% cost)
 
