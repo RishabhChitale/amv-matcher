@@ -10,8 +10,8 @@ import argparse, json, os, shutil, subprocess, sys, tempfile, time, urllib.reque
 import websocket
 
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-PORT = 9333
-SRV_PORT = 8799
+PORT = int(os.environ.get("AMV_SMOKE_CDP_PORT", "9333"))  # overridable so concurrent smokes don't hit each other's server/Chrome
+SRV_PORT = int(os.environ.get("AMV_SMOKE_SRV_PORT", "8799"))
 
 
 def serve(d):
