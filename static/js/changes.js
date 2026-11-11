@@ -33,8 +33,16 @@
     if (Math.abs(pct) >= 0.05) out.push({ kind: 'tempo', v: 0, color: C.tempo, label: 'Tempo ' + (pct > 0 ? '+' : '') + pct.toFixed(1) + '%' });
     arr(p.nudges).forEach((n) => out.push({ kind: 'nudge', v: n.t, color: C.nudge, label: 'Nudge ' + (n.kind || 'event') + ' ' + (n.delta >= 0 ? '+' : '') + Math.round((n.delta || 0) * 1000) + ' ms' }));
     const r = run(), st = arr((r && r.result && (r.result.stem_targets || (r.result.plan && r.result.plan.stem_targets))));
-    st.forEach((s) => { const t = typeof s === 'number' ? s : s.t; if (typeof t !== 'number') return;
-      out.push({ kind: 'stem', v: outToVid(t - (p.offset || 0)), color: C.stem, label: 'Stem lock (song ' + fmt(t) + ')' }); });
+    // stem_targets[].t is SOURCE-song time (before retime/splice): map it through the plan segments to output time, then back to video time
+    const segs = arr(p.segments);
+    const songToOut = (t) => {
+      if (!segs.length) return t - (p.offset || 0);
+      const g = segs.find((q) => t >= q.src_start - 1e-6 && t <= q.src_end + 1e-6);
+      return g ? g.dst_start + (t - g.src_start) : null;   // outside every used part: not on the timeline
+    };
+    st.forEach((s) => { const t = typeof s === 'number' ? s : (s && (typeof s.t_song === 'number' ? s.t_song : s.t)); if (typeof t !== 'number') return;
+      const o = songToOut(t); if (o === null || o < 0) return;
+      out.push({ kind: 'stem', v: outToVid(o), color: C.stem, label: 'Stem lock (' + (s.stem || s.kind || 'stem') + ', song ' + fmt(t) + ')' }); });
     return out.sort((a, b) => a.v - b.v);
   }
 

@@ -617,6 +617,7 @@ def main():
             check("export link appears for the spliced wav", ok, c.ev("document.getElementById('ex-out').textContent") or "")
             c.ev("document.getElementById('sp-on').click()")
             c.pump(0.4)
+            check("Speed ramps control is hidden (SHOW_RAMPS_UI off)", c.ev("document.getElementById('g-ramps')===null"), "")
             check("stale export: link cleared when splice is switched off", c.ev("!document.querySelector('#ex-link')"), "")
             c.ev("document.getElementById('sp-on').click()")
             wait_for(c, "S.sp.on && !S.sp.busy && !!S.sp.plan && (S.sp.plan.cuts||[]).length>0", 60)

@@ -3,6 +3,8 @@
 const el = id => document.getElementById(id);
 const pk = (v, s) => v + '|' + s;
 const LS = 'amv.guard.v1';
+// Speed ramps (beta) Guardrails checkbox. Flip to true once the server's ramps option is ready to expose; while false the control is removed from the DOM and ramps:false is sent.
+const SHOW_RAMPS_UI = false;
 const AS = window.AS = {
   runs: {},            // pairKey -> {result, audioUrl}
   mode: 'synced', running: null, cancelled: false, guard: {lead: 60, dev: 15, tempo: 4, cuts: 2, loop: false, unlock: false, energyFirst: true, ramps: false},
@@ -77,14 +79,15 @@ window.asDrawA1 = (ctx, y0, h, t2x, W) => {
 // ---------- guardrails ----------
 function guardUI() {
   const g = AS.guard;
-  el('g-lead').value = g.lead; el('g-dev').value = g.dev; el('g-tempo').value = g.tempo; el('g-cuts').value = g.cuts; el('g-loop').checked = !!g.loop; el('g-unlock').checked = !!g.unlock; el('g-energy').checked = !!g.energyFirst; el('g-ramps').checked = !!g.ramps;
+  el('g-lead').value = g.lead; el('g-dev').value = g.dev; el('g-tempo').value = g.tempo; el('g-cuts').value = g.cuts; el('g-loop').checked = !!g.loop; el('g-unlock').checked = !!g.unlock; el('g-energy').checked = !!g.energyFirst; if (SHOW_RAMPS_UI) el('g-ramps').checked = !!g.ramps;
   el('g-lead-v').textContent = g.lead + ' ms'; el('g-dev-v').innerHTML = '&plusmn;' + g.dev + '%'; el('g-tempo-v').textContent = g.tempo + '%'; el('g-cuts-v').textContent = g.cuts;
 }
 for (const [id, k] of [['g-lead', 'lead'], ['g-dev', 'dev'], ['g-tempo', 'tempo'], ['g-cuts', 'cuts']])
   el(id).oninput = () => { AS.guard[k] = +el(id).value; guardUI(); saveGuard(); };
 el('g-loop').onchange = () => { AS.guard.loop = el('g-loop').checked; saveGuard(); };
 el('g-energy').onchange = () => { AS.guard.energyFirst = el('g-energy').checked; saveGuard(); };
-el('g-ramps').onchange = () => { AS.guard.ramps = el('g-ramps').checked; saveGuard(); };
+if (SHOW_RAMPS_UI) el('g-ramps').onchange = () => { AS.guard.ramps = el('g-ramps').checked; saveGuard(); };
+else { const rl = el('g-ramps'); if (rl) (rl.closest('label') || rl).remove(); }
 el('g-unlock').onchange = () => { AS.guard.unlock = el('g-unlock').checked; saveGuard(); ui(); };
 
 // ---------- running ----------
@@ -142,7 +145,7 @@ async function runOne(r) {   // returns result or null (cancelled / failed)
   const body = {video_path: v, song_path: r.path, lead_s: g.lead / 1000, allow_loop: !!g.loop,
     guardrails: {max_speed_dev: g.dev / 100, max_tempo_pct: g.tempo, max_cuts: g.cuts}};
   body.prefer_energy = !!g.energyFirst;
-  body.ramps = !!g.ramps;
+  body.ramps = SHOW_RAMPS_UI ? !!g.ramps : false;
   if (r.source === 'original') body.unlock_original = true;
   AS.lastReq = body; AS.cancelled = false;
   AS.running = {key, name: r.name}; ui();
