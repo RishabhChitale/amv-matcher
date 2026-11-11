@@ -119,11 +119,11 @@ AUDIO_TYPES = ("Audio files (*.mp3;*.wav;*.m4a;*.flac;*.ogg;*.aac)",)
 
 class Api:
     """Exposed to the page as window.pywebview.api (native dialogs; real paths, no upload copy)."""
-    window = None
+    _window = None   # PRIVATE: pywebview walks public attrs of js_api; a public window recurses into window.native forever
 
     def _dialog(self, kind, multi, types):
         import webview
-        r = self.window.create_file_dialog(kind, allow_multiple=multi, file_types=types)
+        r = self._window.create_file_dialog(kind, allow_multiple=multi, file_types=types)
         return [str(p) for p in (r or [])]
 
     def pick_video(self):
@@ -145,7 +145,7 @@ class Api:
         if not p.is_file() or not winsafe.is_relative_to_ci(p, paths.EXPORTS.resolve()):
             return ""
         d = paths.default_export_dir()
-        r = self.window.create_file_dialog(webview.SAVE_DIALOG, directory=str(d), save_filename=p.name)
+        r = self._window.create_file_dialog(webview.SAVE_DIALOG, directory=str(d), save_filename=p.name)
         if not r:
             return ""
         dest = Path(r if isinstance(r, str) else r[0])
@@ -211,10 +211,10 @@ class Api:
     def _pick_project(self, save, name=""):
         import webview
         if save:
-            r = self.window.create_file_dialog(webview.SAVE_DIALOG, directory=str(paths.default_export_dir()),
+            r = self._window.create_file_dialog(webview.SAVE_DIALOG, directory=str(paths.default_export_dir()),
                                                save_filename=ns.project_name(name))
         else:
-            r = self.window.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=False,
+            r = self._window.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=False,
                                                file_types=("AMV project (*.amvproj)",))
         if not r:
             return ""
@@ -283,7 +283,7 @@ def run_window() -> int:
     geom = ns.load_geometry(_screens())
     win = webview.create_window(TITLE, s.url + "/", js_api=api, min_size=(ns.MIN_W, ns.MIN_H),
                                 background_color="#0b0d12", **geom)
-    api.window = win
+    api._window = win
 
     def on_activate(args):
         try:
@@ -371,12 +371,39 @@ def run_window() -> int:
     return 0
 
 
+def _rss_mb() -> float:
+    """Resident memory of this process in MB (Windows: ctypes GetProcessMemoryInfo, no extra dependency)."""
+    import ctypes
+    from ctypes import wintypes
+
+    class PMC(ctypes.Structure):
+        _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD)] + [
+            (n, ctypes.c_size_t) for n in ("PeakWorkingSetSize", "WorkingSetSize", "QuotaPeakPagedPoolUsage",
+                                           "QuotaPagedPoolUsage", "QuotaPeakNonPagedPoolUsage",
+                                           "QuotaNonPagedPoolUsage", "PagefileUsage", "PeakPagefileUsage")]
+    pmc = PMC()
+    pmc.cb = ctypes.sizeof(pmc)
+    h = ctypes.windll.kernel32.GetCurrentProcess()
+    ctypes.windll.psapi.GetProcessMemoryInfo(h, ctypes.byref(pmc), pmc.cb)
+    return pmc.WorkingSetSize / 1048576
+
+
 def check_native_hooks(url: str, timeout: float = 45.0) -> dict:
     """Load url in a hidden pywebview window and return typeof window.nativeDrop / window.nativeMenu
     (polled until both are functions or timeout). Blocks on webview.start: call from the main thread."""
     import webview
     out: dict = {}
-    win = webview.create_window("selftest", url + "/", hidden=True)
+    api = Api()   # exactly like the real launch (js_api=Api()): a public non-callable attr on it makes pywebview recurse
+    win = webview.create_window("selftest", url + "/", hidden=True, js_api=api)
+    api._window = win
+    oom: dict = {"errors": [], "peak_mb": 0.0}
+    import logging
+
+    class _H(logging.Handler):
+        def emit(self, rec):
+            if "Error while processing" in rec.getMessage():
+                oom["errors"].append(rec.getMessage()[:120])
+    logging.getLogger("pywebview").addHandler(_H())
 
     def probe():
         t0 = time.time()
@@ -390,7 +417,13 @@ def check_native_hooks(url: str, timeout: float = 45.0) -> dict:
                 if out.get("nativeDrop") == "function" and out.get("nativeMenu") == "function":
                     break
                 time.sleep(0.5)
+            if sys.platform == "win32":   # CI-verified only: the runaway walk took GBs within a minute
+                t1 = time.time()
+                while time.time() - t1 < 20:
+                    oom["peak_mb"] = max(oom["peak_mb"], _rss_mb())
+                    time.sleep(0.5)
         finally:
+            out["oom"] = oom
             try:
                 win.destroy()
             except Exception:  # noqa: BLE001
@@ -520,8 +553,12 @@ def selftest(log_path: str = "") -> int:
         print("selftest ok: worker pool job (probe) -> done in", round(time.time() - t2, 1), "s")
         # the loaded page must expose the native hooks (a broken native.js/shell.js ships a dead drop/menu)
         found = check_native_hooks(s.url)
+        oom = found.pop("oom", {"errors": [], "peak_mb": 0.0})
         assert found == {"nativeDrop": "function", "nativeMenu": "function"}, f"native hooks missing in the page: {found}"
-        print("selftest ok: page hooks window.nativeDrop + window.nativeMenu present")
+        assert not oom["errors"], f"pywebview js_api walk errors (public attribute on Api?): {oom['errors'][:2]}"
+        assert oom["peak_mb"] < 600, f"RSS {oom['peak_mb']:.0f} MB after page load (js_api walk runaway?)"
+        print("selftest ok: page hooks window.nativeDrop + window.nativeMenu present | js_api clean, peak RSS",
+              round(oom["peak_mb"]), "MB")
         s.stop()
         return 0
     except Exception as e:  # noqa: BLE001
