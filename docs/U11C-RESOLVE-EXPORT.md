@@ -9,7 +9,7 @@ Applies only when the plan carries ramps; constant-speed and step-plan exports a
 ## Video
 One `asset-clip` (start 0, duration = ramp `out_duration`) with a `<timeMap>`. Time points are strictly increasing in output time; values are source times.
 - `stepped` (default, `RAMP_MODE_DEFAULT`): timepts from the sampled `warp`.
-- `smooth` (opt-in): timepts at each ramp boundary from `points` with smooth interpolation. Select with `rt["resolve_mode"]` or `build_fcpxml(ramp_mode=...)`.
+- `smooth` (opt-in until someone confirms it in a real Resolve; the smooth/inTime/outTime timemap is unverified there, while frame-sampled linear points give the same smooth look and are the safe import): timepts at each ramp boundary from `points` with smooth interpolation. Select with `rt["resolve_mode"]` or `build_fcpxml(ramp_mode=...)`.
 - Markers have source times interpolated through the timept list; connected-audio offsets stay in output time (assumed to use the output timebase; unverified in Resolve).
 
 ## Anchoring (`RAMP_ANCHOR`, unverified without a real Resolve)
