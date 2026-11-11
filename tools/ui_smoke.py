@@ -878,15 +878,34 @@ def main():
             c.pump(0.8)
             el_ok = c.ev("!!AS.runs[S.videoPath+'|'+S.sel.path]") is True
             check("run stored for the pair", el_ok)
-            # F10: corner toggle on A1 switches mode, keeps the playhead
-            c.pump(0.5)
+            # F10: corner toggle on A1: must be VISIBLE and work with real mouse clicks; keeps the playhead
+            c.pump(1.0)
+            VIS = ("(id=>{const e=document.querySelector(id);if(!e)return null;const r=e.getBoundingClientRect();const cs=getComputedStyle(e);"
+                   "return {w:r.width,h:r.height,x:r.left+r.width/2,y:r.top+r.height/2,hid:e.classList.contains('hidden')||cs.display==='none'||cs.visibility==='hidden'}})")
+            def vis(sel):
+                return c.ev("(%s)(%s)" % (VIS, json.dumps(sel)))
+            def real_click(sel):
+                v = vis(sel)
+                if not v or v["w"] <= 0: return False
+                c.mouse("mousePressed", v["x"], v["y"]); c.mouse("mouseReleased", v["x"], v["y"]); c.pump(0.6); return True
+            vo, vs = vis("#a1-mode [data-m=orig]"), vis("#a1-mode [data-m=synced]")
+            check("F10: A1 corner toggle is visible (not hidden, has size)", bool(vo and vs and vo["w"] > 0 and not vo["hid"] and vs["w"] > 0), "%s %s" % (vo, vs))
             t0 = c.ev("vid.currentTime")
-            c.ev("document.querySelector('#a1-mode [data-m=orig]').click()"); c.pump(0.6)
-            m1 = c.ev("AS.mode"); t1 = c.ev("vid.currentTime")
-            c.ev("document.querySelector('#a1-mode [data-m=synced]').click()"); c.pump(0.6)
-            m2 = c.ev("AS.mode")
-            check("F10: A1 corner toggle switches Original/Auto-synced", m1 == "orig" and m2 == "synced", "%s %s" % (m1, m2))
+            ok1 = real_click("#a1-mode [data-m=orig]"); m1 = c.ev("AS.mode"); t1 = c.ev("vid.currentTime")
+            ok2 = real_click("#a1-mode [data-m=synced]"); m2 = c.ev("AS.mode")
+            check("F10: A1 corner toggle switches Original/Auto-synced (real clicks)", ok1 and ok2 and m1 == "orig" and m2 == "synced", "%s %s" % (m1, m2))
             check("F10: toggle keeps playhead position", abs((t1 or 0) - (t0 or 0)) < 0.5, "%s -> %s" % (t0, t1))
+            ls = c.ev("Object.keys(localStorage).filter(k=>k.indexOf('amv.a1mode.')===0)")
+            check("F10: mode remembered per video (key includes the video path)", any(len(k) > len('amv.a1mode.') for k in (ls or [])), str(ls))
+            check("window.S / window.FX / window.note are exposed to other scripts", c.ev("window.S===S && window.FX===FX && typeof window.note==='function'") is True)
+            fb = vis("#stage #fs-btn")
+            check("F3: fullscreen button is visible", bool(fb and fb["w"] > 0 and not fb["hid"]), str(fb))
+            bd = vis("#as-bd")
+            check("F5: breakdown is visible after a run", bool(bd and bd["w"] > 0 and not bd["hid"]), str(bd))
+            bdt = c.ev("(()=>{const e=document.getElementById('as-bd');return e?e.innerText:''})()")
+            check("F5: breakdown shows before->after for Tempo/Sync/Energy, not only Tightness", bool(bdt) and bdt.count("\u2192") + bdt.count("->") >= 3, (bdt or "")[:120])
+            lg = vis("#v1-legend")
+            check("F11: V1 legend is visible", bool(lg and lg["w"] > 0 and not lg["hid"]), str(lg))
             # F11: every label at the top-right of V1 sits in one row: no overlaps, inside the track, clear of the remove button
             F11 = ("(()=>{const cv=document.getElementById('tl').getBoundingClientRect();const x=document.getElementById('x-v');x.classList.add('show');"
                    "const bx=document.getElementById('v1-legend');if(!bx||bx.classList.contains('hidden'))return {skip:1};"

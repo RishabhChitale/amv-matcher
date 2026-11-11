@@ -18,6 +18,7 @@ function toast(text, opts = {}) {
   return t;
 }
 const note = (m, err) => toast(m, {err, ttl: err ? 6000 : 3500});
+window.note = note;
 
 // ---------- score ----------
 async function scoreSongs(videoPath, paths) {

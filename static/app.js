@@ -5,6 +5,7 @@ const vid = $('vid'), aud = $('aud'), cv = $('tl'), ctx = cv.getContext('2d');
 const S = {video: null, videoPath: '', results: [], sel: null, wf: null, offset: 0, fps: 30, dur: 0,
            playing: false, rate: 1, loop: false, vidOk: false, score: null,
            inUse: null, selClip: null, linked: true, undo: null, a1Empty: false, sp: {on: false, max: 2, plan: null, url: '', path: '', seq: 0, busy: false, cache: {}}, a1label: '', cutMarks: 0};
+window.S = S;   // top-level const is not a window property; other scripts read window.S
 const jpost = (u, b) => fetch(u, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(b)});
 const fmtMS = s => { s = Math.max(0, Math.round(s)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
 
@@ -297,6 +298,7 @@ $('ex-mp4').onclick = () => doExport('mp4');
 let reduce = false; try { reduce = matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) {}
 const fxBody = () => FX.boom > 0 ? {boom: FX.boom, decay: FX.decay, drops_only: FX.drops, shake: FX.shake} : {};   // baked into exports only when Boom is on
 const FX = {boom: reduce ? 0 : 40, decay: 180, drops: false, shake: false};
+window.FX = FX;
 try { const s = JSON.parse(localStorage.getItem('amv-fx') || 'null'); if (s) Object.assign(FX, s); } catch (e) {}
 function saveFx() { try { localStorage.setItem('amv-fx', JSON.stringify(FX)); } catch (e) {} }
 function fxUI() {
