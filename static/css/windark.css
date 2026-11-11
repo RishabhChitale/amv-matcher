@@ -1,0 +1,7 @@
+/* Windows only: native hook (app_main) sets <html data-os="win">; macOS is untouched. */
+html[data-os="win"] { color-scheme: dark light; }
+html[data-os="win"] *::-webkit-scrollbar { width: 12px; height: 12px; }
+html[data-os="win"] *::-webkit-scrollbar-track { background: #14161c; }
+html[data-os="win"] *::-webkit-scrollbar-thumb { background: #3a3e4a; border-radius: 6px; border: 2px solid #14161c; }
+html[data-os="win"] *::-webkit-scrollbar-thumb:hover { background: #50556a; }
+html[data-os="win"] *::-webkit-scrollbar-corner { background: #14161c; }

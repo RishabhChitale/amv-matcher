@@ -193,6 +193,13 @@ class Api:
             return False
         return True
 
+    def toggle_fullscreen(self):
+        """Native window fullscreen on/off (the page's fullscreen button); returns nothing."""
+        try:
+            self._window.toggle_fullscreen()
+        except Exception:
+            LOG.exception("toggle_fullscreen")
+
     def log(self, msg):
         LOG.info("ui: %s", msg)
 
@@ -348,6 +355,13 @@ def run_window() -> int:
         AppHelper.callAfter(go)
 
     def bind(_=None):
+        if sys.platform == "win32":   # dark title bar + menu following the system theme; CSS scope flag for the page
+            try:
+                from amv_matcher import windark
+                windark.follow_system(win)
+                win.evaluate_js("document.documentElement.dataset.os='win'")
+            except Exception:
+                LOG.exception("windark")
         win.dom.document.events.drop += DOMEventHandler(on_drop, True, True)   # stops the browser upload path
         # Dev aids (env only): feed paths through the same hand-off a native drop uses, then snapshot / exit.
         fake = os.environ.get("AMV_TEST_DROP")
