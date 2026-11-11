@@ -168,6 +168,7 @@
     wrap.appendChild(root); document.body.appendChild(tip); build();
     $('mk-lg-btn').onclick = () => setOpen(!root.classList.contains('open'));
     cv.addEventListener('mousemove', show); cv.addEventListener('mouseleave', hide);
+    cv.addEventListener('mouseenter', () => root.classList.add('fade')); cv.addEventListener('mouseleave', () => root.classList.remove('fade')); // the open legend never blocks or hides what the pointer is on
     let o = false; try { o = !!localStorage.getItem('mkLegendOpen'); } catch (e) {} if (o) setOpen(true);
     const place = () => { root.style.left = (cv.offsetLeft + cv.clientWidth - 6) + 'px'; root.style.top = (cv.offsetTop + 3) + 'px'; };
     place(); addEventListener('resize', () => { place(); fit(); }); setInterval(() => { place(); refresh(); }, 800);

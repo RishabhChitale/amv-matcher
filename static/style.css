@@ -276,6 +276,7 @@ body.dragging #fit,body.dragging .ovwrap{opacity:.5;transition:opacity var(--eas
 .mk-legend{position:absolute;z-index:6;transform:translateX(-100%);font-size:11px}
 .mk-legend #mk-lg-btn{height:18px;padding:0 8px;border-radius:4px;border:1px solid var(--line);background:rgba(0,0,0,.55);color:inherit;cursor:pointer;font-size:11px}
 .mk-legend #mk-lg-body{position:absolute;right:0;top:22px;width:230px;max-height:300px;overflow:auto;padding:6px 8px;border-radius:6px;background:rgba(14,16,26,.96);border:1px solid var(--line)}
+.mk-legend #mk-lg-body{pointer-events:none;transition:opacity .15s}.mk-legend:hover #mk-lg-body{pointer-events:auto}.mk-legend.fade #mk-lg-body{opacity:.12}
 .mk-legend #mk-lg-body.hidden{display:none}
 .mk-g h4{margin:6px 0 2px;font-size:10px;font-weight:600;color:var(--mut);text-transform:uppercase;letter-spacing:.05em}
 .mk-row{display:flex;align-items:center;gap:8px;height:16px}.mk-row i{flex:none;display:inline-block}.mk-row b{font-weight:400;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}

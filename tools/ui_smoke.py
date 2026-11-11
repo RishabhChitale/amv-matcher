@@ -1192,6 +1192,17 @@ def main():
             tr = c.ev("(()=>{const r=document.getElementById('mk-tip').getBoundingClientRect();return {l:r.left,r:r.right,t:r.top,b:r.bottom,w:innerWidth,h:innerHeight}})()")
             check("legend: quiet stretch starting before t=0 shows no negative time", bool(__import__('re').search(r"Quiet stretch · \d+:\d\d\.\d-\d+:\d\d\.\d", tx)) and "-0:" not in tx and "· -" not in tx, tx)
             check("legend: tooltip stays inside the viewport", bool(tr and tr["l"] >= 0 and tr["t"] >= 0 and tr["r"] <= tr["w"] and tr["b"] <= tr["h"]), str(tr))
+            # stacked tooltip rows are separate, readable and do not draw over each other
+            rr = c.ev("(()=>{const r=[...document.getElementById('mk-tip').children].map(e=>{const b=e.getBoundingClientRect();return [b.top,b.bottom,b.height]});return r})()") or []
+            check("legend: stacked tooltip rows are separate (no overlap, each has height)", all(r[2] > 0 for r in rr) and all(rr[i][1] <= rr[i + 1][0] + 0.5 for i in range(len(rr) - 1)), str(rr))
+            # open legend body must never sit over the lanes: at 3 viewports scan the timeline with elementFromPoint
+            c.ev("(()=>{const b=document.getElementById('mk-lg-btn');if(!document.getElementById('mk-legend').classList.contains('open'))b.click()})()")
+            for (vw_, vh_) in ((1280, 720), (1440, 900), (1920, 1080)):
+                c.call("Emulation.setDeviceMetricsOverride", width=vw_, height=vh_, deviceScaleFactor=1, mobile=False); c.pump(0.5)
+                bad = c.ev("(()=>{const cv=document.getElementById('tl').getBoundingClientRect(),o=[];for(let i=1;i<24;i++)for(let j=0;j<12;j++){const x=cv.left+cv.width*i/24,y=cv.top+30+(cv.height-34)*j/11;const e=document.elementFromPoint(x,y);if(e&&e.closest&&e.closest('#mk-lg-body'))o.push([Math.round(x),Math.round(y)])}"
+                           "return {open:document.getElementById('mk-legend').classList.contains('open'),n:o.length,first:o[0]||null}})()")
+                check("legend open: no lane point is under the legend body at %dx%d" % (vw_, vh_), bool(bad and bad["open"] and bad["n"] == 0), str(bad))
+            c.call("Emulation.setDeviceMetricsOverride", width=1440, height=900, deviceScaleFactor=1, mobile=False); c.pump(0.5)
             # F2: video-use dimming: a 20 s song on a longer video dims the unused part of V1, with a label + tooltip
             c.ev("(()=>{window.__vu=S.sel.video_use;const d=S.dur,a=d*.1,u=d*.4;S.sel.video_use={start_s:a,end_s:a+u,used_s:u,video_duration_s:d,label:'uses '+fmtMS(u)+' of '+fmtMS(d)+' video'};draw();})()")
             vu = c.ev("(()=>{const cv=document.getElementById('tl').getBoundingClientRect(),w=MKLegend.detected.vw;if(!w)return null;const x=cv.left+t2x(Math.min(S.dur-1,w.b+(S.dur-w.b)/2));let y=cv.top+26+40,el=document.elementFromPoint(x,y);"
