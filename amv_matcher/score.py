@@ -55,12 +55,8 @@ def tempo_score(song_bpm: float, video_bpm: float, video_candidates=None):
 def _beats(song):
     """Constant-tempo grid when it fits the music well and agrees with the song's bpm,
     else the tracker's raw beats."""
-    g = song.get("beat_grid")
-    gb = float(song.get("grid_bpm") or 0)
-    bpm = float(song.get("bpm") or 0)
-    if song.get("grid_used") and g is not None and len(g) >= 2 and gb > 0 and bpm > 0 \
-            and abs(gb - bpm) / bpm <= GRID_BPM_AGREE:
-        return np.asarray(g, dtype=float)
+    if _uses_grid(song):
+        return np.asarray(song["beat_grid"], dtype=float)
     return np.asarray(song["beat_times"], dtype=float)
 
 
@@ -171,19 +167,96 @@ def _lock(song, ev_t, ev_w):
     return out
 
 
+# F15: a song that is not one constant grid (tempo drift, or own audio spliced so the beat phase jumps by
+# half a beat) has no single period/origin: a constant-period lock then cancels itself across the jumps.
+# Its lock follows the tracked beats instead: event times are warped to beat-index space
+# u = interp(t, beats, 0..n-1) (linear past the ends) and the coherence is taken at period 1 in u.
+# Songs on the grid keep the constant-period lock unchanged.
+# Unlike the constant lock (offset-independent), the warped z moves with the offset, so the offset scan
+# picks the max of a noisy null: on unrelated pairs its p95-minus-median over the scan is ~1.5 z. The
+# warped z is charged WARP_SCAN_Z for that and only used when it still beats the constant lock.
+WARP_MIN_BEATS = 16
+WARP_SCAN_Z = 1.0
+WARP_FLAT_S = 0.015   # tracked beats this close to one straight grid: the warp equals the constant lock, skipped
+
+
+def _uses_grid(song):
+    g = song.get("beat_grid")
+    gb = float(song.get("grid_bpm") or 0)
+    bpm = float(song.get("bpm") or 0)
+    return bool(song.get("grid_used") and g is not None and len(g) >= 2 and gb > 0 and bpm > 0
+                and abs(gb - bpm) / bpm <= GRID_BPM_AGREE)
+
+
+def _beat_index(t, beats):
+    """Fractional beat index of times t along the tracked beats (linear extrapolation past the ends)."""
+    n = len(beats)
+    u = np.interp(t, beats, np.arange(n, dtype=float))
+    lo, hi = t < beats[0], t > beats[-1]
+    u[lo] = (t[lo] - beats[0]) / (beats[1] - beats[0])
+    u[hi] = n - 1 + (t[hi] - beats[-1]) / (beats[-1] - beats[-2])
+    return u
+
+
+_WARP_MEMO = [None, None, None]   # (beat list held so its id stays unique, key, result): one song per scan
+
+
+def _warp_beats(bt):
+    """Tracked beats as an array when the warp lock applies to them (enough beats, not one straight grid
+    within WARP_FLAT_S), else None. Memoized for the last beat list (the offset scan reuses one song)."""
+    key = (id(bt), len(bt), bt[0] if len(bt) else None, bt[-1] if len(bt) else None)
+    if _WARP_MEMO[0] is bt and _WARP_MEMO[1] == key:
+        return _WARP_MEMO[2]
+    beats = np.asarray(bt, dtype=float)
+    res = None
+    if len(beats) >= WARP_MIN_BEATS:
+        i = np.arange(len(beats), dtype=float)
+        di = i - i.mean()                       # closed-form least-squares line (no np.linalg in the scan path)
+        slope = float(di @ (beats - beats.mean()) / (di @ di))
+        icpt = float(beats.mean() - slope * i.mean())
+        if float(np.abs(beats - (icpt + slope * i)).max()) > WARP_FLAT_S:
+            res = beats
+    _WARP_MEMO[:] = [bt, key, res]
+    return res
+
+
+def _lock_warp(song, ev_t, ev_w, off, lead):
+    """(z, err_s) of the beat-following lock at offset `off` (see WARP_MIN_BEATS), or None when the song
+    uses its constant grid or has too few beats."""
+    if _uses_grid(song) or len(ev_t) < 3:
+        return None
+    beats = _warp_beats(song["beat_times"])
+    if beats is None:
+        return None
+    u = _beat_index(ev_t + off + lead, beats)
+    w = ev_w / ev_w.sum()
+    ratios = np.linspace(1 - LOCK_SPAN, 1 + LOCK_SPAN, 121)
+    Z = np.exp(2j * np.pi * u[None, :] * ratios[:, None]) @ w
+    Rs = np.abs(Z)
+    base = Rs[np.abs(ratios - 1) > LOCK_EXCL]
+    med = float(np.median(base))
+    mad = max(1.4826 * float(np.median(np.abs(base - med))), 0.5 * float(np.std(base)), 1e-3)
+    z1 = Z[60]
+    z = (abs(z1) - med) / mad * min(1.0, len(ev_t) / 12.0)
+    return z, abs(float(np.angle(z1))) / (2 * np.pi) * float(np.median(np.diff(beats)))
+
+
 def _sync_pct_at(song, ev_t, ev_w, vd, off, lead_s=None):
     """Discriminative sync 0..100: logistic of the tempo-lock prominence z, times how well
     the offset puts the events at the expected lag from the beat (cosine of phase error)."""
     ev_t = np.asarray(ev_t, dtype=float)
     ev_w = np.asarray(ev_w, dtype=float)
+    kw = _lock_warp(song, ev_t, ev_w, off, _lead(lead_s))
     k = _lock(song, ev_t, ev_w)
-    if k is None:
-        return 0.0
-    z, z0c, T, g0 = k
-    # coherence of events shifted by off, relative to the grid origin and expected lag
-    ph = np.exp(2j * np.pi * (off - g0 + _lead(lead_s)) / T) * z0c
-    r = abs(z0c)
-    err = abs(float(np.angle(ph))) / (2 * np.pi) * T          # seconds from the expected lag
+    if kw is not None and (k is None or kw[0] - WARP_SCAN_Z > k[0]):
+        z, err = kw[0] - WARP_SCAN_Z, kw[1]
+    else:
+        if k is None:
+            return 0.0
+        z, z0c, T, g0 = k
+        # coherence of events shifted by off, relative to the grid origin and expected lag
+        ph = np.exp(2j * np.pi * (off - g0 + _lead(lead_s)) / T) * z0c
+        err = abs(float(np.angle(ph))) / (2 * np.pi) * T          # seconds from the expected lag
     align = 1.0 if err <= LOCK_TOL_S else float(np.exp(-0.5 * ((err - LOCK_TOL_S) / LOCK_TOL_S) ** 2))
     lock = 100.0 / (1.0 + np.exp(-LOCK_A * (z - LOCK_B))) * align
     # small fine-alignment term: keeps retime/splice/nudge improvements visible once the
@@ -274,6 +347,128 @@ def _arc_pct_at(song, video, off):
     return float(np.clip(pct, 0, 100))
 
 
+# Story gate (F15). A song can sit on the beat everywhere yet tell the wrong story: its build-ups
+# and drops land on the video's calm stretches. "Story" = the max over small lags (|lag| <= STORY_LAG_S,
+# editors anticipate or let motion trail the music) of the Pearson r between the video's and the song's
+# energy *change* (mean of the next STORY_FWD_S minus mean of the previous STORY_BACK_S). It is
+# scored as a z against a bar-shift null: the same statistic with the song moved by whole bars
+# (+-STORY_SHIFT_BARS), which keeps the beat lock but breaks phrase alignment. The total is capped
+# at STORY_CAP_LO at z <= 0, rising linearly to 100 at z >= STORY_Z_FULL (so 90 needs z >= 1, about
+# one sd above phrase-shifted placements). No cap when the gate cannot judge (flat energy, short
+# overlap, too few null shifts), so it never blocks a score for lack of data.
+STORY_FWD_S = 1.0
+STORY_BACK_S = 2.0
+STORY_LAG_S = 3.0
+STORY_LAG_STEP_S = 0.5
+STORY_SHIFT_BARS = 24
+STORY_MIN_NULL = 8
+STORY_MIN_COVER = 0.5
+STORY_CAP_LO = 80.0
+STORY_Z_FULL = 2.0
+
+
+def _on_grid(x, hz):
+    x = np.asarray(x if x is not None else [], dtype=float)
+    hz = float(hz or ENERGY_HZ)
+    if len(x) < 2 or abs(hz - ENERGY_HZ) < 1e-6:
+        return x
+    n = int(np.ceil(len(x) / hz * ENERGY_HZ))
+    return np.interp(np.arange(n) / ENERGY_HZ, np.arange(len(x)) / hz, x)
+
+
+def _rise(e):
+    c = np.concatenate([[0.0], np.cumsum(e)])
+    n = len(e)
+    i = np.arange(n)
+    h1, h2 = int(round(STORY_FWD_S * ENERGY_HZ)), int(round(STORY_BACK_S * ENERGY_HZ))
+    hi = np.minimum(n, i + h1)
+    lo = np.maximum(0, i - h2)
+    a = (c[hi] - c[i]) / np.maximum(1, hi - i)
+    b = (c[i] - c[lo]) / np.maximum(1, i - lo)
+    return a - b
+
+
+def _video_story_curve(video):
+    e = _on_grid(video.get("energy_curve"), video.get("energy_hz"))
+    if len(e) < 3:
+        return e
+    s = _on_grid(video.get("subject_curve"), video.get("subject_hz"))[:len(e)]
+    s = np.pad(s, (0, len(e) - len(s)))
+    x = e / (np.percentile(e, 95) + 1e-9)
+    if np.any(s > 0):
+        x = x + 0.6 * s / (np.percentile(s, 95) + 1e-9)
+    return x
+
+
+def _story_source(song):
+    """(source energy at ENERGY_HZ, map) for the story gate. A spliced/looped song (splice._assemble)
+    carries 'story_src': the energy of the song it was cut from plus, per output sample, the source
+    time heard there (-1 = silence), padded by STORY_LAG_S + slack on both sides. The gate then
+    judges the placement inside the whole source song, so a single trim re-scored on its assembled
+    copy gets the same story z as scoring the song directly. map None = plain song (identity)."""
+    src = song.get("story_src")
+    if src:
+        return _on_grid(src.get("energy_curve"), src.get("energy_hz")), src
+    return _on_grid(song.get("energy_curve"), song.get("energy_hz")), None
+
+
+def story_stats(song, video, off):
+    """{'story_z', 'story_r', 'n_null'} at `off`; story_z None when the gate cannot judge."""
+    ve = _video_story_curve(video)
+    se, src = _story_source(song)
+    none = {"story_z": None, "story_r": None, "n_null": 0}
+    bpm = float((src or song).get("bpm") or 0)
+    if len(ve) < 4 * STORY_BACK_S * ENERGY_HZ or len(se) < 3 or bpm <= 0 or np.std(ve) < 1e-9 or np.std(se) < 1e-9:
+        return none
+    ve, se = _rise(ve), _rise(se)
+    lags = np.arange(-STORY_LAG_S, STORY_LAG_S + 1e-9, STORY_LAG_STEP_S)
+    bar = float((src or song).get("beats_per_bar") or 4) * 60.0 / bpm
+    shifts = np.array([0] + [k for k in range(-STORY_SHIFT_BARS, STORY_SHIFT_BARS + 1) if k])
+    j = np.arange(len(ve))
+    # dst sample heard by video sample j at lag; src sample = map(dst) + whole-bar shift
+    dst = j[None, :] + np.round((off - lags) * ENERGY_HZ).astype(int)[:, None]          # (L, n)
+    if src is None:
+        base = dst.astype(float)
+        okd = np.ones(dst.shape, bool)
+    else:
+        tm = np.asarray(src["t"], dtype=float)
+        i = dst - int(src.get("t0", 0))
+        okd = (i >= 0) & (i < len(tm))
+        tv = np.where(okd, tm[np.clip(i, 0, len(tm) - 1)], -1.0)
+        okd &= tv >= 0
+        base = np.round(tv * ENERGY_HZ)
+    best, valid = np.full(len(shifts), -np.inf), np.zeros(len(shifts), bool)
+    need = STORY_MIN_COVER * len(ve)
+    for si, s in enumerate(shifts):                       # one (lags, n) block per bar shift
+        k = (base + round(s * bar * ENERGY_HZ)).astype(int)
+        w = okd & (k >= 0) & (k < len(se))
+        b = se[np.clip(k, 0, len(se) - 1)]
+        cnt = w.sum(-1)
+        nz = np.maximum(cnt, 1)
+        da = (ve[None, :] - (ve[None, :] * w).sum(-1)[:, None] / nz[:, None]) * w
+        db = (b - (b * w).sum(-1)[:, None] / nz[:, None]) * w
+        va, vb = (da * da).sum(-1) / nz, (db * db).sum(-1) / nz
+        good = (cnt >= need) & (np.sqrt(va) >= 1e-9) & (np.sqrt(vb) >= 1e-9)
+        if good.all():
+            valid[si] = True
+            best[si] = float(((da * db).sum(-1) / nz / np.sqrt(va * vb)).max())
+    if not valid[0]:
+        return none
+    r0 = float(best[0])
+    null = best[1:][valid[1:]]
+    if len(null) < STORY_MIN_NULL:
+        return dict(none, story_r=round(r0, 3), n_null=int(len(null)))
+    z = (r0 - float(null.mean())) / (float(null.std()) + 1e-9)
+    return {"story_z": round(float(z), 2), "story_r": round(r0, 3), "n_null": int(len(null))}
+
+
+def story_cap(z):
+    """Highest total a pair may reach given its story z (100 = no cap)."""
+    if z is None:
+        return 100.0
+    return float(STORY_CAP_LO + (100.0 - STORY_CAP_LO) * np.clip(z / STORY_Z_FULL, 0.0, 1.0))
+
+
 def _combine(tempo_pct, sync_pct, arc_pct):
     return W_TEMPO * tempo_pct + W_SYNC * sync_pct + W_ARC * arc_pct
 
@@ -326,9 +521,14 @@ def _pack(song, video, off, tempo_pct, rate, sync_pct, arc_pct, lead_s=None, qui
     from . import boom, buildup
     bs = buildup.build_stats(song, video, off) if buildup.W_BUILD > 0 else None
     bm = boom.boom_stats(song, video, off, _lead(lead_s)) if boom.W_BOOM > 0 else None
+    total = boom.blend_total(buildup.blend_total(_combine(tempo_pct, sync_pct, arc_pct), bs), bm)
+    st = story_stats(song, video, off) if total > STORY_CAP_LO else {"story_z": None, "story_r": None, "n_null": 0}
+    cap = story_cap(st["story_z"])
     out = {
         "eligible": True,
-        "total_pct": int(round(boom.blend_total(buildup.blend_total(_combine(tempo_pct, sync_pct, arc_pct), bs), bm))),
+        "total_pct": int(round(min(total, cap))),
+        "story_z": st["story_z"],
+        "story_capped": bool(total > cap),
         "tempo_pct": round(tempo_pct, 1),
         "sync_pct": round(sync_pct, 1),
         "arc_pct": round(arc_pct, 1),
@@ -337,6 +537,7 @@ def _pack(song, video, off, tempo_pct, rate, sync_pct, arc_pct, lead_s=None, qui
         "trim_end_s": round(off + float(video["duration"]), 2),
         "best_rate": rate,
         "tightness": tightness(song, video, off, lead_s),
+        "key_moments": boom.video_key_moments(video),   # F15: reported only, not in the total
     }
     if bs is not None:
         out.update(build_pct=bs["build_pct"], launch_pct=bs["launch_pct"], n_launches=bs["n_launches"], n_builds=bs["n_builds"])

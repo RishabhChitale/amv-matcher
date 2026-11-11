@@ -171,9 +171,37 @@ def _assemble(song, segments, vd):
         out["onset_env"], out["onset_env_fps"] = oe.tolist(), fps
     if "sections" in song:
         out["sections"] = secs
+    out["story_src"] = _story_map(song, segments, n_out, hz)
     from .boom import splice_song_booms
     out.update(splice_song_booms(song, segments))
     return out
+
+
+def _story_map(song, segments, n_out, hz):
+    """score.story_stats source: the energy of the song the output was cut from (the original when
+    `song` is itself assembled) plus, per output sample, the source time heard there (-1 = silence),
+    padded by STORY_LAG_S + 1 s each side by running the first/last segment on."""
+    tm = np.full(n_out, -1.0)
+    for sg in segments:
+        a, b, d0 = sg["src_start"], sg["src_end"], sg["dst_start"]
+        o0, o1 = int(round(d0 * hz)), min(n_out, int(round((d0 + b - a) * hz)))
+        if o1 > o0:
+            tm[o0:o1] = int(round(a * hz)) / hz + np.arange(o1 - o0) / hz
+    tm[tm < 0] = -1.0
+    m = int(round((S.STORY_LAG_S + 1.0) * hz))
+    pre = segments[0]["src_start"] + (np.arange(-m, 0) + int(round(segments[0]["dst_start"] * hz))) / hz if segments else np.zeros(m)
+    last = segments[-1] if segments else None
+    post = (int(round(last["src_start"] * hz)) + n_out - int(round(last["dst_start"] * hz)) + np.arange(m)) / hz if last else np.zeros(m)
+    tm = np.concatenate([np.where(pre >= 0, pre, -1.0), tm, post])
+    src = song.get("story_src")
+    if src:                                   # compose with the source map of an assembled input
+        old = np.asarray(src["t"], dtype=float)
+        i = np.round(tm * hz).astype(int) - int(src.get("t0", 0))
+        ok = (tm >= 0) & (i >= 0) & (i < len(old))
+        tm = np.where(ok, old[np.clip(i, 0, len(old) - 1)], -1.0)
+        return dict(src, t=tm.tolist(), t0=-m)
+    return {"energy_curve": song["energy_curve"], "energy_hz": song.get("energy_hz", hz), "bpm": song.get("bpm"),
+            "beats_per_bar": song.get("beats_per_bar"), "t": tm.tolist(), "t0": -m}
 
 
 def _bonus(asm, video):

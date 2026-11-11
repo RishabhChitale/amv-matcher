@@ -310,6 +310,73 @@ def visual_booms(subject, subject_hz, bright, fps, flow_series=None, camera_even
     return merged
 
 
+# --- key visual moments (F15) ----------------------------------------------------------------
+# The biggest visual drops of a video: where the picture's activity jumps from a calmer stretch to a
+# sustained high (motion + subject + camera). Visual booms rank instantaneous spikes, so a long climb
+# that peaks and collapses (C 0:49: subject surge then lull) saturates at conf 1.0 with dozens of
+# others; this ranks by contrast instead: mean of the next KM_AFTER_S minus mean of
+# [t-KM_BEFORE_S, t-KM_GAP_S), times how high the after-level sits (vs the video's p90). Count scales
+# with length (one per KM_PER_S, KM_MIN..KM_MAX), KM_SEP_S apart. Computed from cached analysis fields.
+# Reported only (score result 'key_moments'): a song-side hit/penalty did not separate own from cross
+# pairs on the ground-truth cases (F15 report), so it does not touch the total.
+KM_HZ = 10.0
+KM_AFTER_S = 1.0
+KM_BEFORE_S = 3.0
+KM_GAP_S = 0.5
+KM_PER_S = 15.0
+KM_MIN, KM_MAX = 4, 16
+KM_SEP_S = 4.0
+
+
+def _km_resample(c, hz, n):
+    c = np.asarray(c, dtype=float)
+    return np.interp(np.arange(n) / KM_HZ, (np.arange(len(c)) + 0.5) / float(hz), c)
+
+
+def _km_norm(x):
+    return np.clip(x / (np.percentile(x, 95) + 1e-9), 0.0, 2.0)
+
+
+def video_key_moments(video: dict) -> list:
+    """[{t, score}] of the video's biggest visual drops, time order. [] when there is no motion data."""
+    dur = float(video.get("duration") or 0.0)
+    n = int(np.ceil(dur * KM_HZ))
+    if n < int(KM_BEFORE_S * KM_HZ) + 2:
+        return []
+    x = np.zeros(n)
+    got = False
+    if video.get("motion_curve") and video.get("fps"):
+        from .curves import bin_mean
+        x += _km_norm(bin_mean(np.asarray(video["motion_curve"], dtype=float), float(video["fps"]), n, KM_HZ))
+        got = True
+    if video.get("subject_curve"):
+        x += 0.6 * _km_norm(_km_resample(video["subject_curve"], video.get("subject_hz") or KM_HZ, n))
+        got = True
+    cm = video.get("camera_motion") or {}
+    if cm.get("curve") and cm.get("hz"):
+        x += 0.4 * _km_norm(_km_resample(cm["curve"], cm["hz"], n))
+        got = True
+    if not got or np.std(x) < 1e-9:
+        return []
+    x = uniform_filter1d(x / 2.0, 3, mode="nearest")
+    c = np.concatenate([[0.0], np.cumsum(x)])
+    i = np.arange(n)
+    hi = np.minimum(n, i + int(round(KM_AFTER_S * KM_HZ)))
+    after = (c[hi] - c[i]) / np.maximum(1, hi - i)
+    lo = np.maximum(0, i - int(round(KM_BEFORE_S * KM_HZ)))
+    b = np.maximum(lo + 1, i - int(round(KM_GAP_S * KM_HZ)))
+    before = (c[b] - c[lo]) / np.maximum(1, b - lo)
+    sc = np.clip(after - before, 0.0, None) * np.clip(after / (np.percentile(x, 90) + 1e-9), 0.0, 1.5)
+    k = int(np.clip(dur / KM_PER_S, KM_MIN, KM_MAX))
+    picked = []
+    for j in np.argsort(-sc, kind="stable"):
+        if sc[j] <= 0 or len(picked) >= k:
+            break
+        if all(abs(int(j) - p) >= KM_SEP_S * KM_HZ for p in picked):
+            picked.append(int(j))
+    return [{"t": round(j / KM_HZ, 2), "score": round(float(sc[j]), 3)} for j in sorted(picked)]
+
+
 # --- boom alignment sub-score (score._pack) -------------------------------------------------
 W_BOOM = 0.10           # bonus weight in the total (never punishes, like buildup.blend_total)
 BOOM_IN_TOTAL = False   # F6e gate: boom_pct is reported in the breakdown only, not folded into total_pct,

@@ -72,6 +72,12 @@ Visual boom `kind` labels for the tooltip: `motion` "motion burst", `flash` "fla
 | Boom sync | Where the song's main drop lands on the video, and how far it is from the nearest visual boom. | result/`final` `boom` `{audio_t (song s), video_t (video s), vis_t, err_ms, matched}` | `--mk-drop` link line from A1 `audio_t` to V1 `video_t`; green when `matched` | `Main drop lands at 1:00.0 · 40 ms from a visual boom` (or `· no visual boom within 80 ms`; `boom.BOOM_MATCH_S` 0.08) |
 | Video use (F2) | The song is shorter than the video and uses only this stretch of it. | `video_use` `{start_s, end_s, coverage_pct, label}` / `plan.video_window` | dim V1 outside `start_s`-`end_s` | the `label`, e.g. `uses 2:16 of 3:48 video` |
 
+| Key moment (F15) | One of the video's biggest visual drops: activity jumps from a calmer stretch to a sustained high. | result `key_moments[]` `{t (video s; clip s for a partial song), score}`, time order, at most 16 | `--mk-visual` `#fbbf24` taller tick | `Key visual moment · 0:47.900` |
+| Story cap (F15) | The song's build-ups and drops do not follow the video's energy story, so the total is held below 100. | result `story_z` (null = not judged), `story_capped` | none; a note in the breakdown when `story_capped` | `Score held at <total>%: the song's build-ups miss the video's (story z <z>)` |
+
+`key_moments` are reported only and do not change `total_pct`. `story_capped` does: the total is at most
+`score.story_cap(story_z)` (80 at z <= 0, 100 at z >= 2; no cap when `story_z` is null).
+
 `boom_pct` is shown in the score breakdown only. It is **not** part of `total_pct` (`boom.BOOM_IN_TOTAL` is
 `False`), so never present it as a reason a song ranks higher.
 
