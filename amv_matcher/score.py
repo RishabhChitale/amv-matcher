@@ -1,7 +1,13 @@
 """Score how well a song's beat fits a video's motion rhythm."""
 from __future__ import annotations
 
+import os
+
 import numpy as np
+
+# F15 (beat-following warp lock, story gate cap, story/key-moment fields) is held out of releases until
+# it stops lifting unrelated pairs. Off by default: scoring is the pre-F15 scorer. AMV_F15=1 turns it on.
+F15_ENABLED = os.environ.get("AMV_F15", "") == "1"
 
 W_TEMPO = 0.20
 W_SYNC = 0.60
@@ -175,8 +181,11 @@ def _lock(song, ev_t, ev_w):
 # Unlike the constant lock (offset-independent), the warped z moves with the offset, so the offset scan
 # picks the max of a noisy null: on unrelated pairs its p95-minus-median over the scan is ~1.5 z. The
 # warped z is charged WARP_SCAN_Z for that and only used when it still beats the constant lock.
+# Evidence gate: the raw warped z must also reach WARP_MIN_Z. Over a whole offset scan of unrelated pairs the
+# warped z peaks at ~1.8 (median ~0, p95 ~1.5), so a scan maximum alone never switches the warp on.
 WARP_MIN_BEATS = 16
 WARP_SCAN_Z = 1.0
+WARP_MIN_Z = 3.0
 WARP_FLAT_S = 0.015   # tracked beats this close to one straight grid: the warp equals the constant lock, skipped
 
 
@@ -246,9 +255,9 @@ def _sync_pct_at(song, ev_t, ev_w, vd, off, lead_s=None):
     the offset puts the events at the expected lag from the beat (cosine of phase error)."""
     ev_t = np.asarray(ev_t, dtype=float)
     ev_w = np.asarray(ev_w, dtype=float)
-    kw = _lock_warp(song, ev_t, ev_w, off, _lead(lead_s))
+    kw = _lock_warp(song, ev_t, ev_w, off, _lead(lead_s)) if F15_ENABLED else None
     k = _lock(song, ev_t, ev_w)
-    if kw is not None and (k is None or kw[0] - WARP_SCAN_Z > k[0]):
+    if kw is not None and kw[0] >= WARP_MIN_Z and (k is None or kw[0] - WARP_SCAN_Z > k[0]):
         z, err = kw[0] - WARP_SCAN_Z, kw[1]
     else:
         if k is None:
@@ -522,13 +531,12 @@ def _pack(song, video, off, tempo_pct, rate, sync_pct, arc_pct, lead_s=None, qui
     bs = buildup.build_stats(song, video, off) if buildup.W_BUILD > 0 else None
     bm = boom.boom_stats(song, video, off, _lead(lead_s)) if boom.W_BOOM > 0 else None
     total = boom.blend_total(buildup.blend_total(_combine(tempo_pct, sync_pct, arc_pct), bs), bm)
-    st = story_stats(song, video, off) if total > STORY_CAP_LO else {"story_z": None, "story_r": None, "n_null": 0}
+    f15 = F15_ENABLED
+    st = story_stats(song, video, off) if f15 and total > STORY_CAP_LO else {"story_z": None, "story_r": None, "n_null": 0}
     cap = story_cap(st["story_z"])
     out = {
         "eligible": True,
         "total_pct": int(round(min(total, cap))),
-        "story_z": st["story_z"],
-        "story_capped": bool(total > cap),
         "tempo_pct": round(tempo_pct, 1),
         "sync_pct": round(sync_pct, 1),
         "arc_pct": round(arc_pct, 1),
@@ -537,8 +545,10 @@ def _pack(song, video, off, tempo_pct, rate, sync_pct, arc_pct, lead_s=None, qui
         "trim_end_s": round(off + float(video["duration"]), 2),
         "best_rate": rate,
         "tightness": tightness(song, video, off, lead_s),
-        "key_moments": boom.video_key_moments(video),   # F15: reported only, not in the total
     }
+    if f15:
+        out.update(story_z=st["story_z"], story_capped=bool(total > cap),
+                   key_moments=boom.video_key_moments(video))   # key moments: reported only, not in the total
     if bs is not None:
         out.update(build_pct=bs["build_pct"], launch_pct=bs["launch_pct"], n_launches=bs["n_launches"], n_builds=bs["n_builds"])
     out["boom_pct"] = None if bm is None else bm["boom_pct"]

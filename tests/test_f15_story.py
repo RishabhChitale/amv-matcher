@@ -1,5 +1,6 @@
 """F15: beat-following lock, story gate cap, key visual moments (synthetic, no media)."""
 import numpy as np
+import pytest
 from scipy.ndimage import uniform_filter1d
 
 from amv_matcher import boom, score as sc
@@ -36,7 +37,26 @@ def test_warp_lock_skips_grid_songs():
     assert sc._lock_warp(dict(song, beat_times=list(beats[:8])), beats[:8], np.ones(8), 0.0, 0.0) is None
 
 
-def test_warp_lock_follows_half_beat_jumps(monkeypatch):
+@pytest.fixture
+def f15_on(monkeypatch):
+    monkeypatch.setattr(sc, "F15_ENABLED", True)
+
+
+def _jumpy_case():
+    beats = _jumpy_beats()
+    song = {"duration": 60.0, "bpm": 120.0, "beat_times": list(beats), "grid_used": False,
+            "energy_curve": [0.5] * 600, "drops": [], "lulls": []}
+    ev = beats[(beats > 1) & (beats < 29)][::2] - sc._lead()
+    return song, ev
+
+
+def test_f15_off_by_default():
+    import os
+    if os.environ.get("AMV_F15", "") != "1":
+        assert sc.F15_ENABLED is False
+
+
+def test_warp_lock_follows_half_beat_jumps(monkeypatch, f15_on):
     beats = _jumpy_beats()
     song = {"duration": 60.0, "bpm": 120.0, "beat_times": list(beats), "grid_used": False,
             "energy_curve": [0.5] * 600, "drops": [], "lulls": []}
@@ -49,6 +69,22 @@ def test_warp_lock_follows_half_beat_jumps(monkeypatch):
     monkeypatch.setattr(sc, "_lock_warp", lambda *a, **k: None)
     const = sc._sync_pct_at(song, ev, np.ones(len(ev)), vd, 0.0)
     assert warped > const + 20, (warped, const)
+
+
+def test_warp_lock_unused_when_f15_off(monkeypatch):
+    monkeypatch.setattr(sc, "F15_ENABLED", False)
+    song, ev = _jumpy_case()
+    off = sc._sync_pct_at(song, ev, np.ones(len(ev)), 30.0, 0.0)
+    monkeypatch.setattr(sc, "_lock_warp", lambda *a, **k: None)
+    assert sc._sync_pct_at(song, ev, np.ones(len(ev)), 30.0, 0.0) == off
+
+
+def test_warp_lock_needs_min_z(monkeypatch, f15_on):
+    song, ev = _jumpy_case()
+    monkeypatch.setattr(sc, "_lock_warp", lambda *a, **k: None)
+    const = sc._sync_pct_at(song, ev, np.ones(len(ev)), 30.0, 0.0)
+    monkeypatch.setattr(sc, "_lock_warp", lambda *a, **k: (sc.WARP_MIN_Z - 0.5, 0.01))
+    assert sc._sync_pct_at(song, ev, np.ones(len(ev)), 30.0, 0.0) == const
 
 
 # --- story gate ------------------------------------------------------------------------------
@@ -87,7 +123,7 @@ def test_story_stats_matching_story_beats_wrong_story():
     assert zw < zr - 1.0, (zr, zw)
 
 
-def test_pack_caps_total_by_story(monkeypatch):
+def test_pack_caps_total_by_story(monkeypatch, f15_on):
     beats = np.arange(0, 60, 0.5)
     song = {"duration": 60.0, "bpm": 120.0, "beat_times": list(beats), "energy_curve": [0.5] * 600,
             "drops": [], "lulls": []}
@@ -100,6 +136,31 @@ def test_pack_caps_total_by_story(monkeypatch):
     r = sc.score_at(song, video, 0.0)
     assert r["total_pct"] >= 95 and r["story_capped"] is False
     assert isinstance(r["key_moments"], list)
+
+
+def test_pack_without_f15_has_no_story_fields(monkeypatch):
+    monkeypatch.setattr(sc, "F15_ENABLED", False)
+    beats = np.arange(0, 60, 0.5)
+    song = {"duration": 60.0, "bpm": 120.0, "beat_times": list(beats), "energy_curve": [0.5] * 600,
+            "drops": [], "lulls": []}
+    video = _flat_video(list(beats[4:40] - 0.05), 30.0)
+    monkeypatch.setattr(sc, "_combine", lambda *a: 95.0)
+    monkeypatch.setattr(sc, "story_stats", lambda *a: {"story_z": -1.0, "story_r": 0.0, "n_null": 40})
+    r = sc.score_at(song, video, 0.0)
+    assert r["total_pct"] >= 95
+    assert not ({"story_z", "story_capped", "key_moments"} & set(r))
+
+
+def test_splice_story_src_only_with_f15(monkeypatch):
+    from amv_matcher.splice import _assemble
+    beats = np.arange(0, 60, 0.5)
+    song = {"duration": 60.0, "bpm": 120.0, "beat_times": list(beats), "beat_strengths": [1.0] * len(beats),
+            "energy_curve": [0.5] * 600, "drops": [], "lulls": [], "onset_env": [0.1] * 600, "onset_fps": 10.0}
+    seg = [{"src_start": 10.0, "src_end": 40.0, "dst_start": 0.0}]
+    monkeypatch.setattr(sc, "F15_ENABLED", False)
+    assert "story_src" not in _assemble(song, seg, 30.0)
+    monkeypatch.setattr(sc, "F15_ENABLED", True)
+    assert "story_src" in _assemble(song, seg, 30.0)
 
 
 # --- key visual moments ----------------------------------------------------------------------

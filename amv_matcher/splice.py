@@ -171,7 +171,8 @@ def _assemble(song, segments, vd):
         out["onset_env"], out["onset_env_fps"] = oe.tolist(), fps
     if "sections" in song:
         out["sections"] = secs
-    out["story_src"] = _story_map(song, segments, n_out, hz)
+    if S.F15_ENABLED:                         # only the F15 story gate reads it
+        out["story_src"] = _story_map(song, segments, n_out, hz)
     from .boom import splice_song_booms
     out.update(splice_song_booms(song, segments))
     return out
