@@ -254,6 +254,8 @@ Videos a `<video>` tag cannot decode (mkv, MJPG avi, ...) get `preview_proxy: tr
 
 Env (dev aids): `AMV_DATA_DIR` data folder; `AMV_SNAPSHOT=<png>`, `AMV_TEST_DROP=<paths>`, `AMV_EXIT_AFTER_SNAPSHOT=1`. `python app_main.py --selftest` runs a headless end-to-end check.
 
+`AMV_REFORMAT_THREADS=N` (1-8, default 1) runs the video stage's per-frame downscale (swscale) on N threads, with frames bit-identical to the serial path. Try 2-4 on a machine with many cores. CI Windows runners (few cores) show no gain: there the downscale is not the bottleneck (decode is about 62% of the 16 s video stage), and 2 threads came out 0.15-0.7 s slower (scan-flake run 43049643464). On this Mac's M-series chip, case C's video stage went from 75 s to 62 s with 2 threads.
+
 ## Section arrangement (Python API, `amv_matcher/arrange.py`)
 
 `plan_arrangement(song, video, max_moves=3, lead_s=None)` rearranges whole song sections so the
