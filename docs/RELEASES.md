@@ -1,6 +1,6 @@
 # Builds (private)
 
-Builds are for personal use only: the bundled FFmpeg includes GPL components (libx264/libx265); do not redistribute. See `THIRD-PARTY-NOTICES.md`. There are no GitHub Releases and no public binaries.
+Builds are for personal use only: the bundled FFmpeg includes GPL components (libx264/libx265); do not redistribute. See `THIRD-PARTY-NOTICES.md`. The only GitHub Releases are encrypted (below); there are no unencrypted binaries anywhere.
 
 ## How CI delivers a build
 Each push, pull request or manual run builds and self-tests the app. If the repository secret `AMV_ARTIFACT_KEY` is set, the app is packed into an AES-256 encrypted 7z (header encryption on) and uploaded as the Actions artifact `AMV-Matcher-<label>-encrypted`, kept for **7 days**. If the secret is missing, no binary is uploaded at all; only `selftest.log` is, and the run prints "AMV_ARTIFACT_KEY not set: no binary artifact uploaded".
@@ -17,3 +17,13 @@ GitHub repo > Settings > Secrets and variables > Actions > New repository secret
 
 ## Password handling (honest note)
 The password is passed to `7z` on the runner's command line. GitHub masks it in logs, and the runner is ephemeral, but it is briefly visible in that runner's process list. The intermediate macOS zip is created outside `enc/` and deleted in the same step, so it is never uploaded.
+
+## GitHub Releases (encrypted)
+Pushing a tag `v<major>.<minor>.<patch>[-suffix]` (or running the workflow manually with the `tag` input set to an existing tag) builds all three targets, and only when every leg is green (tests, build, selftests, encrypted packaging) a `release` job publishes a GitHub Release. Versions below 1.0 are marked pre-release.
+
+- **Assets (exactly four):** `AMV-Matcher-<ver>-windows.7z`, `-macos-arm.7z`, `-macos-intel.7z` and `SHA256SUMS.txt`. They are the same AES-256, header-encrypted archives as the Actions artifacts, renamed. Nothing else is attached.
+- **Guards (the job fails otherwise):** each asset has the 7z signature, listing it without a password fails (headers encrypted), and listing it with the key shows `Encrypted = +` for every entry and no `Encrypted = -`. A missing `AMV_ARTIFACT_KEY` also fails the job; nothing is released unencrypted.
+- **Key handling:** the secret is only read into the environment of the verify step, never echoed, and passed to `7z` the same way as in the build step (see Password handling). The release job is the only one with `contents: write`.
+- **Notes:** commit subjects since the previous tag (a final tag compares with the previous final tag, not an rc) plus a fixed install block: 7-Zip, password = the owner's key, SmartScreen "Run anyway", macOS right-click > Open, `ditto -x -k` for the inner zip.
+- **To release:** `git tag v0.9.0 && git push origin v0.9.0`. Try `v0.9.0-rc1` first; remove a bad one with `gh release delete v0.9.0-rc1 --cleanup-tag`.
+- Docs-only pushes to a branch do not start a build (`paths-ignore`); tag pushes always do.

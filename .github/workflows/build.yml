@@ -2,6 +2,7 @@ name: build
 on:
   push:
     branches: [main, master]
+    tags: ['v*']
     paths-ignore:
       - 'docs/**'
       - '**/*.md'
@@ -9,6 +10,11 @@ on:
       - 'LICENSE*'
   pull_request:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing v* tag to build and publish as a GitHub Release (empty = plain build, no release)'
+        required: false
+        default: ''
 concurrency:
   group: build-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -27,6 +33,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag != '' && format('refs/tags/{0}', inputs.tag) || github.ref }}
       - uses: actions/setup-python@v6
         with: {python-version: "3.11", cache: pip}
       - name: Install (macOS, pinned by constraints-macos.txt)
@@ -103,3 +111,82 @@ jobs:
           path: selftest.log
           retention-days: 7
           if-no-files-found: ignore
+
+  # Encrypted GitHub Release: only after every matrix leg (tests, build, selftests, encrypted packaging) is green.
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.tag != '')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag != '' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: AMV-Matcher-*-encrypted
+          path: in
+      - name: Verify encrypted archives and publish the release
+        shell: bash
+        env:
+          AMV_ARTIFACT_KEY: ${{ secrets.AMV_ARTIFACT_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          TAG_INPUT: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -eu +x
+          TAG="${TAG_INPUT:-$REF_NAME}"
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$'; then
+            echo "bad tag name: $TAG"; exit 1
+          fi
+          VER="${TAG#v}"
+          if [ -z "$AMV_ARTIFACT_KEY" ]; then
+            echo "AMV_ARTIFACT_KEY not set: refusing to release (would have no encrypted assets)"; exit 1
+          fi
+          command -v 7zz >/dev/null || command -v 7z >/dev/null || sudo apt-get install -y p7zip-full >/dev/null
+          SZ=$(command -v 7zz || command -v 7z)
+          mkdir -p out
+          for L in windows macos-arm macos-intel; do
+            SRC="in/AMV-Matcher-${L}-encrypted/AMV-Matcher-${L}.7z"
+            DST="out/AMV-Matcher-${VER}-${L}.7z"
+            [ -f "$SRC" ] || { echo "missing encrypted archive for $L"; exit 1; }
+            # 1) 7z signature
+            [ "$(head -c 6 "$SRC" | od -An -tx1 | tr -d ' \n')" = "377abcaf271c" ] || { echo "$L: not a 7z"; exit 1; }
+            # 2) headers encrypted: listing without a password must fail
+            if "$SZ" l -slt "$SRC" </dev/null >/dev/null 2>&1; then
+              echo "$L: archive lists WITHOUT a password (headers not encrypted)"; exit 1
+            fi
+            # 3) with the key every entry must read Encrypted = +
+            "$SZ" l -slt -p"$AMV_ARTIFACT_KEY" "$SRC" > "list-$L.txt" 2>/dev/null || { echo "$L: cannot list with the key"; exit 1; }
+            grep -q '^Encrypted = +' "list-$L.txt" || { echo "$L: no encrypted entries"; exit 1; }
+            if grep -q '^Encrypted = -' "list-$L.txt"; then echo "$L: unencrypted entry present"; exit 1; fi
+            cp "$SRC" "$DST"
+            echo "$L: 7z, encrypted headers and entries OK"
+          done
+          rm -f list-*.txt
+          [ "$(ls out | wc -l | tr -d ' ')" = "3" ] || { echo "unexpected asset set"; exit 1; }
+          (cd out && sha256sum AMV-Matcher-*.7z > SHA256SUMS.txt)
+          # notes: commit subjects since the previous tag + fixed install block
+          EXC=""
+          case "$TAG" in *-*) ;; *) EXC="--exclude=v*-*" ;; esac   # a final tag is compared with the previous final tag, not an rc
+          PREV=$(git describe --tags --abbrev=0 --match 'v*' $EXC "${TAG}^" 2>/dev/null || true)
+          {
+            echo "## Changes"
+            if [ -n "$PREV" ]; then git log --no-merges --format='- %s' "${PREV}..${TAG}"; else git log --no-merges --format='- %s' "${TAG}"; fi
+            echo
+            echo "## How to install"
+            echo "1. Download the archive for your system: \`windows\`, \`macos-arm\` (Apple silicon) or \`macos-intel\`, plus \`SHA256SUMS.txt\` to check it."
+            echo "2. The archive is encrypted (AES-256, file names hidden). Open it with [7-Zip](https://www.7-zip.org/) (macOS: \`7zz\` or Keka); the password is the owner's key."
+            echo "3. Windows: the extracted folder runs as is. SmartScreen may warn on first launch: More info > Run anyway."
+            echo "4. macOS: the 7z holds a zip made with \`ditto\`; extract it with \`ditto -x -k <file>.zip <dest>\` or Archive Utility. First launch: right-click the app > Open."
+            echo
+            echo "Personal-use build: the bundled FFmpeg includes GPL components; see THIRD-PARTY-NOTICES.md."
+          } > notes.md
+          MAJOR="${VER%%.*}"
+          PRE=""
+          if [ "$MAJOR" -lt 1 ]; then PRE="--prerelease"; fi
+          gh release create "$TAG" out/AMV-Matcher-*.7z out/SHA256SUMS.txt --verify-tag --title "AMV Matcher $VER" --notes-file notes.md $PRE
+          gh release view "$TAG" --json url,isPrerelease,assets --jq '{url,isPrerelease,assets:[.assets[]|{name,size}]}'
