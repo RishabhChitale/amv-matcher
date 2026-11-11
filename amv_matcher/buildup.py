@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from ._memo import IdMemo, frozen
+from ._memo import IdMemo, frozen, pearson, pstd
 
 HZ = 10.0
 SMOOTH_S = 1.0
@@ -208,9 +208,9 @@ def _intensity_pct(song, video, off):
         return 50.0
     v = sp[j0:j0 + m]
     s = seg[:m]
-    if np.std(v) < 1e-9 or np.std(s) < 1e-9:
+    if pstd(v) < 1e-9 or pstd(s) < 1e-9:
         return 50.0
-    return float(50.0 * (np.corrcoef(v, s)[0, 1] + 1.0))
+    return float(50.0 * (pearson(v, s) + 1.0))
 
 
 def build_stats(song: dict, video: dict, off: float, stems_feats: dict = None):

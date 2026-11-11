@@ -59,3 +59,28 @@ def farr(x) -> np.ndarray:
     if hit is not None:
         return hit
     return _ARR.put(key, (x,), frozen(np.asarray(x, dtype=float)))
+
+
+# Exact low-overhead replicas of np.std / np.corrcoef(a, b)[0, 1] for 1-D float inputs (F16 pass 2). They
+# run the very same ufunc reductions and the same dot as numpy, in the same order, so the results match
+# numpy bit for bit (checked on random, rounded, constant and anti-correlated inputs); they only skip
+# numpy's wrapper overhead, which dominated the auto-sync scan's thousands of short calls.
+
+def pstd(a: np.ndarray) -> float:
+    """np.std(a) for a non-empty 1-D array."""
+    n = a.shape[0]
+    d = a - np.true_divide(np.add.reduce(a, keepdims=True), n)
+    np.multiply(d, d, out=d)
+    return np.sqrt(np.true_divide(np.add.reduce(d), n))
+
+
+def pearson(a, b) -> float:
+    """np.corrcoef(a, b)[0, 1] for two 1-D arrays of the same length >= 2."""
+    X = np.empty((2, len(a)))
+    X[0] = a
+    X[1] = b
+    X -= X.mean(axis=1)[:, None]
+    c = np.dot(X, X.T.conj())
+    c *= np.true_divide(1, len(a) - 1)
+    v = c[0, 1] / np.sqrt(c[0, 0]) / np.sqrt(c[1, 1])
+    return min(max(v, -1.0), 1.0)

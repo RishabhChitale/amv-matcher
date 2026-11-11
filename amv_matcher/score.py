@@ -6,7 +6,7 @@ import os
 import numpy as np
 
 from . import motif
-from ._memo import farr
+from ._memo import IdMemo, farr, pearson, pstd
 
 # F15 (story gate cap, story/key-moment fields) is held out of releases. Off by default; AMV_F15=1 turns it on.
 F15_ENABLED = os.environ.get("AMV_F15", "") == "1"
@@ -152,11 +152,19 @@ LOCK_EXCL = 0.02              # exclude +-2% around the song period from the nul
 _LOCK_CACHE = {}
 
 
+_GRID_REF = IdMemo(256)
+
+
 def _grid_ref(song):
     g = _beats(song)
     if len(g) < 2:
         return None
-    return float(np.median(np.diff(g))), float(g[0])
+    if g.flags.writeable:          # not a memoised feature array: compute every time
+        return float(np.median(np.diff(g))), float(g[0])
+    key, hit = _GRID_REF.get((g,))
+    if hit is not None:
+        return hit
+    return _GRID_REF.put(key, (g,), (float(np.median(np.diff(g))), float(g[0])))
 
 
 def _lock(song, ev_t, ev_w):
@@ -354,16 +362,17 @@ def _arc_pct_at(song, video, off):
     seg = se[max(i0, 0):max(i0, 0) + max(len(ve) - j0, 0)]
     m = min(len(seg), len(ve) - j0)
     v = ve[j0:j0 + m] if m > 0 else ve[:0]
-    if m < 3 or np.std(seg[:m]) < 1e-9 or np.std(v) < 1e-9:
+    if m < 3 or pstd(seg[:m]) < 1e-9 or pstd(v) < 1e-9:
         r = 0.0
     else:
-        r = float(np.corrcoef(v, seg[:m])[0, 1])
+        r = float(pearson(v, seg[:m]))
     pct = 50.0 * (r + 1.0)
     matches = 0
     drops = farr(song.get("drops", [])) - off
-    for a, _b in video.get("peak_segments", []):
-        if len(drops) and np.min(np.abs(drops - a)) <= DROP_MATCH_S:
-            matches += 1
+    pk = video.get("peak_segments", [])
+    if len(drops) and len(pk):
+        a = np.array([float(p[0]) for p in pk])
+        matches += int(np.count_nonzero(np.min(np.abs(drops[None, :] - a[:, None]), axis=1) <= DROP_MATCH_S))
     for va, vb in video.get("lulls", []):
         if any(sa - off < vb and sb - off > va for sa, sb in song.get("lulls", [])):
             matches += 1

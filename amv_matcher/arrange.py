@@ -27,6 +27,7 @@ import numpy as np
 from . import motif
 from . import score as S
 from . import splice as SP
+from ._memo import pearson as _pearson, pstd
 
 MOVE_PENALTY = 0.6        # combined-score points charged per move
 START_PENALTY = 0.6       # soft penalty when the first section is not an intro / chorus / drop
@@ -192,9 +193,9 @@ def _proxy(secs, order, venv, vd, pearson=False):
         return 1e9
     if pearson:       # prefer_energy: rank by video-vs-song energy correlation (what the arc score rewards)
         a, b = cat[:m], venv[:m]
-        if m < 5 or a.std() < 1e-9 or b.std() < 1e-9:
+        if m < 5 or pstd(a) < 1e-9 or pstd(b) < 1e-9:
             return 1e9
-        return float((1.0 - np.corrcoef(a, b)[0, 1]) * 50.0)
+        return float((1.0 - _pearson(a, b)) * 50.0)
     return float(np.mean((cat[:m] - venv[:m]) ** 2)) * 100.0
 
 
