@@ -244,6 +244,112 @@ def _publish_partial(job: dict, r: dict):
     job["partial"] = job.get("partial", []) + [dict(r)]
 
 
+def _song_row(job: dict, p, song: dict, sc: dict) -> dict:
+    return {"path": str(p), "name": p.name, "source": "song", "bpm": song["bpm"],
+            "duration": song["duration"], **sc, "natural_total_pct": sc.get("total_pct"),
+            "auto_sync_cached": _cached_for(job.get("video_path"), p)}
+
+
+def _score_loop_serial(job: dict, video: dict, songs: list, results: list, skipped: list):
+    ahead = _prefetch_depth()
+    _prefetch_songs(songs[:ahead])
+    for i, p in enumerate(songs, 1):
+        job.update(done=i - 1, message=f"Analyzing song {i}/{len(songs)}: {p.name}")
+        if ahead and i - 1 + ahead < len(songs):
+            _prefetch_songs([songs[i - 1 + ahead]])     # keep `ahead` analyses queued past the current song
+        try:
+            song = _song(str(p))
+            sc = score(song, video, allow_negative=True)
+            results.append(_song_row(job, p, song, sc))
+            _publish_partial(job, results[-1])
+        except Exception as e:  # reported, never silently skipped
+            skipped.append({"path": str(p), "name": p.name, "reason": f"{type(e).__name__}: {e}"})
+
+
+# Songs analysed AND scored concurrently in the worker pool (0 = off: the serial loop above). Scoring one song costs
+# ~1.4-2.9 s of CPU on the scan thread, which serialised a scan of N songs behind it. Default min(pool workers, 4).
+SCAN_PAR_ENV = "AMV_SCAN_PAR"
+
+
+def _score_par(n_songs: int) -> int:
+    """Window size for parallel scoring, or 0 for the serial loop (no pool / AMV_WORKERS=0 / a pool without usable
+    stats(), as in tests with a fake pool / fewer than two songs / AMV_SCAN_PAR=0)."""
+    if n_songs < 2:
+        return 0
+    wp = _wp()
+    if wp is None:
+        return 0
+    try:
+        workers = int(wp.stats()["workers"])
+    except Exception:
+        return 0
+    if workers < 2:
+        return 0
+    env = os.environ.get(SCAN_PAR_ENV)
+    k = int(env) if env and env.strip().lstrip("-").isdigit() else min(workers, 4)
+    return max(0, min(k, workers, n_songs))
+
+
+def _score_loop_parallel(job: dict, video: dict, songs: list, results: list, skipped: list, window: int):
+    """Same results as the serial loop, with up to `window` song_score jobs in flight in the worker pool. Jobs are
+    consumed strictly in scan order (deterministic results/partial order); each is analysis + score() run by the same
+    code on the same inputs in a worker. Any job that does not return a plain score (a worker crash, a decode or
+    scoring error, a timeout) is redone by the serial path for that song, so crash fallback and the reported
+    reasons are exactly the serial ones. Outstanding jobs are cancelled on any exit."""
+    from .workers import SharedParam
+    wp = _wp()
+    shared = SharedParam(video)
+    jids: dict = {}
+
+    def submit(i):
+        try:
+            jids[i] = wp.submit("song_score", str(songs[i]), 1, video=shared)
+        except Exception:
+            jids[i] = None
+
+    nxt = 0
+    try:
+        for i, p in enumerate(songs):
+            job.update(done=i, message=f"Analyzing song {i + 1}/{len(songs)}: {p.name}")
+            while nxt < len(songs) and nxt < i + window:
+                submit(nxt)
+                nxt += 1
+            out = None
+            jid = jids.pop(i, None)
+            while jid is not None:
+                st = wp.status(jid)
+                if st is None or st["state"] in ("error", "cancelled"):
+                    break
+                if st["state"] == "done":
+                    out = st["result"]
+                    break
+                time.sleep(0.03)
+            try:
+                if out is not None and "sc" in out and "score_error" not in out:
+                    try:    # the worker wrote songs.json: drop this process's stale in-memory copy (as _song does)
+                        from . import audio as _audio
+                        c = get_cache(_audio.CACHE_PATH)
+                        with c.lock:
+                            c.data = None
+                    except Exception:
+                        pass
+                    song, sc = {"bpm": out["bpm"], "duration": out["duration"]}, out["sc"]
+                else:
+                    song = _song(str(p))
+                    sc = score(song, video, allow_negative=True)
+                results.append(_song_row(job, p, song, sc))
+                _publish_partial(job, results[-1])
+            except Exception as e:
+                skipped.append({"path": str(p), "name": p.name, "reason": f"{type(e).__name__}: {e}"})
+    finally:
+        for jid in jids.values():
+            if jid is not None:
+                try:
+                    wp.cancel(jid)
+                except Exception:
+                    pass
+
+
 def _score_songs(job: dict, video: dict, songs: list):
     """Analyze + score songs into job (results/skipped); shared by scan and score-songs. A song shorter than the video
     is scored over its best video stretch like any other (F2b); only an unreadable song is skipped. `too_short` stays
@@ -267,21 +373,11 @@ def _score_songs(job: dict, video: dict, songs: list):
         except Exception as e:
             skipped.append({"path": orig["path"], "name": orig["name"], "source": "original",
                             "reason": f"{type(e).__name__}: {e}"})
-    ahead = _prefetch_depth()
-    _prefetch_songs(songs[:ahead])
-    for i, p in enumerate(songs, 1):
-        job.update(done=i - 1, message=f"Analyzing song {i}/{len(songs)}: {p.name}")
-        if ahead and i - 1 + ahead < len(songs):
-            _prefetch_songs([songs[i - 1 + ahead]])     # keep `ahead` analyses queued past the current song
-        try:
-            song = _song(str(p))
-            sc = score(song, video, allow_negative=True)
-            results.append({"path": str(p), "name": p.name, "source": "song", "bpm": song["bpm"],
-                            "duration": song["duration"], **sc, "natural_total_pct": sc.get("total_pct"),
-                            "auto_sync_cached": _cached_for(job.get("video_path"), p)})
-            _publish_partial(job, results[-1])
-        except Exception as e:  # reported, never silently skipped
-            skipped.append({"path": str(p), "name": p.name, "reason": f"{type(e).__name__}: {e}"})
+    par = _score_par(len(songs))
+    if par:
+        _score_loop_parallel(job, video, songs, results, skipped, par)
+    else:
+        _score_loop_serial(job, video, songs, results, skipped)
     ok = [r for r in results if r["eligible"]]
     ref = next((r for r in ok if r.get("source") == "original"), None)
     reference = {"original_total": ref["total_pct"], "original_sync": ref["sync_pct"]} if ref else None

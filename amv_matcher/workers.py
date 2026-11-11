@@ -223,7 +223,41 @@ def _proxy(path, **_):
     return {"proxy": out}
 
 
+class SharedParam:
+    """A large read-only job param (e.g. one video analysis scored against hundreds of songs). It json-hashes as its
+    short content tag, not its content, so submitting N jobs that share it costs N cheap dedup keys, not N dumps."""
+    def __init__(self, value):
+        import pickle
+        self.value = value
+        self.tag = hashlib.sha1(pickle.dumps(value, 4)).hexdigest()
+
+    def __str__(self):
+        return "shared:" + self.tag
+
+
+def _song_score(path, video=None, cache_path=None, **_):
+    """Analyse one song (songs.json cache hit when fresh) and score it against ``video`` exactly as the scan loop
+    does: ``score(song, video, allow_negative=True)``. Returns bpm/duration + the score dict. A scoring exception
+    is returned as ``score_error`` ("Type: message") so the caller reports it as the serial loop would; an analysis
+    exception propagates like a song_analysis job's."""
+    from . import audio
+    from .score import score
+    if os.environ.get("AMV_TEST_CRASH_WORKER") == "1":    # test hook: die like a SIGSEGV (worker process only)
+        os._exit(139)
+    report_progress(5)
+    song = audio.analyze_song(path, cache_path=_songs_cache_path(cache_path))
+    v = video.value if isinstance(video, SharedParam) else video
+    out = {"bpm": song["bpm"], "duration": song["duration"]}
+    try:
+        out["sc"] = score(song, v, allow_negative=True)
+    except Exception as e:  # noqa: BLE001 - same reason string the serial loop would record
+        out["score_error"] = f"{type(e).__name__}: {e}"
+    report_progress(100)
+    return out
+
+
 register_kind("song_analysis", _song_analysis, _song_cached)
+register_kind("song_score", _song_score)
 register_kind("video_analysis", _video_analysis, _video_cached)
 register_kind("warm", _warm)
 register_kind("probe", _probe)
