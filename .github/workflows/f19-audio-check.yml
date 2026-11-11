@@ -2,7 +2,7 @@ name: f19-audio-check
 # Manual only. Builds the frozen Windows app at one commit and checks the player's audio sync (F19) with synthetic media:
 # audio.playbackRate must stay put while audio and video are in sync (window.__aud.rates), no JS errors, and the original
 # song must play through the plain /api/audio URL (never a planned/spliced render). tools/f19_audio_check.py comes from
-# the dispatched ref. Mode 'webview2' drives the app's own WebView2 over DevTools; 'browser' drives headless Edge against
+# the dispatched ref. Mode 'webview2' drives the app's own WebView2 over DevTools (build copy gets a one-line debug-port hook); 'browser' drives headless Edge against
 # the frozen app's local server. Synthetic media only; no secrets; nothing is released.
 on:
   workflow_dispatch:
@@ -41,6 +41,20 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-dev.txt
+      - name: Debug-port hook (webview2 mode only; runner copy, not committed)
+        if: matrix.mode == 'webview2'
+        shell: python
+        run: |
+          # pywebview only takes a DevTools port from webview.settings, and the app never sets it. Add exactly that line to this
+          # build's copy of app_main.py so the check can attach to the app's own WebView2. The browser job builds the stock app.
+          p = "app_main.py"
+          s = open(p, encoding="utf-8").read()
+          old = "    webview.start(bind, menu=MENU, debug=bool(os.environ.get(\"AMV_DEBUG\")))"
+          assert s.count(old) == 1, "webview.start line not found exactly once"
+          new = ("    if os.environ.get(\"AMV_F19_CDP_PORT\"):\n"
+                 "        webview.settings[\"REMOTE_DEBUGGING_PORT\"] = int(os.environ[\"AMV_F19_CDP_PORT\"])\n" + old)
+          open(p, "w", encoding="utf-8").write(s.replace(old, new))
+          print("patched", p)
       - name: Build
         run: python -m PyInstaller --noconfirm amv_matcher.spec
       - name: Check audio sync in the frozen app

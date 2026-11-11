@@ -78,8 +78,8 @@ class CDP:
         finally:
             self.ws.settimeout(30)
 
-    def ev(self, expr):
-        r = self.call("Runtime.evaluate", expression=expr, returnByValue=True, awaitPromise=True)
+    def ev(self, expr, gesture=False):
+        r = self.call("Runtime.evaluate", expression=expr, returnByValue=True, awaitPromise=True, userGesture=gesture)
         if "exceptionDetails" in r:
             raise RuntimeError(str(r["exceptionDetails"])[:400])
         return r["result"].get("value")
@@ -138,10 +138,14 @@ def main():
     synth.make_video(video, seconds=max(60, a.secs + 20))
     synth.make_click_track(song, 120, seconds=max(60, a.secs + 20))
 
-    os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (
-        "--remote-debugging-port=%d --remote-allow-origins=* --autoplay-policy=no-user-gesture-required" % PORT) if a.mode == "webview2" else ""
-    if a.mode != "webview2":
-        os.environ.pop("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", None)
+    # pywebview overrides WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS with its own CreationProperties, so the debug port can only
+    # come from webview.settings['REMOTE_DEBUGGING_PORT']. The unmodified app has no hook for it: the CI workflow patches ONE
+    # line into the runner's build copy of app_main.py (reading AMV_F19_CDP_PORT); the repo file is untouched.
+    os.environ.pop("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", None)
+    if a.mode == "webview2":
+        os.environ["AMV_F19_CDP_PORT"] = str(PORT)
+    else:
+        os.environ.pop("AMV_F19_CDP_PORT", None)
     exe = Path(a.exe).resolve() if a.exe else None
     proc, port, startup = st.launch(exe, work, "f19", None, data, tmp)
     print("f19_setup ref=%s mode=%s app_port=%d startup_s=%.1f" % (a.ref, a.mode, port, startup), flush=True)
@@ -189,7 +193,7 @@ def main():
              "window.__raf=0;(function f(){__raf++;requestAnimationFrame(f)})();window.__pe=[];const _p=aud.play.bind(aud);aud.play=()=>{const r=_p();r.catch(e=>__pe.push(String(e)));return r}")
         pre = c.ev("JSON.stringify({asrc:aud.currentSrc, spliceActive:spliceActive(), spUrl:S.sp.url||'', inUse:!!S.inUse, pv:vid.preservesPitch, pa:aud.preservesPitch})")
         pre = json.loads(pre)
-        c.ev("document.getElementById('b-play').click()")
+        c.ev("document.getElementById('b-play').click()", gesture=True)   # counts as a user gesture (WebView2 has no autoplay flag)
         t0 = time.time()
         samples = []
         for i in range(int(a.secs)):
