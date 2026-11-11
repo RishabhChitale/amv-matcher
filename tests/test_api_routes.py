@@ -90,8 +90,11 @@ def test_waveform_and_pump_on_allowed_song(env):
     r = c.get("/api/waveform", params={"path": str(wav)})
     assert r.status_code == 200, r.text
     d = r.json()
-    for k in ("peaks", "duration", "bpm", "beat_times", "drops", "lulls", "energy_curve", "energy_hz", "sections"):
+    for k in ("peaks", "duration", "bpm", "beat_times", "drops", "lulls", "energy_curve", "energy_hz", "sections",
+              "booms", "main_boom"):
         assert k in d
+    assert isinstance(d["booms"], list)
+    assert d["main_boom"] is None or isinstance(d["main_boom"], (int, float, dict))
     assert 7 < d["duration"] < 9
     r = c.get("/api/pump", params={"path": str(wav), "fps": 24})
     assert r.status_code == 200
@@ -115,3 +118,16 @@ def test_static_traversal_and_missing(env):
     assert c.get("/static/").status_code == 404
     some = next(p for p in server.STATIC.iterdir() if p.is_file())
     assert c.get(f"/static/{some.name}").status_code == 200
+
+
+def test_video_info_marker_fields_additive():
+    from amv_matcher import server
+    base = {"duration": 5.0, "fps": 24.0, "motion_tempo_bpm": 100, "energy_curve": [], "energy_hz": 10,
+            "segments": [], "segments_struct": [], "lulls": [], "peak_segments": [], "cut_times": [],
+            "shots": [], "motion_peaks": []}
+    old = server._video_info(dict(base))            # old cache entry without markers
+    assert old["visual_booms"] == [] and old["camera_events"] == []
+    vb = [{"t": 1.0, "conf": 0.8, "kind": "flash", "strength": 0.5}]
+    ce = [{"start": 0.5, "end": 1.5, "kind": "pan", "speed": 0.3, "smooth": 0.9, "direction": 1}]
+    new = server._video_info({**base, "visual_booms": vb, "camera_events": ce})
+    assert new["visual_booms"] == vb and new["camera_events"] == ce

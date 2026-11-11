@@ -182,6 +182,9 @@ def _video_info(video: dict) -> dict:
     info["preview_proxy"] = bool(video.get("preview_proxy"))
     info["cut_count"] = len(video["cut_times"])
     info["peak_count"] = len(video["motion_peaks"])
+    # F7 markers (additive; cached video entries carry them from the same analysis pass as camera_motion)
+    info["visual_booms"] = video.get("visual_booms") or []
+    info["camera_events"] = video.get("camera_events") or []
     return info
 
 
@@ -539,6 +542,7 @@ def waveform(path: str):
     return {"peaks": song_waveform(str(p)), "duration": song["duration"], "bpm": song["bpm"],
             "beat_times": song["beat_times"], "drops": song["drops"], "lulls": song["lulls"],
             "beat_strengths": song.get("beat_strengths", []),
+            "booms": song.get("booms") or [], "main_boom": song.get("main_boom"),
             "energy_curve": song["energy_curve"], "energy_hz": song["energy_hz"],
             "sections": _sections_with_stems(p, song)}
 
