@@ -1,0 +1,74 @@
+name: sync-timing
+# Manual only. Builds the frozen Windows app at one or two commits and times auto-sync on the same synthetic pair
+# (stdlib-generated media, tools/sync_timing.py taken from the commit that is dispatched, so both builds run the same
+# script). Prints per-step seconds plus plan/DET hashes so a before/after speed-up can be checked for identical output.
+# Synthetic media only; no secrets; nothing is released.
+on:
+  workflow_dispatch:
+    inputs:
+      ref_a:
+        description: 'Commit A (before)'
+        required: true
+        default: '9c34aca'
+      ref_b:
+        description: 'Commit B (after / comparison; empty = skip)'
+        required: false
+        default: 'aee9699'
+      rounds:
+        description: 'Rounds per commit (fresh data dir and app process each)'
+        default: '2'
+      songs:
+        description: 'Songs to auto-sync per round'
+        default: '2'
+concurrency:
+  group: sync-timing-${{ github.ref }}
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  timing:
+    strategy:
+      fail-fast: false
+      matrix:
+        ref: ${{ fromJSON(inputs.ref_b != '' && format('["{0}","{1}"]', inputs.ref_a, inputs.ref_b) || format('["{0}"]', inputs.ref_a)) }}
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ matrix.ref }}
+      - name: Same timing tool for every build (from the dispatched ref)
+        uses: actions/checkout@v5
+        with:
+          path: _tool
+          sparse-checkout: tools
+      - uses: actions/setup-python@v6
+        with: {python-version: "3.11", cache: pip}
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+      - name: Build
+        run: python -m PyInstaller --noconfirm amv_matcher.spec
+      - name: Time auto-sync in the frozen app
+        shell: pwsh
+        timeout-minutes: 40
+        env:
+          REF: ${{ matrix.ref }}
+          ROUNDS: ${{ inputs.rounds }}
+          SONGS: ${{ inputs.songs }}
+        run: |
+          $w = Join-Path $env:RUNNER_TEMP "amv-sync"
+          python _tool\tools\sync_timing.py --exe "dist\AMV Matcher\AMV Matcher.exe" -n $env:SONGS --seconds 180 --rounds $env:ROUNDS --ref $env:REF --work $w 2>&1 | ForEach-Object { Write-Host $_ }
+          if ($LASTEXITCODE -ne 0) { throw "sync_timing failed on $env:REF (exit $LASTEXITCODE)" }
+      - name: Upload logs
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: sync-timing-${{ matrix.ref }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/amv-sync/data-*/app.log
+            ${{ runner.temp }}/amv-sync/stdout-*.txt
+          if-no-files-found: ignore
+          retention-days: 7
