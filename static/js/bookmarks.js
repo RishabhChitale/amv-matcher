@@ -213,6 +213,12 @@
     BM.items.forEach(b => { const dx = Math.abs(tx(b.t) - x), dy = Math.abs(rowY(b.track) - y); if (dx <= R + 3 && dy <= R + 6 && dx < bd) { best = b; bd = dx; } });
     return best;
   }
+  // hover tooltip (docs/MARKERS.md): "<Type> (yours) · <m:ss.mmm> · <note, first 60 chars>"; no file names.
+  const mmssmmm = t => { t = Math.max(0, t || 0); const m = Math.floor(t / 60); return m + ':' + (t - m * 60).toFixed(3).padStart(6, '0'); };
+  BM.tipText = b => { const ty = T[b.type] || T.other, n = String(b.note || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+    return ty.label + ' (yours) \u00b7 ' + mmssmmm(b.t) + ' \u00b7 ' + (n || 'no note'); };
+  const regTip = () => { if (window.MKLegend && MKLegend.addTip && !BM._tip) { BM._tip = 1; MKLegend.addTip(c => { const b = hit(c.x, c.y); return b && !mdrag ? [{ text: BM.tipText(b) }] : []; }); } };
+  regTip(); window.addEventListener('load', regTip);
   let mdrag = null;
   const pt = e => { const r = cv.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
   cv.addEventListener('pointerdown', e => {

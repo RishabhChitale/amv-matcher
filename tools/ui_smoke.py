@@ -1096,6 +1096,15 @@ def main():
                 c.mouse("mousePressed", mx, my); c.mouse("mouseMoved", mx + 50, my); c.mouse("mouseMoved", mx + 100, my); c.mouse("mouseReleased", mx + 100, my); c.pump(0.3)
                 t1 = c.ev("BM.items[0].t")
                 check("bookmarks: dragging a marker moves it", t1 > t0 + 0.01 and c.ev("BM.items.length") == 2, "%s -> %s" % (t0, t1))
+                # hover tooltip per docs/MARKERS.md: "<Type> (yours) . m:ss.mmm . note", real pointer move
+                c.ev("BM.update(BM.items[0].id,{type:'encore',note:'" + "x" * 5 + " long note " + "y" * 70 + "'})"); c.pump(0.2)
+                hp = c.ev("(()=>{const r=document.getElementById('tl').getBoundingClientRect(),b=BM.items[0];return [r.left+t2x(b.t),r.top+RULER+12]})()")
+                c.mouse("mouseMoved", 5, 5); c.mouse("mouseMoved", hp[0], hp[1]); c.pump(0.4)
+                tt = c.ev("(()=>{const e=document.getElementById('mk-tip');if(!e||e.classList.contains('hidden'))return null;const r=e.getBoundingClientRect();const d=[...e.children].find(x=>/\(yours\)/.test(x.textContent));return {t:d?d.textContent:'',all:e.textContent,w:r.width,h:r.height,l:r.left,r:r.right,b:r.bottom}})()")
+                mm = re.match(r"^Encore \(yours\) \u00b7 \d+:\d\d\.\d{3} \u00b7 (.+)$", (tt or {}).get("t") or "")
+                check("bookmark tooltip: '<Type> (yours) · m:ss.mmm · note' (note cut at 60, no file names)", bool(mm) and len(mm.group(1)) <= 60 and ".mp4" not in tt["t"] and ".wav" not in tt["t"], str(tt))
+                check("bookmark tooltip: fully on screen", bool(tt) and tt["l"] >= 0 and tt["r"] <= c.ev("innerWidth") and tt["b"] <= c.ev("innerHeight"), str(tt))
+                c.mouse("mouseMoved", 5, 5); c.pump(0.3)
                 # B key adds at the playhead on the focused track
                 c.ev("document.activeElement&&document.activeElement.blur();window.getSelection&&getSelection().removeAllRanges()"); c.pump(0.1)
                 c.key("b", "KeyB", vk=66, text="b"); c.pump(0.3)
