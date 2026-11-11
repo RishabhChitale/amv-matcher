@@ -82,7 +82,7 @@
   // ---- detected markers from the server timeline log (docs/MARKERS.md) ----
   const D = {key: '', busy: false, booms: [], vbooms: [], cams: [], lulls: [], peaks: [], main: null};
   const mmss = t => { t = Math.max(0, t || 0); const m = Math.floor(t / 60); return m + ':' + (t - m * 60).toFixed(3).padStart(6, '0'); };
-  const span = (a, b) => { const f = x => Math.floor(x / 60) + ':' + (x % 60).toFixed(1).padStart(4, '0'); return f(a) + '-' + f(b); };
+  const span = (a, b) => { const f = x => { x = Math.max(0, x || 0); return Math.floor(x / 60) + ':' + (x % 60).toFixed(1).padStart(4, '0'); }; return f(a) + '-' + f(b); };
   const KIND = {motion: 'motion burst', flash: 'flash', zoom_punch: 'zoom punch', whip_pan: 'whip pan'};
   const kindText = k => String(k || '').split('+').map(x => KIND[x] || x.replace(/_/g, ' ')).join(' + ');
   const pct = c => 'conf ' + Math.round((c || 0) * 100) + '%';
@@ -138,7 +138,7 @@
     if (!hits.length) return hide();
     tip.innerHTML = hits.slice(0, 4).map(h => '<div><b></b><span></span></div>').join('');
     hits.slice(0, 4).forEach((h, i) => { const d = tip.children[i]; if (h.text) { d.firstChild.textContent = h.text; return; } d.firstChild.textContent = h.label; d.lastChild.textContent = (h.t != null ? ' @ ' + fmt(h.t) : '') + (h.conf != null ? ' · ' + (h.conf <= 1 ? Math.round(h.conf * 100) + '%' : h.conf) : ''); });
-    tip.classList.remove('hidden'); tip.style.left = Math.min(innerWidth - 230, ev.clientX + 12) + 'px'; tip.style.top = (ev.clientY + 16) + 'px';
+    tip.classList.remove('hidden'); const tw = tip.offsetWidth || 230, th = tip.offsetHeight || 40; tip.style.left = Math.max(4, Math.min(innerWidth - tw - 4, ev.clientX + 12)) + 'px'; tip.style.top = Math.max(4, Math.min(innerHeight - th - 4, ev.clientY + 16)) + 'px';
   }
   function hide() { tip.classList.add('hidden'); }
 

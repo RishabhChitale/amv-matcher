@@ -1139,6 +1139,15 @@ def main():
             c.mouse("mouseMoved", rb["vx"], rb["vy"]); c.pump(0.4)
             tx = c.ev("document.getElementById('mk-tip').innerText") or ""
             check("F7: visual boom tooltip 'Visual boom · t · motion burst + flash · conf 70%'", "Visual boom" in tx and "motion burst + flash" in tx and "conf 70%" in tx, tx)
+            # legend clamp: a quiet stretch that starts before t=0 must not print negative times and the tooltip must stay on screen
+            c.ev("(()=>{const d=MKLegend.detected;d.booms=[];d.main=null;window.__wfl=S.wf?S.wf.lulls:undefined;if(S.wf)S.wf.lulls=[[-500,500]];d.key='';draw();})()")
+            lb = c.ev("(()=>{const cv=document.getElementById('tl').getBoundingClientRect();return {x:cv.left+t2x(1),y:cv.top+26+84+30}})()")
+            c.mouse("mouseMoved", lb["x"], lb["y"]); c.pump(0.4)
+            tx = c.ev("document.getElementById('mk-tip').innerText") or ""
+            tr = c.ev("(()=>{const r=document.getElementById('mk-tip').getBoundingClientRect();return {l:r.left,r:r.right,t:r.top,b:r.bottom,w:innerWidth,h:innerHeight}})()")
+            check("legend: quiet stretch starting before t=0 shows no negative time", bool(__import__('re').fullmatch(r"Quiet stretch · \d+:\d\d\.\d-\d+:\d\d\.\d", tx.strip())), tx)
+            check("legend: tooltip stays inside the viewport", bool(tr and tr["l"] >= 0 and tr["t"] >= 0 and tr["r"] <= tr["w"] and tr["b"] <= tr["h"]), str(tr))
+            c.ev("(()=>{const d=MKLegend.detected;if(S.wf)S.wf.lulls=window.__wfl;d.key='';draw();})()")
             c.mouse("mouseMoved", 5, 5); c.pump(0.3)
             real_click("#mk-lg-btn")
             lt = c.ev("document.getElementById('mk-lg-body').innerText") or ""
