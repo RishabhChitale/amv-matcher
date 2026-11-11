@@ -280,6 +280,7 @@ Options are clamped to the engine limits: `lead_s` 0-0.12, `max_speed_dev` 0-0.2
 
 Returns `{job_id, status: "running", options}` (the clamped options). A second request for the same (video, song) pair while one runs returns `409 {detail, job_id}`.
 Poll `GET /api/auto-sync/{job_id}`; when `status` is `done`, `result` is the auto_sync result verbatim (`steps`, `final` incl. `effort`, `fit_after_effort`, `tightness`, `plan`, `why_not_100`).
+`result.stem_targets` is always present: the soft sync targets the search used, `[{t, t_song, kind, stem, weight}]` sorted by `t`. `t` and `t_song` are the same value, seconds in the **source song** (before any retime/splice); `kind` is `detail | vocal | bass`, `stem` the stem they came from, `weight` 0-1. They lie only inside the song's low-energy sections (see `final.quiet_sync*`). It is `[]` when the song has no cached stems or no quiet section.
 
 Progress: while running, the job also carries `steps_so_far` (list of the step payloads `auto_sync` reported through its `progress_cb`, oldest first) and `current_step` (a short name taken from the latest step, `""` when none / finished). Both stay `[]` / `""` if the installed `autosync.auto_sync` has no `progress_cb` parameter (checked with `inspect.signature`).
 

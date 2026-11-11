@@ -274,3 +274,29 @@ def test_prefer_energy_param_plumbed(tmp_path, monkeypatch):
         assert _wait(c, r.json()["job_id"])["status"] == "done"
     assert [x["prefer_energy"] for x in seen] == [True, True, False]
     assert keys[0] == keys[1] != keys[2]
+
+
+def test_result_carries_stem_targets(tmp_path, monkeypatch):
+    v, s = _setup(tmp_path, monkeypatch)
+    tg = [{"t": 12.3456, "weight": 0.71234, "stem": "vocals", "kind": "vocal"},
+          {"t": 20.0, "weight": 0.5, "stem": "bass", "kind": "bass"}]
+    monkeypatch.setattr(server, "_cached_stem_targets", lambda path, song: tg)
+    seen = {}
+
+    def fake_auto(song, video, stem_targets=None, **kw):
+        seen["tg"] = stem_targets
+        return {"steps": [], "final": {"total_pct": 90}, "plan": {}, "why_not_100": ""}
+    monkeypatch.setattr(server._autosync, "auto_sync", fake_auto)
+    c = TestClient(server.app)
+    jid = c.post("/api/auto-sync", json=_body(v, s)).json()["job_id"]
+    j = _wait(c, jid)
+    assert j["status"] == "done", j
+    assert seen["tg"] == tg
+    out = j["result"]["stem_targets"]
+    assert out[0] == {"t": 12.346, "t_song": 12.346, "kind": "vocal", "stem": "vocals", "weight": 0.712}
+    assert [d["kind"] for d in out] == ["vocal", "bass"]
+    # no stems -> empty list, never missing
+    monkeypatch.setattr(server, "_cached_stem_targets", lambda path, song: [])
+    monkeypatch.setattr(server, "_autosync_cache_file", tmp_path / "as3.json")
+    jid = c.post("/api/auto-sync", json=_body(v, s, lead_s=0.05)).json()["job_id"]
+    assert _wait(c, jid)["result"]["stem_targets"] == []
