@@ -720,6 +720,37 @@ def selftest(log_path: str = "") -> int:
         finally:
             wp.shutdown()
         print("selftest ok: worker pool job (probe) -> done in", round(time.time() - t2, 1), "s")
+        # 7. frozen scan of N synthetic songs through the real scan job: every song must be ranked (no silent skips/timeouts)
+        n_songs = 12
+        sd12 = tmp / "songs12"
+        sd12.mkdir()
+        rng = np.random.RandomState(7)
+        for k in range(n_songs):
+            bpm = 90 + 7 * k
+            y12 = (rng.standard_normal(sr * 6) * 0.01).astype(np.float32)
+            for t in np.arange(0.0, 6.0, 60.0 / bpm):
+                i = int(t * sr)
+                y12[i:i + 400] += np.hanning(400)[:max(0, min(400, len(y12) - i))] * 0.8
+            sf.write(str(sd12 / f"song{k + 1:02d}.wav"), y12, sr)
+        t7 = time.time()
+        j7 = post("/api/scan", {"video_path": str(vp), "music_dir": str(sd12)})["job_id"]
+        seen = {}
+        while time.time() - t7 < 90:
+            st7 = json.loads(urllib.request.urlopen(f"{base}/api/scan/{j7}", timeout=10).read())
+            for pr in st7.get("partial") or []:
+                seen.setdefault(pr["name"], round(time.time() - t7, 1))
+            if st7["status"] != "running":
+                break
+            time.sleep(0.25)
+        ranked = {r["name"]: r for r in (st7.get("results") or [])}
+        skipped = {r["name"]: r.get("reason") for r in (st7.get("skipped") or [])}
+        for k in range(n_songs):
+            nm = f"song{k + 1:02d}.wav"
+            status = "ranked" if nm in ranked else ("skipped" if nm in skipped else "missing")
+            print(f"selftest scan song {k + 1:02d}: {status} | reason: {skipped.get(nm) or '-'} | first seen {seen.get(nm, '-')} s")
+        print(f"selftest scan: status={st7['status']} ranked={len(ranked)} skipped={len(skipped)} total {round(time.time() - t7, 1)} s | {st7.get('message')}")
+        assert st7["status"] == "done" and len(ranked) == n_songs, f"scan {len(ranked)}/{n_songs} ranked; skipped={skipped}; error={st7.get('error')}"
+        print(f"selftest ok: scan {len(ranked)}/{n_songs}")
         # the loaded page must expose the native hooks (a broken native.js/shell.js ships a dead drop/menu)
         found = check_native_hooks(s.url)
         oom = found.pop("oom", {"errors": [], "error": "probe did not return"})
