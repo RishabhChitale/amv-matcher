@@ -319,6 +319,19 @@ The UI (`static/js/autosync-all.js`) does NOT use this yet: it runs a client-sid
 - `POST /api/auto-sync-batch/{batch_id}/cancel` -> same body as GET. Queued songs become `cancelled`; running ones are cancelled through `/api/auto-sync/{job_id}/cancel` (best-so-far is kept, never cached). Idempotent.
 - At most one batch at a time (409 with the running `batch_id` otherwise). Concurrency = a thin server-side loop over the existing per-song auto-sync job, bounded by the heavy-work pool, so no new engine code is needed.
 
+## Booms, camera motion, shorter songs (F6 / F9 / F2)
+Song analysis (`audio.py`, `boom.py`) adds `booms` `[{t, conf, jump_db, onset, cue, kind}]`, `main_boom` (the strongest, or `null`) and `boom_source` (`"mix"` or `"stems"`). Video analysis (`video.py`, `flow.py`: one shared dense optical-flow pass, rate `flow_hz`) adds:
+- `camera_motion` `{hz: 4, curve, pan, zoom, whip, pan_x, pan_y, zoom_rate, speed, pan_speed}` (per-sample arrays from a similarity fit of the flow field; `null` if the pass failed),
+- `camera_events` `[{start, end, kind: whip|pan|tilt|zoom, speed, peak, smooth, direction}]`,
+- `subject_curve` / `subject_hz` (motion left after removing the camera fit) and `visual_booms` (impacts from subject motion and brightness flashes, plus camera whips).
+Old video caches without `camera_motion` are re-analysed on the next hit (`workers._video_cached`).
+
+Scoring: camera speed feeds the energy/arc curve with weight `CAM_ENERGY_W` 0.35. Camera events are not used as sync events by default (they lowered real-pair scores). Each result carries `boom_pct`, `boom` `{audio_t, video_t, vis_t, err_ms, matched, main}`, `n_booms` and `n_matched`. The boom is a bonus blended in with `W_BOOM` 0.10 and never lowers `total_pct`.
+
+Auto-sync step `"boom"` tries offsets that put the song's main boom on a visual boom (`params`: `main_boom`, `candidates`, `offset`, `boom_before`, `boom_after`; work cost 1). A candidate is kept only if `boom_pct` gains at least `BOOM_MIN_GAIN` 5, the total does not drop, and sync/tight drop by at most 0.5. There is no boom step when either side has no booms.
+
+F2: a song shorter than the video (but at least `PARTIAL_MIN_S` 4 s) is scored and auto-synced over the best-matching stretch of the video instead of being ineligible. The result has `partial_video: true` and `video_use` `{start_s, end_s, used_s, video_duration_s, coverage_pct, label}`, with a label like `"uses 0:08 of 0:20 video"`. Auto-sync puts it in `plan.video_window` and `final.video_use`. Offsets and times in such a result are clip times (relative to `start_s`). Render and the Resolve export trim the source to that stretch. Songs under 4 s stay ineligible ("song shorter than video"), and splice and arrangement stay ineligible for shorter songs.
+
 ## Analysis worker jobs (process pool; heavy work never runs on the event loop)
 Analysis, probe, thumbnails and proxy builds run in a process pool (`amv_matcher/workers.py`, cores - 1;
 `AMV_WORKERS=N` sets the size, `AMV_WORKERS=0` runs everything inline, used by the test suite).
