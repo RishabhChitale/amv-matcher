@@ -454,3 +454,13 @@ def test_boom_audio_unaffected(clip, tmp_path):
     with av.open(str(b)) as c:
         yb = np.concatenate([f.to_ndarray()[0] for f in c.decode(audio=0)])
     assert np.array_equal(ya, yb)
+
+
+def test_vt_bitrate_clamp():
+    f = render.vt_bitrate
+    assert f(3_090_000, 1920, 1080, 30) == 3_090_000          # source bitrate passes through
+    assert f(500_000, 1920, 1080, 30) == 2_000_000            # floor 2 Mbps
+    assert f(40_000_000, 1920, 1080, 30) == 12_000_000        # cap 12 Mbps
+    assert f(None, 1920, 1080, 30) == int(1920 * 1080 * 30 * 0.05)   # fallback ~3.1 Mbps
+    assert f(0, 3840, 2160, 60) == 12_000_000                 # fallback also capped
+    assert f("junk", 160, 90, 24) == 2_000_000
