@@ -5,9 +5,12 @@ import os
 
 import numpy as np
 
-# F15 (beat-following warp lock, story gate cap, story/key-moment fields) is held out of releases until
-# it stops lifting unrelated pairs. Off by default: scoring is the pre-F15 scorer. AMV_F15=1 turns it on.
+# F15 (story gate cap, story/key-moment fields) is held out of releases. Off by default; AMV_F15=1 turns it on.
 F15_ENABLED = os.environ.get("AMV_F15", "") == "1"
+# Beat-following warp lock (half-beat phase flips in spliced audio, tempo drift). Off by default for now;
+# AMV_WARPLOCK=1 turns it on. Turning it on by default changes the determinism hash.
+WARPLOCK_DEFAULT = False
+WARPLOCK_ENABLED = os.environ.get("AMV_WARPLOCK", "1" if WARPLOCK_DEFAULT else "") == "1"
 
 W_TEMPO = 0.20
 W_SYNC = 0.60
@@ -255,7 +258,7 @@ def _sync_pct_at(song, ev_t, ev_w, vd, off, lead_s=None):
     the offset puts the events at the expected lag from the beat (cosine of phase error)."""
     ev_t = np.asarray(ev_t, dtype=float)
     ev_w = np.asarray(ev_w, dtype=float)
-    kw = _lock_warp(song, ev_t, ev_w, off, _lead(lead_s)) if F15_ENABLED else None
+    kw = _lock_warp(song, ev_t, ev_w, off, _lead(lead_s)) if WARPLOCK_ENABLED else None
     k = _lock(song, ev_t, ev_w)
     if kw is not None and kw[0] >= WARP_MIN_Z and (k is None or kw[0] - WARP_SCAN_Z > k[0]):
         z, err = kw[0] - WARP_SCAN_Z, kw[1]

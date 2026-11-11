@@ -42,6 +42,11 @@ def f15_on(monkeypatch):
     monkeypatch.setattr(sc, "F15_ENABLED", True)
 
 
+@pytest.fixture
+def warp_on(monkeypatch):
+    monkeypatch.setattr(sc, "WARPLOCK_ENABLED", True)
+
+
 def _jumpy_case():
     beats = _jumpy_beats()
     song = {"duration": 60.0, "bpm": 120.0, "beat_times": list(beats), "grid_used": False,
@@ -56,7 +61,14 @@ def test_f15_off_by_default():
         assert sc.F15_ENABLED is False
 
 
-def test_warp_lock_follows_half_beat_jumps(monkeypatch, f15_on):
+def test_warplock_off_by_default():
+    import os
+    assert sc.WARPLOCK_DEFAULT is False
+    if os.environ.get("AMV_WARPLOCK", "") != "1":
+        assert sc.WARPLOCK_ENABLED is False
+
+
+def test_warp_lock_follows_half_beat_jumps(monkeypatch, warp_on):
     beats = _jumpy_beats()
     song = {"duration": 60.0, "bpm": 120.0, "beat_times": list(beats), "grid_used": False,
             "energy_curve": [0.5] * 600, "drops": [], "lulls": []}
@@ -71,15 +83,25 @@ def test_warp_lock_follows_half_beat_jumps(monkeypatch, f15_on):
     assert warped > const + 20, (warped, const)
 
 
-def test_warp_lock_unused_when_f15_off(monkeypatch):
-    monkeypatch.setattr(sc, "F15_ENABLED", False)
+@pytest.mark.parametrize("f15", [False, True])
+def test_warp_lock_unused_when_warplock_off(monkeypatch, f15):
+    monkeypatch.setattr(sc, "WARPLOCK_ENABLED", False)
+    monkeypatch.setattr(sc, "F15_ENABLED", f15)          # the story gate flag does not turn the warp on
     song, ev = _jumpy_case()
     off = sc._sync_pct_at(song, ev, np.ones(len(ev)), 30.0, 0.0)
     monkeypatch.setattr(sc, "_lock_warp", lambda *a, **k: None)
     assert sc._sync_pct_at(song, ev, np.ones(len(ev)), 30.0, 0.0) == off
 
 
-def test_warp_lock_needs_min_z(monkeypatch, f15_on):
+def test_warplock_alone_adds_no_story_fields(monkeypatch, warp_on):
+    monkeypatch.setattr(sc, "F15_ENABLED", False)
+    song, ev = _jumpy_case()
+    video = _flat_video(list(ev), 30.0)
+    r = sc.score_at(song, video, 0.0)
+    assert not ({"story_z", "story_capped", "key_moments"} & set(r))
+
+
+def test_warp_lock_needs_min_z(monkeypatch, warp_on):
     song, ev = _jumpy_case()
     monkeypatch.setattr(sc, "_lock_warp", lambda *a, **k: None)
     const = sc._sync_pct_at(song, ev, np.ones(len(ev)), 30.0, 0.0)
