@@ -222,8 +222,8 @@ def test_tail_ramps_to_speed_one_and_durations_reported():
 def test_budget_prunes_but_stays_valid():
     song = make_song(90.0)
     vid = make_video(np.arange(1, 56) * 0.52, duration=30.0, tempo=115.4)
-    r = auto_sync(song, vid, budget_s=0.01)
-    assert r["pruned"] and "budget" in r["limits_hit"]
+    r = auto_sync(song, vid, budget_units=3)
+    assert r["pruned"] and r["final"]["work_units"]["budget"] == 3.0 and "budget" in r["limits_hit"]
     assert r["final"]["total_pct"] >= r["steps"][0]["score_before"] - 1
     assert "elapsed_s" in r
     full = auto_sync(song, vid, budget_s=20.0)
@@ -395,7 +395,7 @@ def test_arrange_not_called_when_ineligible(monkeypatch):
 def test_arrange_skipped_under_tight_budget(monkeypatch):
     called = []
     monkeypatch.setattr(AS, "plan_arrangement", lambda *a, **k: called.append(1) or {"eligible": False})
-    auto_sync(make_song(90.0), make_video(np.arange(1, 56) * 0.52, tempo=115.4), budget_s=3.0)
+    auto_sync(make_song(90.0), make_video(np.arange(1, 56) * 0.52, tempo=115.4), budget_units=5)
     assert not called
 
 
@@ -647,7 +647,7 @@ def _tools_accounted(res):
 
 def test_limits_hit_reports_budget_skipped_tools():
     song, vid = _consistency_pairs()["slow24"]
-    res = AS.auto_sync(song, vid, budget_s=0.001)
+    res = AS.auto_sync(song, vid, budget_units=3)
     seen, lim = _tools_accounted(res)
     if "budget" in res.get("limits_hit", []):
         assert "budget: skipped" in lim
@@ -723,3 +723,38 @@ def test_prefer_energy_routes_to_arrange(monkeypatch):
     calls.clear()
     AS.auto_sync(song, vid, budget_s=60, prefer_energy=True)
     assert calls and all(k == {"prefer_energy": True} for k in calls)
+
+
+def _det_key(r):
+    import json
+    return json.dumps({k: r[k] for k in ("steps", "final", "plan", "path", "limits_hit", "pruned")}, sort_keys=True,
+                      default=float)
+
+
+def test_deterministic_under_cpu_load():
+    """Same inputs -> byte-identical plan/totals, repeated and while a busy-loop thread hogs the CPU;
+    the wall-clock budget is only a 3x safety cap, never the pruning rule."""
+    import threading
+    fixtures = [(make_song(90.0), make_video(np.arange(1, 56) * 0.52, duration=30.0, tempo=115.4)),
+                (make_song(), make_video(slow_section_cuts(), duration=28.0)),
+                (make_song(60.0), make_video(np.arange(1, 40) * 0.47, duration=24.0, tempo=127.0))]
+    stop = threading.Event()
+    hogs = [threading.Thread(target=lambda: [None for _ in iter(lambda: stop.is_set(), True)], daemon=True) for _ in range(2)]
+    for song, vid in fixtures:
+        base = _det_key(auto_sync(song, vid, budget_s=20.0))
+        assert _det_key(auto_sync(song, vid, budget_s=20.0)) == base
+        for h in hogs:
+            if not h.is_alive():
+                h.start()
+        try:
+            assert _det_key(auto_sync(song, vid, budget_s=120.0)) == base   # cap = 3x budget: busy threads slow runs ~5x, so keep it generous
+        finally:
+            pass
+    stop.set()
+
+
+def test_time_cap_is_reported(monkeypatch):
+    t = iter(range(0, 100000, 1000))
+    monkeypatch.setattr(AS.time, "perf_counter", lambda: next(t))
+    r = auto_sync(make_song(90.0), make_video(np.arange(1, 56) * 0.52, duration=30.0, tempo=115.4), budget_s=5.0)
+    assert "budget: time cap hit" in r["limits_hit"]

@@ -216,11 +216,41 @@ ORDER_COST = ("tempo_only", "retime_only", "splice_first", "default", "retime_fi
 
 
 ARRANGE_MAX_MOVES = 3
-ARRANGE_MIN_LEFT_S = 8.0   # arrange costs ~5 s on a 4-minute song: skipped when the overall budget has less left
+# Deterministic budget: every step costs a fixed number of WORK UNITS (never wall-clock), so the search depth, and
+# therefore the plan and the percentages, cannot depend on machine load. Wall-clock is only a hard safety cap
+# (budget_s * TIME_CAP_MULT) that is REPORTED as limits_hit 'budget: time cap hit' when it ever fires.
+WORK_COST = {"tempo": 5, "splice": 4, "arrange": 6, "retime": 3, "retime_alt": 1, "micro": 1}
+DEFAULT_WORK_UNITS = 100          # > the cost of every order together (~60): by default nothing is pruned
+TIME_CAP_MULT = 3.0
 
 
-def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min_section_s, max_cuts,
-         min_gain, max_passes, allow_splice, lead_s=0.0, loop_segs=None, memo=None, deadline=None, lock_original=False,
+class _Work:
+    """Shared work-unit ledger of one auto_sync call (+ the wall-clock safety cap)."""
+
+    def __init__(self, units, cap_s):
+        self.units, self.used, self.cap_hit = float(units), 0.0, False
+        self.cap_at = time.perf_counter() + float(cap_s)
+
+    def timecap(self):
+        if not self.cap_hit and time.perf_counter() > self.cap_at:
+            self.cap_hit = True
+        return self.cap_hit
+
+    def left(self):
+        return 0.0 if self.timecap() else self.units - self.used
+
+    def exhausted(self):
+        return self.left() <= 0
+
+    def can(self, cost):
+        return self.left() >= cost
+
+    def spend(self, cost):
+        self.used += cost
+
+
+def _run(song, video, order, target, work, max_speed_dev, max_tempo_dev, min_section_s, max_cuts,
+         min_gain, max_passes, allow_splice, lead_s=0.0, loop_segs=None, memo=None, lock_original=False,
          progress_cb=None, should_cancel=None, t_start=None, stem_targets=None, prefer_energy=False):
     t0 = time.perf_counter()
     t_start = t0 if t_start is None else t_start
@@ -258,7 +288,7 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
         return mm(("as", id(s_), id(segs_), dur_), (s_, segs_), lambda: _assemble(s_, segs_, dur_))
 
     def left():
-        return budget_s - (time.perf_counter() - t0)
+        return work.left()
 
     state = {"cancelled": False, "open": None, "pass": 0}
 
@@ -331,6 +361,7 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
             svd = float(sv["duration"])
             if tool == "tempo" and segs is None:
                 begin("tempo", _tot(cur))
+                work.spend(WORK_COST["tempo"])
                 pt = plan_tempo(song, sv, max_tempo_dev)
                 ratios = sorted({round(x, 3) for x in np.arange(1 - max_tempo_dev, 1 + max_tempo_dev + 1e-9, 0.01)}
                                 | {pt["ratio"]})
@@ -359,9 +390,10 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
                     cur = newr
                 if abs(best[1] - 1.0) >= max_tempo_dev - 1e-9:
                     limits.append("max_tempo_dev")
-            elif tool == "splice" and allow_splice and segs is None and left() > 2.0 \
+            elif tool == "splice" and allow_splice and segs is None and work.can(WORK_COST["splice"]) \
                     and float(cur_song["duration"]) >= svd:
                 begin("splice", _tot(cur))
+                work.spend(WORK_COST["splice"])
                 try:
                     sp = mm(("sp", id(cur_song), id(sv), max_cuts, lead_s), (cur_song, sv),
                             lambda: plan_splice(cur_song, sv, max_cuts, allow_negative=True, lead_s=lead_s,
@@ -377,10 +409,10 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
                     if kept:
                         segs, cur_song, offset, cur = sp["segments"], asm, 0.0, asm_r
                         nudges, cur_video = [], sv
-            elif tool == "arrange" and allow_splice and segs is None and left() > 0 \
-                    and float(cur_song["duration"]) >= svd \
-                    and (deadline is None or deadline - time.perf_counter() > ARRANGE_MIN_LEFT_S):
+            elif tool == "arrange" and allow_splice and segs is None and work.can(WORK_COST["arrange"]) \
+                    and float(cur_song["duration"]) >= svd:
                 begin("arrange", _tot(cur))
+                work.spend(WORK_COST["arrange"])
                 key = (id(cur_song), id(sv), lead_s, bool(prefer_energy))
                 if memo is not None and key in memo:
                     ap = memo[key][2]
@@ -402,6 +434,7 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
             elif tool == "retime":
                 # always planned from the ORIGINAL video against the current song/offset (replaces)
                 begin("retime", _tot(cur))
+                work.spend(WORK_COST["retime"])
                 alt_off = None
                 try:
                     rp = mm(("rt", id(cur_song), id(video), float(offset), max_speed_dev, min_section_s, lead_s, sid),
@@ -421,8 +454,9 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
                     try:
                         for o2 in mm(("alt", id(cur_song), id(video), float(offset), lead_s), (cur_song, video),
                                      lambda: _alt_offsets(cur_song, video, [offset], lead_s=lead_s)):
-                            if cancel() or left() <= 0:
+                            if cancel() or not work.can(WORK_COST["retime_alt"]):
                                 break
+                            work.spend(WORK_COST["retime_alt"])
                             rp2 = mm(("rt", id(cur_song), id(video), float(o2), max_speed_dev, min_section_s, lead_s, sid),
                                      (cur_song, video, stem_targets),
                                      lambda: plan_retime(cur_song, video, o2, max_speed_dev, min_section_s, lead_s=lead_s,
@@ -444,9 +478,10 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
                     retime, cur_video, cur, nudges = rp, wv, rr, []
                     if alt_off is not None:
                         offset = alt_off
-                    if segs is not None and allow_splice and left() > 2.0 and not cancel():
+                    if segs is not None and allow_splice and work.can(WORK_COST["splice"]) and not cancel():
                         # events moved: re-splice against the retimed video (one extra pass)
                         begin("splice", _tot(cur))
+                        work.spend(WORK_COST["splice"])
                         try:
                             sp = plan_splice(song if tempo_ratio == 1.0 else at(tempo_ratio),
                                              wv, max_cuts, allow_negative=True, lead_s=lead_s,
@@ -463,6 +498,7 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
                                 segs, cur_song, offset, cur = sp["segments"], asm, 0.0, ar
             elif tool == "micro" and not nudges:
                 begin("micro", _tot(cur))
+                work.spend(WORK_COST["micro"])
                 nv, nl = mm(("nd", id(cur_song), id(cur_video), float(offset), fps, lead_s), (cur_song, cur_video),
                             lambda: _nudge(cur_song, cur_video, offset, 1.0 / fps, lead_s))
                 nr = sa(cur_song, nv, offset)
@@ -491,7 +527,7 @@ def _run(song, video, order, target, budget_s, max_speed_dev, max_tempo_dev, min
     if state["cancelled"]:
         limits.append("cancelled")
     if left() <= 0 and not _done(cur, target):
-        limits.append("budget")
+        limits.append("budget: time cap hit" if work.cap_hit else "budget")
     if retime and any(abs(s["speed"] - 1) >= max_speed_dev - 0.01 for s in retime["sections"]):
         limits.append("max_speed_dev")
     if retime and not retime.get("speed_jump_ok", True):
@@ -508,7 +544,8 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
               max_speed_dev: float = 0.25, max_tempo_dev: float = 0.10, min_section_s: float = 0.75,
               max_cuts: int = 3, min_gain: float = 0.5, max_passes: int = 2, allow_splice: bool = True, lead_s: float | None = None,
               allow_loop: bool = False, original: bool = False, unlock_original: bool = False,
-              *, progress_cb=None, should_cancel=None, stem_targets=None, prefer_energy=True) -> dict:
+              *, progress_cb=None, should_cancel=None, stem_targets=None, prefer_energy=True,
+              budget_units: float = DEFAULT_WORK_UNITS) -> dict:
     """Try several tool orders (each from the baseline) and keep the best path, so the result is never
     worse than any single tool applied directly.
 
@@ -537,7 +574,14 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
 
     prefer_energy (keyword-only, default True; False = the original arrange objective): the arrange step
     ranks by energy correlation and keeps the highest-arc arrangement within the total/tight/sync guards
-    of the baseline."""
+    of the baseline.
+
+    Determinism: the search is bounded by budget_units (keyword-only, default DEFAULT_WORK_UNITS) of WORK, each
+    step costing a fixed number of units (WORK_COST), never by the clock, so the same inputs give the same plan
+    and percentages on any machine and under any load. budget_s is only a hard wall-clock safety cap
+    (budget_s * TIME_CAP_MULT seconds); if it ever fires, limits_hit contains 'budget: time cap hit' and the
+    result is NOT reproducible. Running out of work units reports plain 'budget' (+ 'budget: skipped <tool>').
+    The result echoes final.work_units {used, budget}."""
     lead_s = S.PERCEPTUAL_LEAD_S if lead_s is None else lead_s
     lead_s = min(0.12, max(0.0, float(lead_s)))   # cuts/peaks land lead_s before the beat (0 = on it)
     t0 = time.perf_counter()
@@ -575,18 +619,18 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
         names = keep
         allow_splice = False
     best, pruned, runs, skipped_names = None, False, [], []
-    memo, deadline = {}, t0 + budget_s
+    memo = {}
+    work = _Work(budget_units, max(1.0, float(budget_s)) * TIME_CAP_MULT)
     for i, name in enumerate(names):
-        rem = budget_s - (time.perf_counter() - t0)
         if best and cancelled():
             break
-        if rem <= 0 and best:
+        if work.exhausted() and best:
             pruned = True
             skipped_names = names[i:]
             break
-        run = _run(song, video, orders[name], target, max(rem / max(1, len(names) - i), 2.0), max_speed_dev,
+        run = _run(song, video, orders[name], target, work, max_speed_dev,
                    max_tempo_dev, min_section_s, max_cuts, min_gain, max_passes, allow_splice, lead_s,
-                   loop_segs=loop_segs, memo=memo, deadline=deadline, lock_original=lock,
+                   loop_segs=loop_segs, memo=memo, lock_original=lock,
                    progress_cb=progress_cb, should_cancel=cancelled, t_start=t0, stem_targets=stem_targets, prefer_energy=prefer_energy)
         run["path"] = name
         runs.append(run)
@@ -596,7 +640,7 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
             break
     cur, limits = best["cur"], list(best["limits"])
     if pruned:
-        limits.append("budget")
+        limits.append("budget: time cap hit" if work.cap_hit else "budget")
         seen_tools = {s["tool"] for r_ in runs for s in r_["steps"]}
         for n in skipped_names:
             for tool in orders[n]:
@@ -626,6 +670,7 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
         limits.append("cancelled")
     final = {k: cur[k] for k in ("total_pct", "tempo_pct", "sync_pct", "arc_pct")}
     final["total_pct"] = int(round(_tot(cur)))
+    final["work_units"] = {"used": round(work.used, 2), "budget": float(budget_units)}
     base0 = best["steps"][0]["score_after"] if best["steps"] else _tot(cur)
     final["natural_total_pct"] = int(round(base0))
     for _k in ("quiet_sync", "quiet_sync_beats", "quiet_events"):      # only present when stem_targets were given
