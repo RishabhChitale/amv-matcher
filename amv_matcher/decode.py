@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import av
+from av.video.reformatter import VideoReformatter
 import numpy as np
 
 try:  # PyAV >= 14
@@ -220,11 +221,12 @@ class FrameStream:
             tw, th = _target_size(sw, sh, width, height, pix_fmt == "yuv420p")
             if interp is None:
                 interp = "AREA" if (tw < sw or th < sh) else "BILINEAR"
+            rf = VideoReformatter()     # one cached swscale context per stream (bit-identical, no per-frame init)
             for t, fr in _pick_fps(raw, fps, src_rate):
                 if self._end is not None and t >= self._end - _EPS:
                     return
                 if (fr.width, fr.height) != (tw, th) or fr.format.name != pix_fmt:
-                    f2 = fr.reformat(width=tw, height=th, format=pix_fmt, interpolation=interp)
+                    f2 = rf.reformat(fr, width=tw, height=th, format=pix_fmt, interpolation=interp)
                 else:
                     f2 = fr
                 img = f2.to_ndarray()

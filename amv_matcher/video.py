@@ -218,8 +218,63 @@ def _frames(path: str):
 _PIX = "bgr24"    # "bgr24" + cv2.cvtColor gives exact parity with the old reader (~+10% cost)
 
 
+_PREFETCH = 64     # decoded frames buffered ahead of the analysis loop
+
+
+def _prefetch(frames, depth: int = _PREFETCH):
+    """Run the frame iterator in a background thread so decoding overlaps the per-frame analysis
+    (flow, diffs, thumbs). Same frames in the same order, so the result is unchanged. Decoder
+    errors are re-raised here; closing this generator stops the decoder thread."""
+    import queue
+    import threading
+    q = queue.Queue(maxsize=max(1, depth))
+    stop = threading.Event()
+    done = object()
+
+    def put(item):
+        while not stop.is_set():
+            try:
+                q.put(item, timeout=0.1)
+                return True
+            except queue.Full:
+                continue
+        return False
+
+    def run():
+        try:
+            for g in frames:
+                if not put(g):
+                    break
+        except BaseException as e:        # handed to the consumer
+            put((done, e))
+            return
+        finally:
+            close = getattr(frames, "close", None)
+            if close is not None:
+                try:
+                    close()
+                except Exception:
+                    pass
+        put((done, None))
+
+    th = threading.Thread(target=run, name="amv-video-decode", daemon=True)
+    th.start()
+    try:
+        while True:
+            item = q.get()
+            if isinstance(item, tuple) and len(item) == 2 and item[0] is done:
+                if item[1] is not None:
+                    raise item[1]
+                return
+            yield item
+    finally:
+        stop.set()
+        th.join(timeout=5.0)
+
+
 def analyze_video(path: str) -> dict:
     fps, frames = _frames(path)
+    frames = _prefetch(frames)
 
     diffs, thumbs, bright = [], [], []
     prev = None
