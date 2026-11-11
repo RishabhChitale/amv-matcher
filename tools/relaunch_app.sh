@@ -7,7 +7,9 @@
 #   --app PATH       app bundle (default /Applications/AMV Matcher.app)
 #   --data-dir DIR   app data dir holding dnd.json (default ~/Library/Application Support/AMV Matcher); tests use a temp dir
 #   --poll SECONDS   DND poll interval (default 30)
-#   --dry-run        do the DND logic but only print the quit/open steps
+#   --dry-run        do the DND logic but only print the quit/open steps and the pids it would match
+# Exit codes: 3 DND timeout, 4 old instance would not quit (or handed over). Matches --app and its realpath (symlinked dist/).
+# Test hooks: RELAUNCH_NO_OSASCRIPT=1, RELAUNCH_OPEN=<cmd>, RELAUNCH_SETTLE=<s>.
 # Never run this against the user's real app from tests: use --dry-run or a throwaway app + --data-dir.
 set -u
 APP="/Applications/AMV Matcher.app"
@@ -19,7 +21,7 @@ while [ $# -gt 0 ]; do
     --data-dir) DATA="$2"; shift 2;;
     --poll) POLL="$2"; shift 2;;
     --dry-run) DRY=1; shift;;
-    -h|--help) sed -n 2,12p "$0"; exit 0;;
+    -h|--help) sed -n 2,15p "$0"; exit 0;;
     ''|*[!0-9]*) echo "relaunch_app: unknown argument: $1" >&2; exit 2;;
     *) TIMEOUT="$1"; shift;;
   esac
@@ -38,17 +40,40 @@ while dnd_on; do
 done
 echo "relaunch_app: Do-not-disturb is off; proceeding"
 
-BIN="$APP/Contents/MacOS"
-alive() { /usr/bin/pgrep -f "$BIN/" >/dev/null 2>&1; }
+# The running process may show the RESOLVED bundle path (e.g. dist/ symlinked to another volume), so match both.
+RAPP="$(/usr/bin/python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$APP" 2>/dev/null)"; [ -n "$RAPP" ] || RAPP="$APP"
+BIN="$APP/Contents/MacOS"; RBIN="$RAPP/Contents/MacOS"
+pids() {   # pids of processes running the executable inside either bundle path (this script's own argv has no /Contents/MacOS/)
+  { /usr/bin/pgrep -f "$BIN/" 2>/dev/null; [ "$RBIN" = "$BIN" ] || /usr/bin/pgrep -f "$RBIN/" 2>/dev/null; } | sort -un | tr '\n' ' '
+}
+alive() { [ -n "$(pids | tr -d ' ')" ]; }
 NAME="$(basename "$APP" .app)"
+OPEN="${RELAUNCH_OPEN:-/usr/bin/open}"
 if [ "$DRY" = 1 ]; then
-  echo "relaunch_app: [dry-run] would quit '$NAME' (osascript, wait ~10s, one SIGTERM if alive), then open '$APP'"
+  echo "relaunch_app: [dry-run] would quit '$NAME' (osascript, wait ~10s, one SIGTERM if alive), verify it is gone (exit 4 if not), then open '$APP'"
+  echo "relaunch_app: [dry-run] match paths: $BIN/ and $RBIN/; running pids now: $(pids)"
   exit 0
 fi
+OLD="$(pids)"
 if alive; then
-  /usr/bin/osascript -e "tell application \"$NAME\" to quit" >/dev/null 2>&1
+  echo "relaunch_app: quitting '$NAME' (pids: $OLD)"
+  [ "${RELAUNCH_NO_OSASCRIPT:-0}" = 1 ] || /usr/bin/osascript -e "tell application \"$NAME\" to quit" >/dev/null 2>&1
   for _ in 1 2 3 4 5 6 7 8 9 10; do alive || break; sleep 1; done
-  if alive; then /usr/bin/pkill -TERM -f "$BIN/" ; sleep 2; fi
+  if alive; then
+    for p in $(pids); do kill -TERM "$p" 2>/dev/null; done
+    for _ in 1 2 3 4 5; do alive || break; sleep 1; done
+  fi
+  if alive; then
+    echo "relaunch_app: ERROR: old instance still running (pids: $(pids)) after quit + SIGTERM; NOT opening (it would only hand over to the old instance)" >&2
+    exit 4
+  fi
+  echo "relaunch_app: old instance gone"
 fi
-/usr/bin/open "$APP"
+"$OPEN" "$APP"
+sleep "${RELAUNCH_SETTLE:-2}"
+NOW=" $(pids)"
+for p in $OLD; do
+  case "$NOW" in *" $p "*) echo "relaunch_app: WARNING: old pid $p is still the running instance; the new launch handed over to it, nothing was relaunched" >&2; exit 4;;
+  esac
+done
 echo "relaunch_app: relaunched $APP"

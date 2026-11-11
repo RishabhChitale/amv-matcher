@@ -89,3 +89,58 @@ def test_script_sees_api_file(tmp_path, monkeypatch):
     assert run(tmp_path / "ad", "1", "--poll", "1").returncode == 3     # the script sees the API's file
     c.post("/api/dnd", json={"on": False})
     assert run(tmp_path / "ad").returncode == 0
+
+
+def _fake_app(root, name="Fake"):
+    """A throwaway 'app' (shell script that sleeps) under root/real, plus root/link -> root/real."""
+    real = root / "real"; exe = real / f"{name}.app" / "Contents" / "MacOS" / name
+    exe.parent.mkdir(parents=True)
+    exe.write_text("#!/bin/sh\nwhile :; do sleep 1; done\n"); exe.chmod(0o755)
+    (root / "link").symlink_to(real)
+    return real / f"{name}.app", root / "link" / f"{name}.app", exe
+
+
+def _live(env_extra, root, app_arg, *extra):
+    import os
+    env = {**os.environ, "RELAUNCH_NO_OSASCRIPT": "1", "RELAUNCH_SETTLE": "0", **env_extra}
+    return subprocess.run(["bash", SCRIPT, "--data-dir", str(root / "d"), "--app", str(app_arg), *extra],
+                          capture_output=True, text=True, timeout=60, env=env)
+
+
+@needs_bash
+def test_symlinked_app_path_matches_resolved_process(tmp_path):
+    """Process runs from the resolved path; --app is the symlinked one: dry-run sees it, a live run quits it then opens."""
+    import os, signal
+    real_app, link_app, exe = _fake_app(tmp_path)
+    marker = tmp_path / "opened"
+    opener = tmp_path / "opener.sh"; opener.write_text(f"#!/bin/sh\necho \"$1\" > {marker}\n"); opener.chmod(0o755)
+    proc = subprocess.Popen([str(exe)])
+    try:
+        time.sleep(0.5)
+        d = subprocess.run(
+            ["bash", SCRIPT, "--dry-run", "--data-dir", str(tmp_path / "d"), "--app", str(link_app)],
+            capture_output=True, text=True, timeout=30)
+        assert str(proc.pid) in d.stdout and "real/Fake.app/Contents/MacOS/" in d.stdout
+        r = _live({"RELAUNCH_OPEN": str(opener)}, tmp_path, link_app)
+        assert r.returncode == 0, r.stderr
+        assert proc.wait(timeout=5) is not None            # old process was terminated
+        assert marker.read_text().strip() == str(link_app)  # then opened
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+
+
+@needs_bash
+def test_exit_4_when_old_instance_will_not_die(tmp_path):
+    real_app, link_app, exe = _fake_app(tmp_path)
+    exe.write_text("#!/bin/sh\ntrap '' TERM\nwhile :; do sleep 1; done\n")
+    marker = tmp_path / "opened"
+    opener = tmp_path / "opener.sh"; opener.write_text(f"#!/bin/sh\ntouch {marker}\n"); opener.chmod(0o755)
+    proc = subprocess.Popen([str(exe)])
+    try:
+        time.sleep(0.5)
+        r = _live({"RELAUNCH_OPEN": str(opener)}, tmp_path, link_app)
+        assert r.returncode == 4 and "still running" in r.stderr
+        assert not marker.exists()                           # never opened
+    finally:
+        proc.kill(); proc.wait()
