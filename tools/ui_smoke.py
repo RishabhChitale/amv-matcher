@@ -1202,9 +1202,12 @@ def main():
                 bad = c.ev("(()=>{const cv=document.getElementById('tl').getBoundingClientRect(),o=[];for(let i=1;i<24;i++)for(let j=0;j<12;j++){const x=cv.left+cv.width*i/24,y=cv.top+30+(cv.height-34)*j/11;const e=document.elementFromPoint(x,y);if(e&&e.closest&&e.closest('#mk-lg-body'))o.push([Math.round(x),Math.round(y)])}"
                            "return {open:document.getElementById('mk-legend').classList.contains('open'),n:o.length,first:o[0]||null}})()")
                 check("legend open: no lane point is under the legend body at %dx%d" % (vw_, vh_), bool(bad and bad["open"] and bad["n"] == 0), str(bad))
+                # fixed bars (Edit/Deliver) overlay the viewport bottom by design; page padding lets content scroll clear of them, so test at the end of the scroll
+                c.ev("window.scrollTo(0,document.documentElement.scrollHeight)"); c.pump(0.3)
                 ov = c.ev("(()=>{const b=document.getElementById('mk-lg-body').getBoundingClientRect(),tw=document.getElementById('tl-wrap').getBoundingClientRect(),o=[];let n=0;"
                           "document.querySelectorAll('button,select,input,canvas,.lbl,.a1-lbl,.tl-labels,#v1-legend,#bm-bar,.x').forEach(e=>{if(e.closest('#mk-lg-body')||e.closest('#mk-legend'))return;const r=e.getBoundingClientRect(),st=getComputedStyle(e);if(r.width<2||r.height<2||st.display==='none'||st.visibility==='hidden')return;n++;"
                           "if(r.left<b.right&&r.right>b.left&&r.top<b.bottom&&r.bottom>b.top)o.push((e.id||e.className||e.tagName)+'')});return {n,o:o.slice(0,6),bt:b.top,tb:tw.bottom,bw:b.width}})()")
+                c.ev("window.scrollTo(0,0)")
                 check("legend open: its body overlaps no visible control/lane/label at %dx%d (and sits below the timeline)" % (vw_, vh_), bool(ov and ov["n"] > 5 and not ov["o"] and ov["bw"] > 50 and ov["bt"] >= ov["tb"] - 0.5), str(ov))
             c.call("Emulation.setDeviceMetricsOverride", width=1440, height=900, deviceScaleFactor=1, mobile=False); c.pump(0.5)
             # F2: video-use dimming: a 20 s song on a longer video dims the unused part of V1, with a label + tooltip
