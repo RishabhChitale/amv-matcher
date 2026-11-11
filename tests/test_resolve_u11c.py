@@ -86,3 +86,8 @@ def test_both_anchor_conventions_same_when_start_zero(monkeypatch):
     a = _xml({"retime": _ramp()})
     monkeypatch.setattr(R, "RAMP_ANCHOR", "relative-values")
     assert _xml({"retime": _ramp()}) == a
+
+
+def test_bundle_files_written_with_lf(tmp_path):
+    R._write_lf(tmp_path / "t.fcpxml", "a\nb\n")
+    assert (tmp_path / "t.fcpxml").read_bytes() == b"a\nb\n"

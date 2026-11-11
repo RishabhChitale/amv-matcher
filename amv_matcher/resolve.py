@@ -546,6 +546,13 @@ def _safe(s: str) -> str:
     return re.sub(r"[^A-Za-z0-9._ ()\-]", "_", s).strip(" .")[:80] or "x"
 
 
+def _write_lf(path: Path, text: str) -> None:
+    """UTF-8 with LF newlines on every OS (write_text would emit CRLF on Windows), so bundle
+    files are byte-identical across platforms."""
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
+
+
 def _dims(video_path: Path) -> tuple:
     import cv2
     cap = cv2.VideoCapture(str(video_path))
@@ -591,12 +598,12 @@ def export_bundle(video_path: Path, song_path: Path, plan: dict, song: dict, vid
         out_dur = sum(c["dur_f"] for c in clips) / float(snap_fps(fps))
     xml = build_fcpxml(video_path, float(video["duration"]), fps, width, height, plan, heard, video,
                        "audio/" + aname, adur)
-    (folder / "timeline.fcpxml").write_text(xml, encoding="utf-8")
+    _write_lf(folder / "timeline.fcpxml", xml)
     prog("pump", 2)
     setting = build_pump_setting(heard, plan, out_dur, fps, width, height, boom, decay, drops_only, shake)
-    (folder / "AMV_Pump_plan.setting").write_text(setting, encoding="utf-8")
+    _write_lf(folder / "AMV_Pump_plan.setting", setting)
     build_drfx(setting, folder / "AMV_Pump.drfx")
-    (folder / "HOW-TO-IMPORT.txt").write_text(HOWTO, encoding="utf-8")
+    _write_lf(folder / "HOW-TO-IMPORT.txt", HOWTO)
     prog("zip", 3)
     zpath = folder.parent / (folder.name + ".zip")
     with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
