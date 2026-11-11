@@ -146,7 +146,7 @@ function ring(p) {
   return `<div class="ring"><svg width="52" height="52"><defs><linearGradient id="g"><stop offset="0" stop-color="#8b5cf6"/><stop offset="1" stop-color="#22d3ee"/></linearGradient></defs>
   <circle class="bg" cx="26" cy="26" r="22"/><circle class="fg" cx="26" cy="26" r="22" stroke-dasharray="${C}" stroke-dashoffset="${C}" data-p="${p}"/></svg><b>${Math.round(p)}%</b></div>`;
 }
-const metaText = r => (r.bpm ? r.bpm.toFixed(0) + ' BPM · ' : '') + (r.source === 'original' ? 'original, no shift' : 'starts at ' + fmtMS(r.trim_start_s));
+const metaText = r => (r.bpm ? r.bpm.toFixed(0) + ' BPM · ' : '') + (r.source === 'original' ? 'original, start locked at 0:00' : 'starts at ' + fmtMS(r.trim_start_s));
 function renderResults(j) {
   if (S.inUse) S.inUse = S.results.find(r => r.path === S.inUse.path) || null;
   S.short = j.too_short || []; S.skipped = j.skipped || [];
@@ -234,14 +234,14 @@ function updateFit() {
   const u = S.inUse, orig = !!u && u.source === 'original', off = !u || orig || !S.video;
   $('sp-on').disabled = off; $('sp-on').checked = S.sp.on && !off;
   $('fit-src').textContent = u ? u.name : '';
-  const tip = orig ? 'Original audio is already aligned, nothing to splice' : (!u ? 'Press "Use this audio" on a source first' : '');
+  const tip = orig ? 'Original audio: start locked at 0:00, splicing is off (use Auto-sync to fit it)' : (!u ? 'Press "Use this audio" on a source first' : '');
   $('sp-sw').title = tip; $('sp-max').title = tip;
   document.querySelectorAll('#sp-max button').forEach(b => { b.disabled = off || !S.sp.on; b.classList.toggle('on', +b.dataset.n === S.sp.max); });
   $('ex-wav').disabled = $('ex-mp4').disabled = !u || !S.video || S.exporting; staleExport();
   const m = $('fit-msg'), p = S.sp.plan; let t;
   if (!u) t = S.a1Empty ? 'No audio on A1' : 'Press "Use this audio" on a source to fit and export it.';
   else if (!S.video) t = 'Needs a video: drop one to fit and export.';
-  else if (orig) t = 'Original audio is already aligned: no shift or splice needed.';
+  else if (orig) t = 'Original audio: start locked at 0:00. Run Auto-sync to retime the video to it.';
   else if (S.sp.busy) t = 'Finding the best cuts...';
   else if (!S.sp.on || !p) t = `Single trim: ${fmtMS(S.offset)} to ${fmtMS(S.offset + S.dur)} (${Math.round(u.total_pct)}%)`;
   else if (p.eligible === false) t = 'This song is too short to splice.';
@@ -479,14 +479,14 @@ function partsText(segs) {
 }
 function readout() {
   const r = S.sel, orig = r && r.source === 'original';
-  $('vc-off').textContent = !r ? '--' : orig ? 'Original audio, no shift' : spliceActive() ? 'Spliced from ' + (S.sp.plan.cuts.length + 1) + ' clips' : 'Starts at ' + fmtMS(S.offset);
+  $('vc-off').textContent = !r ? '--' : orig ? 'Original audio, start locked at 0:00' : spliceActive() ? 'Spliced from ' + (S.sp.plan.cuts.length + 1) + ' clips' : 'Starts at ' + fmtMS(S.offset);
   $('vc-chip').textContent = !r || orig || spliceActive() ? '' : S.manual ? 'manual' : 'auto-picked';
   $('vc-chip').classList.toggle('hidden', !$('vc-chip').textContent);
   $('vc-reset').classList.toggle('hidden', !r || orig || !S.manual);
   $('vc-trim').textContent = !r ? '--' : orig ? 'Whole track' : spliceActive() ? partsText(S.sp.plan.segments) : 'Use ' + fmtMS(S.offset) + ' to ' + fmtMS(S.offset + S.dur);
   let l = ''; if (r) l = orig ? 'Original audio (from video)' : spliceActive() ? 'Spliced song, ' + (S.sp.plan.cuts.length + 1) + ' clips' : `Song ${fmtMS(S.offset)} to ${fmtMS(S.offset + S.dur)} (${S.manual ? 'manual' : 'auto'} start)`;
   $('a1-lbl').textContent = l; $('a1-lbl').classList.toggle('hidden', !l);
-  const hint = orig ? 'Original audio is already aligned, so there is no offset to drag.' : spliceActive() ? 'Smart splice is on: turn it off in Fit to drag the start.' : 'Drag the song clip on A1 (or the bracket in Song overview) to set a manual start. Keys: Space play/pause, \u2190/\u2192 frame, Shift+arrows 1 s, J/K/L shuttle.';
+  const hint = orig ? 'Original audio: start locked at 0:00, so there is no offset to drag.' : spliceActive() ? 'Smart splice is on: turn it off in Fit to drag the start.' : 'Drag the song clip on A1 (or the bracket in Song overview) to set a manual start. Keys: Space play/pause, \u2190/\u2192 frame, Shift+arrows 1 s, J/K/L shuttle.';
   $('tl-hint').textContent = hint + ' Backspace/Delete removes the selected clip, Cmd+Z undoes.';
 }
 $('vc-reset').onclick = () => { if (!S.sel) return; S.manual = false; S.offset = S.sel.best_offset_s || 0; syncAudio(true); readout(); draw(); drawOv(); staleExport(); rescore(); };

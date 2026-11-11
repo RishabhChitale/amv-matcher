@@ -137,13 +137,13 @@ function finalSteps(res) {
   const ln = el('as-limits'); ln.textContent = lim.join(' · '); ln.classList.toggle('hidden', !lim.length);
 }
 async function runOne(r) {   // returns result or null (cancelled / failed)
-  const v = S.videoPath; if (!v || !r || (r.source === 'original' && !AS.guard.unlock)) return null;
+  const v = S.videoPath; if (!v || !r || false) return null;
   const g = AS.guard, key = pk(v, r.path);
   const body = {video_path: v, song_path: r.path, lead_s: g.lead / 1000, allow_loop: !!g.loop,
     guardrails: {max_speed_dev: g.dev / 100, max_tempo_pct: g.tempo, max_cuts: g.cuts}};
   body.prefer_energy = !!g.energyFirst;
   body.smooth = !!g.ramps;  // U11-SMOOTH: top-level 'smooth' bool (guard key stays 'ramps'); the old 'ramps' flag is left at its default
-  if (r.source === 'original') body.unlock_original = true;
+  if (r.source === 'original' && g.unlock) body.unlock_original = true;   // default: offset locked at 0, retime + micro only
   AS.lastReq = body; AS.cancelled = false;
   AS.running = {key, name: r.name}; ui();
   el('as-stage').textContent = 'Starting...'; setRing(0); liveSteps({stage: ''});
@@ -189,10 +189,10 @@ el('as-mode').querySelectorAll('button').forEach(b => b.onclick = () => {
 
 // ---------- panel state ----------
 function ui() {
-  const u = S.inUse, locked = !!(u && u.source === 'original' && !AS.guard.unlock), ok = !!(u && S.video && !locked && !AS.running);
+  const u = S.inUse, orig = !!(u && u.source === 'original'), locked = false, ok = !!(u && S.video && !AS.running);
   const go = el('as-go'); go.disabled = !ok; go.classList.toggle('run', !!AS.running);
-  go.title = !u ? 'Press "Use this audio" on a source first' : locked ? 'Locked to video: offset 0, no rearranging' : !S.video ? 'Needs a video' : '';
-  el('as-lock').textContent = locked ? 'Locked to video: offset 0, no rearranging (tick "Unlock original" in Guardrails to change this)' : '';
+  go.title = !u ? 'Press "Use this audio" on a source first' : !S.video ? 'Needs a video' : orig ? 'Original audio: start locked at 0:00, auto-sync retimes the video to fit' : '';
+  el('as-lock').textContent = orig ? 'Original audio: start locked at 0:00. Auto-sync retimes the video to it (tick "Unlock original" in Guardrails to also allow tempo, splice and rearranging).' : '';
   el('as-run').classList.toggle('hidden', !AS.running);
   const run = curRun(), res = run && run.result;
   if (!AS.running) el('as-steps').classList.toggle('hidden', !res);
