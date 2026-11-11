@@ -288,6 +288,11 @@ def run_window() -> int:
     LOG.info("server on %s (frozen=%s data=%s)", s.url, paths.FROZEN, paths.DATA)
     api = Api()
     geom = ns.load_geometry(_screens())
+    try:   # dev/CI aid: AMV_WINDOW_SIZE=1280x720
+        w_, h_ = os.environ["AMV_WINDOW_SIZE"].lower().split("x")
+        geom.update(width=int(w_), height=int(h_))
+    except (KeyError, ValueError):
+        pass
     win = webview.create_window(TITLE, s.url + "/", js_api=api, min_size=(ns.MIN_W, ns.MIN_H),
                                 background_color="#0b0d12", **geom)
     api._window = win
@@ -506,7 +511,10 @@ def check_native_hooks(url: str, timeout: float = 45.0) -> dict:
         try:
             while time.time() - t0 < timeout:
                 try:
-                    r = win.evaluate_js("JSON.stringify({nativeDrop: typeof window.nativeDrop, nativeMenu: typeof window.nativeMenu})")
+                    r = win.evaluate_js("JSON.stringify({nativeDrop: typeof window.nativeDrop, nativeMenu: typeof window.nativeMenu, "
+                                        "toggleFullscreen: typeof (window.pywebview && window.pywebview.api && window.pywebview.api.toggle_fullscreen), "
+                                        "fsBtn: !!document.querySelector('#fs-btn,.fs-btn'), a1Mode: !!document.querySelector('#a1-mode,.a1-mode'), "
+                                        "v1Legend: !!document.querySelector('#v1-legend,.v1-legend')})")
                     out.update(json.loads(r or "{}"))
                 except Exception:  # noqa: BLE001  page not ready yet
                     pass
@@ -592,6 +600,14 @@ def selftest(log_path: str = "") -> int:
         assert j["status"] == "done", j
         assert j["results"], "no scored songs"
         print("selftest ok: top =", round(j["results"][0]["total_pct"], 1), "%")
+        nd = getattr(paths, "numba_cache_dir", None)
+        if nd:
+            ndp = Path(nd())
+            ndp.mkdir(parents=True, exist_ok=True)
+            (ndp / ".w").write_text("x"); (ndp / ".w").unlink()
+            print("selftest ok: numba cache", ndp, "writable,", sum(1 for _ in ndp.rglob("*") if _.is_file()), "files")
+        else:
+            print("selftest ok: numba cache n/a (paths.numba_cache_dir not present yet)")
         sp = str(sd / "click120.wav")          # scan registered both paths as allowed
 
         def get(path):
@@ -658,12 +674,15 @@ def selftest(log_path: str = "") -> int:
         # the loaded page must expose the native hooks (a broken native.js/shell.js ships a dead drop/menu)
         found = check_native_hooks(s.url)
         oom = found.pop("oom", {"errors": [], "error": "probe did not return"})
+        extra = {k: found.pop(k, None) for k in ("toggleFullscreen", "fsBtn", "a1Mode", "v1Legend")}
         assert found == {"nativeDrop": "function", "nativeMenu": "function"}, f"native hooks missing in the page: {found}"
+        assert extra["toggleFullscreen"] == "function", f"api.toggle_fullscreen missing: {extra}"
         assert not oom["errors"], f"pywebview js_api walk errors (public attribute on Api?): {oom['errors'][:2]}"
         rss_note = "RSS watch skipped (Windows-only)"
         if sys.platform == "win32":
             rss_note = check_rss_result(oom)
-        print("selftest ok: page hooks window.nativeDrop + window.nativeMenu present | js_api clean |", rss_note)
+        print("selftest ok: page hooks window.nativeDrop + window.nativeMenu present | api.toggle_fullscreen fn | fs-btn/a1-mode/v1-legend in idle DOM:",
+              extra["fsBtn"], extra["a1Mode"], extra["v1Legend"], "| js_api clean |", rss_note)
         s.stop()
         return 0
     except Exception as e:  # noqa: BLE001

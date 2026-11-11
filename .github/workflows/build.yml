@@ -91,7 +91,7 @@ jobs:
         timeout-minutes: 15
         run: |
           "dist/AMV Matcher.app/Contents/MacOS/AMV Matcher" --selftest --selftest-log selftest.log
-          test "$(grep -c '^selftest ok' selftest.log)" -eq 8
+          test "$(grep -c '^selftest ok' selftest.log)" -eq 9
       - name: Selftest (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -101,29 +101,36 @@ jobs:
           if (Test-Path selftest.log) { Get-Content selftest.log }
           if ($p.ExitCode -ne 0) { throw "selftest exit code $($p.ExitCode)" }
           $n = (Select-String -Path selftest.log -Pattern '^selftest ok').Count
-          if ($n -ne 8) { throw "expected 8 selftest ok lines, got $n" }
-      - name: Dark-mode screenshot (Windows, CI-only check; image has no text beyond the app UI)
+          if ($n -ne 9) { throw "expected 9 selftest ok lines, got $n" }
+      - name: Dark-mode screenshots (Windows, CI-only check; synthetic media loaded via the native-drop hand-off)
         if: runner.os == 'Windows'
         continue-on-error: true
         shell: pwsh
-        timeout-minutes: 5
+        timeout-minutes: 10
         run: |
           reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" /v AppsUseLightTheme /t REG_DWORD /d 0 /f
-          $env:AMV_DATA_DIR = Join-Path $env:RUNNER_TEMP "amv-dark-data"
-          $app = Start-Process -FilePath "dist\AMV Matcher\AMV Matcher.exe" -PassThru
-          Start-Sleep -Seconds 25
+          $m = Join-Path $env:RUNNER_TEMP "amv-dark-media"; New-Item -ItemType Directory -Force $m | Out-Null
+          python -I -c "import av,numpy as np,soundfile as sf,sys; o=av.open(sys.argv[1]+'/v.mp4','w'); s=o.add_stream('libx264',rate=24); s.width,s.height,s.pix_fmt=320,240,'yuv420p'; [o.mux(p) for i in range(144) for p in s.encode(av.VideoFrame.from_ndarray(np.full((240,320,3),255 if (i//12)%2==0 else 20,np.uint8),format='rgb24'))]; [o.mux(p) for p in s.encode(None)]; o.close(); y=np.zeros(22050*20,np.float32); [y.__setitem__(slice(int(k*.5*22050),int(k*.5*22050)+400),np.hanning(400)*.9) for k in range(40)]; sf.write(sys.argv[1]+'/click.wav',y,22050)" $m
           Add-Type -AssemblyName System.Windows.Forms, System.Drawing
-          $b = [System.Windows.Forms.SystemInformation]::VirtualScreen
-          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
-          [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
-          $bmp.Save("windows-dark.png", [System.Drawing.Imaging.ImageFormat]::Png)
-          Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
+          foreach ($sz in "1280x720","1920x1080") {
+            $env:AMV_WINDOW_SIZE = $sz
+            $env:AMV_DATA_DIR = Join-Path $env:RUNNER_TEMP "amv-dark-data-$sz"
+            $env:AMV_TEST_DROP = "$m\v.mp4;$m\click.wav"
+            $app = Start-Process -FilePath "dist\AMV Matcher\AMV Matcher.exe" -PassThru
+            Start-Sleep -Seconds 35
+            $b = [System.Windows.Forms.SystemInformation]::VirtualScreen
+            $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+            [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+            $bmp.Save("windows-dark-$sz.png", [System.Drawing.Imaging.ImageFormat]::Png)
+            Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 3
+          }
       - name: Upload dark-mode screenshot
         if: runner.os == 'Windows' && always()
         uses: actions/upload-artifact@v4
         with:
           name: windows-dark-screenshot
-          path: windows-dark.png
+          path: windows-dark-*.png
           retention-days: 7
           if-no-files-found: ignore
       - name: Package encrypted (macOS/Windows)
