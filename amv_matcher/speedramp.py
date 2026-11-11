@@ -544,9 +544,11 @@ def anchored_points(e, speeds, vd, hold, ease_max_s=EASE_MAX_S):
 
 def plan_anchored(song, video, offset, step, *, max_speed_dev=0.25, max_accel=MAX_ACCEL, ease="smoothstep",
                   ease_max_s=EASE_MAX_S, lead=None, grid=None, hold_s=0.05, sigma_s=0.012, lam_smooth=0.6,
-                  win_s=0.3, drop_iters=2, drop_ms=30.0, **_unused):
+                  win_s=0.3, drop_iters=2, drop_ms=30.0, extra_anchors=None, forced_guard_s=0.4, **_unused):
     """Anchor-hold ramps: lock events to the grid like the step plan, but with a continuous eased speed curve.
-    Returns (points, info)."""
+    extra_anchors: optional [(src_s, out_s, weight)] forced anchors (e.g. launchsync's launch->drop targets): they
+    replace chain anchors within forced_guard_s of them, are never dropped, and chain anchors whose speed to a
+    forced neighbour leaves [lo, hi] are removed. Returns (points, info)."""
     vd = float(video["duration"])
     lo, hi = 1.0 - max_speed_dev, 1.0 + max_speed_dev
     lead = S._lead(lead)
@@ -556,6 +558,33 @@ def plan_anchored(song, video, offset, step, *, max_speed_dev=0.25, max_accel=MA
     ev_t, ev_w = S._events(video)
     anchors = select_anchors(ev_t, ev_w, targets, step["warp"], lo, hi, win_s=win_s)
     info = {"grid": grid, "n_events": int(len(ev_t)), "n_candidates_chain": len(anchors), "dropped": 0}
+    forced = []
+    if extra_anchors:
+        forced = sorted((float(x[0]), float(x[1]), float(x[2])) for x in extra_anchors)
+        fe = np.array([f[0] for f in forced])
+        anchors = [x for x in anchors if np.min(np.abs(fe - x[0])) > forced_guard_s]
+        merged = sorted(anchors + forced)
+        fset = set(forced)
+        changed = True
+        while changed:                       # drop chain anchors whose speed to a forced neighbour leaves [lo, hi]
+            changed = False
+            prev = (0.0, 0.0, 0.0)
+            for i, cur_a in enumerate(merged):
+                gap_b = cur_a[1] - prev[1]
+                r = (cur_a[0] - prev[0]) / max(gap_b, 1e-6)
+                if gap_b < 0.05 or not (lo - 1e-9 <= r <= hi + 1e-9):
+                    kill = None
+                    if cur_a not in fset:
+                        kill = i
+                    elif i > 0 and prev not in fset:
+                        kill = i - 1
+                    if kill is not None:
+                        merged.pop(kill)
+                        changed = True
+                        break
+                prev = cur_a
+        anchors = merged
+        info["forced"] = sum(1 for x in anchors if x in fset)
     if len(anchors) < 2:
         return [{"t_src": 0.0, "speed": 1.0, "ease_in_s": 0.0, "ease_out_s": 0.0}], info
     cur = anchors
@@ -566,6 +595,8 @@ def plan_anchored(song, video, offset, step, *, max_speed_dev=0.25, max_accel=MA
         sp, err = solve_anchor_speeds(e, b, lo, hi, max_accel, ease, hold=hold_s, sigma_s=sigma_s,
                                       lam_smooth=lam_smooth, w=w)
         bad = np.abs(err[1:]) * 1000.0 > drop_ms
+        if forced:
+            bad &= np.array([x not in forced for x in cur])
         if it == drop_iters or not bad.any():
             break
         info["dropped"] += int(bad.sum())
@@ -573,6 +604,8 @@ def plan_anchored(song, video, offset, step, *, max_speed_dev=0.25, max_accel=MA
         if len(cur) < 2:
             break
     info["n_anchors"] = len(cur)
+    if forced:
+        info["forced_err_ms"] = [round(abs(float(v)) * 1000.0, 1) for x, v in zip(cur, err[1:]) if x in forced]
     info["anchor_err_ms_median"] = round(float(np.median(np.abs(err[1:])) * 1000.0), 1) if len(err) > 1 else None
     info["anchor_err_ms_p90"] = round(float(np.percentile(np.abs(err[1:]) * 1000.0, 90)), 1) if len(err) > 1 else None
     pts = anchored_points(e, sp, vd, hold_s, ease_max_s)
