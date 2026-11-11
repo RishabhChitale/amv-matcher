@@ -847,6 +847,21 @@ def _tempo_wav(song_path, ratio: float, out: Path, max_in_s: Optional[float] = N
     sf.write(str(out), y.T, SR, subtype="FLOAT")
 
 
+def render_tempo_segments(song_path, ratio: float, segs: list, out_duration: float, out_wav: Path,
+                          crossfade_ms: float = 40.0) -> float:
+    """Preview audio for a tempo plan (F18): the song through pitch-preserving atempo at `ratio`, then the segments
+    (on the tempo'd timeline, like build_audio) spliced as media.render_audio does. Returns the rendered duration."""
+    ratio = float(ratio)
+    if abs(ratio - 1.0) <= 1e-6:
+        return render_audio(Path(song_path), segs, out_duration, out_wav, crossfade_ms)
+    tmp = out_wav.with_name(out_wav.stem + ".tempo.wav")
+    try:
+        _tempo_wav(song_path, ratio, tmp, max_in_s=max(float(g["src_end"]) for g in segs) * ratio + 2.0)
+        return render_audio(tmp, segs, out_duration, out_wav, crossfade_ms)
+    finally:
+        _cleanup_file(tmp)
+
+
 def build_audio(song_path, plan: dict, out_duration: float, out_wav: Path) -> None:
     """Rendered song for the plan: tempo, spliced segments with crossfades, lead silence."""
     ratio = float(plan.get("tempo_ratio") or 1.0)

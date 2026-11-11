@@ -932,6 +932,7 @@ class RenderRequest(BaseModel):
     song_path: str
     segments: list[Segment]
     crossfade_ms: float = Field(40, ge=0, le=500)
+    tempo_ratio: float = Field(1.0, ge=0.5, le=2.0)   # F18: auto-sync tempo plans (segments on the tempo'd timeline)
 
 
 def _stem(p: Path) -> str:
@@ -950,13 +951,19 @@ def render_audio(req: RenderRequest):
         raise HTTPException(422, f"Need 1-{MAX_SEGMENTS} segments")
     video = _vid_for(vp)
     vd = float(video["duration"])
-    sd = _song(str(sp))["duration"]
+    ratio = float(req.tempo_ratio)
+    sd = _song(str(sp))["duration"] / ratio
     for s in segs:
         if not (0 <= s["src_start"] < s["src_end"] <= sd + 0.05) or s["dst_start"] >= vd:
             raise HTTPException(422, "Segment outside the song or the video")
-    h = hashlib.sha256((str(sp) + str(vp) + repr(segs) + str(req.crossfade_ms)).encode()).hexdigest()[:8]
+    tkey = "" if abs(ratio - 1.0) <= 1e-6 else f"|t{ratio:.6f}"
+    h = hashlib.sha256((str(sp) + str(vp) + repr(segs) + str(req.crossfade_ms) + tkey).encode()).hexdigest()[:8]
     out = EXPORTS / f"{_stem(vp)}__{_stem(sp)}__{h}.wav"
-    dur = media.render_audio(sp, segs, vd, out, req.crossfade_ms)
+    if tkey:
+        from . import render as _render
+        dur = _render.render_tempo_segments(sp, ratio, segs, vd, out, req.crossfade_ms)
+    else:
+        dur = media.render_audio(sp, segs, vd, out, req.crossfade_ms)
     out = out.resolve()
     return {"path": str(out), "url": _export_url(out), "duration": dur}
 

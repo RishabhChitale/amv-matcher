@@ -20,8 +20,21 @@ const STEPNAME = {offset: 'Start point', tempo: 'Tempo match', boom: 'Boom match
 const curRun = () => (S.videoPath && S.sel) ? AS.runs[pk(S.videoPath, S.sel.path)] : null;
 AS.curRun = () => curRun();
 const synced = () => AS.mode === 'synced' && !!curRun();
+// The warp the export renders (render._clip_warp): a valid smooth-ramp plan (retime_ramps) wins, else the step plan.
+function planWarp(p) {
+  if (!p) return null;
+  for (const k of ['retime_ramps', 'retime']) {
+    const w = p[k] && p[k].warp;
+    if (!Array.isArray(w) || w.length < 2 || !w.every(r => Array.isArray(r) && r.length === 2 && isFinite(r[0]) && isFinite(r[1]))) continue;
+    if (Math.abs(w[0][0]) > 1e-6 || Math.abs(w[0][1]) > 1e-6) continue;
+    let ok = true; for (let i = 1; i < w.length; i++) if (w[i][0] - w[i - 1][0] < -1e-9 || w[i][1] - w[i - 1][1] < -1e-9) { ok = false; break; }
+    if (ok && w[w.length - 1][1] > 0) return w;
+  }
+  return null;
+}
+AS.planWarp = planWarp;
 function warp(v) {   // video time -> output time
-  const r = curRun(), w = r && r.result.plan && r.result.plan.retime && r.result.plan.retime.warp;
+  const r = curRun(), w = r && planWarp(r.result.plan);
   if (!w || w.length < 2) return v;
   if (v <= w[0][0]) return w[0][1] + (v - w[0][0]);
   for (let i = 1; i < w.length; i++) if (v <= w[i][0]) {
@@ -39,12 +52,46 @@ window.asAudioUrl = () => {
   if (!synced()) return null;
   const r = curRun(); return r.audioUrl || '/api/audio?path=' + encodeURIComponent(S.sel.path);
 };
+// Video speed = the exact local warp slope (video s per output s), never the merged/rounded retime sections: section
+// speeds are display bands (merged within 0.02, short ones absorbed, |sp-1|<=0.01 dropped) and following them made the
+// output clock drift up to ~0.4 s from the audio, which then got rate-nudged and seeked (off-beat, warbly preview, F18).
+function warpSpeed(v) {
+  const r = curRun(), w = r && planWarp(r.result.plan);
+  if (!w || w.length < 2 || v <= w[0][0] || v >= w[w.length - 1][0]) return 1;
+  let lo = 0, hi = w.length - 1;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (w[m][0] <= v) lo = m; else hi = m; }
+  const dv = w[hi][0] - w[lo][0], dout = w[hi][1] - w[lo][1];
+  return dv > 0 && dout > 1e-6 ? dv / dout : 1;
+}
+AS.warpSpeed = warpSpeed;
+// The audio element is the master clock (rate stays at S.rate, so it never warbles). The muted video follows it: small
+// drift is trimmed on the VIDEO rate (inaudible), proportional and capped at +-5%; big drift is still a rare audio seek.
+const VTRIM = {gain: 0.5, cap: 0.05, dead: 0.01};
+AS.vtrim = 1;
+function videoTrim() {
+  if (!S.sel || aud.paused || aud.seeking || aud.readyState < 2 || !window.songTime) return 1;
+  const st = window.songTime();
+  if (!(st >= 0) || st > (aud.duration || 1e9)) return 1;
+  const d = aud.currentTime - st;   // > 0: audio ahead, so the video speeds up
+  if (Math.abs(d) < VTRIM.dead || Math.abs(d) > 0.3) return 1;
+  return 1 + Math.max(-VTRIM.cap, Math.min(VTRIM.cap, d * VTRIM.gain));
+}
+// Preview audio segments: the plan's splice, or (tempo plan without one) the single trim build_audio renders, so a tempo
+// plan always previews from a rendered, tempo'd file instead of the raw song at 1.0x (F18).
+function previewSegs(p) {
+  if (!p) return null;
+  if (p.segments && p.segments.length) return p.segments;
+  if (!p.tempo_ratio || Math.abs(p.tempo_ratio - 1) < 1e-6) return null;
+  const off = p.offset || 0, lead = Math.max(0, -off), vd = S.dur || (S.video && S.video.duration) || 0;
+  return vd > lead ? [{src_start: Math.max(0, off), src_end: Math.max(0, off) + vd - lead, dst_start: lead}] : null;
+}
+AS.previewSegs = previewSegs;
 window.asFrame = () => {
   if (!S.playing) return;
-  let sp = 1;
-  if (synced()) { const t = vid.currentTime, s = sections().find(x => t >= x.v_start && t < x.v_end); if (s) sp = s.speed; }
-  const want = Math.max(0.0625, Math.min(16, sp * (S.rate || 1)));
-  if (Math.abs(vid.playbackRate - want) > 1e-3) vid.playbackRate = want;
+  const sp = synced() ? warpSpeed(vid.currentTime) : 1;
+  AS.vtrim = videoTrim();
+  const want = Math.max(0.0625, Math.min(16, sp * (S.rate || 1) * AS.vtrim));
+  if (Math.abs(vid.playbackRate - want) > 2e-3) vid.playbackRate = want;
 };
 window.asDrawV1 = (ctx, y0, h, t2x) => {
   AS.bands = 0; if (!synced()) return;
@@ -166,9 +213,9 @@ async function runOne(r) {   // returns result or null (cancelled / failed)
     const res = j.result; AS.runs[key] = {result: res, audioUrl: ''};
     if (window.nativeNotify) nativeNotify('Auto-sync finished', (r.name || 'Song') + ' is ready');
     r.auto_sync_cached = res.final || null;
-    const segs = res.plan && res.plan.segments;
+    const segs = previewSegs(res.plan), tempo = (res.plan && res.plan.tempo_ratio) || 1;
     if (res.eligible !== false && segs && segs.length && S.videoPath === v) {
-      try { AS.runs[key].audioUrl = (await renderAudio(r.path, segs)).url; } catch (e) { /* preview falls back to single trim */ }
+      try { AS.runs[key].audioUrl = (await renderAudio(r.path, segs, tempo)).url; } catch (e) { /* preview falls back to single trim */ }
     }
     return res;
   } catch (e) { note(e.message, true); return null; }
@@ -206,7 +253,7 @@ function ui() {
     el('as-total').textContent = res.eligible === false ? '' : `Total ${Math.round(f.total_pct)}% · effort ${Math.round(f.effort_pct != null ? f.effort_pct : 0)}%`;
     el('as-why').textContent = res.why_not_100 || '';
     el('as-mode').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.m === AS.mode));
-    el('as-pvnote').textContent = AS.mode === 'synced' && sections().length ? 'Preview: speed changes approximate, export renders exact frames' : '';
+    el('as-pvnote').textContent = AS.mode === 'synced' && sections().length ? 'Preview: video follows the exact retime curve, export renders exact frames' : '';
   }
   rdUI();
 }

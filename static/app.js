@@ -27,6 +27,7 @@ function songTime() { const a = window.asSongT && window.asSongT(); if (a != nul
 // Audio element follows the video clock. Hard seeks restart buffering (WebKit then plays only short bursts), so they are
 // rate-limited (max 1 per 2 s unless the user seeks), skipped while the element is still seeking/buffering, and the drift
 // threshold is generous; small drift is trimmed with a gentle playbackRate nudge instead. __audLog keeps the last events.
+window.songTime = songTime;
 const AUD = {lastSeek: -1e9, lastRate: -1e9, log: [], seeks: 0, rates: 0, nudging: 0, offSince: 0, fixes: 0, lead: 0};
 // Pitch must never follow playbackRate (WebView2 sounds pitchy/static otherwise): force it on both media elements.
 [vid, aud].forEach(m => { m.preservesPitch = true; m.webkitPreservesPitch = true; m.mozPreservesPitch = true; });
@@ -214,10 +215,12 @@ function applyAudioSrc() {
 }
 
 // ---------- smart splice / export ----------
-const segKey = (path, segs) => path + '|' + JSON.stringify(segs.map(s => [s.src_start, s.src_end, s.dst_start]));
-async function renderAudio(path, segs) {
-  const key = segKey(path, segs); if (S.sp.cache[key]) return S.sp.cache[key];
-  const r = await jpost('/api/render-audio', {video_path: S.videoPath, song_path: path, segments: segs, crossfade_ms: 40});
+const segKey = (path, segs, tempo) => path + '|' + JSON.stringify(segs.map(s => [s.src_start, s.src_end, s.dst_start])) + (tempo && tempo !== 1 ? '|t' + tempo : '');
+async function renderAudio(path, segs, tempo) {   // tempo: auto-sync plan tempo_ratio (segments on the tempo'd timeline)
+  const key = segKey(path, segs, tempo); if (S.sp.cache[key]) return S.sp.cache[key];
+  const body = {video_path: S.videoPath, song_path: path, segments: segs, crossfade_ms: 40};
+  if (tempo && tempo !== 1) body.tempo_ratio = tempo;
+  const r = await jpost('/api/render-audio', body);
   const j = await r.json(); if (!r.ok) throw new Error(j.detail || r.statusText);
   return S.sp.cache[key] = j;
 }
