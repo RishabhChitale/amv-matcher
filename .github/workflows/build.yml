@@ -162,7 +162,9 @@ jobs:
             # 3) with the key every entry must read Encrypted = +
             "$SZ" l -slt -p"$AMV_ARTIFACT_KEY" "$SRC" > "list-$L.txt" 2>/dev/null || { echo "$L: cannot list with the key"; exit 1; }
             grep -q '^Encrypted = +' "list-$L.txt" || { echo "$L: no encrypted entries"; exit 1; }
-            if grep -q '^Encrypted = -' "list-$L.txt"; then echo "$L: unencrypted entry present"; exit 1; fi
+            # directories and empty files carry no data, so 7z lists them as Encrypted = -; every entry with data must be +
+            BAD="$(awk 'BEGIN{RS="";FS="\n"} /\nFolder = -/ { f=0; e=""; s=0; for(i=1;i<=NF;i++){ if($i=="Encrypted = -")e="-"; if($i ~ /^Size = /){split($i,a," = "); s=a[2]+0} } if(e=="-" && s>0) n++ } END{print n+0}' "list-$L.txt")"
+            if [ "$BAD" != "0" ]; then echo "$L: $BAD unencrypted file entries present"; exit 1; fi
             cp "$SRC" "$DST"
             echo "$L: 7z, encrypted headers and entries OK"
           done
