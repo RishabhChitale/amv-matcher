@@ -32,7 +32,7 @@ def test_guard_paths_and_clamp(tmp_path, monkeypatch):
     o = _autosync_options(AutoSyncRequest(video_path="a", song_path="b", lead_s=5, budget_s=9999,
                                           guardrails={"max_speed_dev": 3, "max_tempo_pct": 50, "max_cuts": 99}))
     assert o == {"lead_s": 0.12, "allow_loop": False, "max_speed_dev": 0.25, "max_tempo_pct": 10.0,
-                 "max_cuts": 3, "budget_s": 60.0, "unlock_original": False, "prefer_energy": True, "ramps": False}
+                 "max_cuts": 3, "budget_s": 60.0, "unlock_original": False, "prefer_energy": True, "ramps": False, "smooth": False}
     o = _autosync_options(AutoSyncRequest(video_path="a", song_path="b", guardrails={"max_cuts": -2, "max_speed_dev": -1}))
     assert o["max_cuts"] == 0 and o["max_speed_dev"] == 0.0
 

@@ -1061,6 +1061,7 @@ class AutoSyncRequest(BaseModel):
     budget_s: Optional[float] = None
     unlock_original: bool = False      # only matters when song_path is the video's own audio
     ramps: bool = False                # opt-in: also plan eased speed ramps (plan.retime_ramps / final.ramps only when they beat the step plan)
+    smooth: bool = False               # "Smooth speed changes": forced retime-only eased ramps, result.smooth compares with the plain best plan
     prefer_energy: bool = True         # default on: arrange step favours the energy arc within sync/tight guards; false = old objective
 
 
@@ -1081,6 +1082,7 @@ def _autosync_options(req: AutoSyncRequest) -> dict:
             "budget_s": _clamp(req.budget_s, 1.0, L["budget_s"], 20.0),
             "unlock_original": bool(req.unlock_original),
             "ramps": bool(req.ramps),
+            "smooth": bool(req.smooth),
             "prefer_energy": bool(req.prefer_energy)}   # always echoed: default and explicit true share a key; false is cached separately (and old pre-flag entries are not reused)
 
 
@@ -1125,6 +1127,8 @@ def _run_autosync(job_id: str, vp: Path, sp: Path, opts: dict, pair):
             kw["prefer_energy"] = bool(opts.get("prefer_energy", True))
         if opts.get("ramps") and "ramps" in inspect.signature(_autosync.auto_sync).parameters:
             kw["ramps"] = True
+        if opts.get("smooth") and "smooth" in inspect.signature(_autosync.auto_sync).parameters:
+            kw["smooth"] = True
         res = _autosync.auto_sync(song, video, budget_s=opts["budget_s"], max_speed_dev=opts["max_speed_dev"],
                                   max_tempo_dev=opts["max_tempo_pct"] / 100.0, max_cuts=opts["max_cuts"],
                                   lead_s=opts["lead_s"], allow_loop=opts["allow_loop"], **kw)

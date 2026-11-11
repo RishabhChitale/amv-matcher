@@ -546,7 +546,7 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
               max_cuts: int = 3, min_gain: float = 0.5, max_passes: int = 2, allow_splice: bool = True, lead_s: float | None = None,
               allow_loop: bool = False, original: bool = False, unlock_original: bool = False,
               *, progress_cb=None, should_cancel=None, stem_targets=None, prefer_energy=True, ramps=False,
-              budget_units: float = DEFAULT_WORK_UNITS) -> dict:
+              budget_units: float = DEFAULT_WORK_UNITS, smooth=False, _force_order=None) -> dict:
     """Try several tool orders (each from the baseline) and keep the best path, so the result is never
     worse than any single tool applied directly.
 
@@ -589,7 +589,22 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
     segments, no tempo stretch, not looped). The step-retime plan stays the plan; the ramps are ADDED as
     plan.retime_ramps (plan_ramps result minus 'step': points, curve, warp, out_duration, sync/total before/step/after)
     and final.ramps {total_step, total_after, kept} when they beat the step plan, else limits_hit gets 'ramps: no gain'
-    (or 'ramps: not applicable')."""
+    (or 'ramps: not applicable').
+
+    smooth (keyword-only, default False = results byte-identical to before): "Smooth speed changes" mode.
+    FORCES a retime-only plain-trim plan with eased speed ramps (speedramp anchored mode, no instant speed steps)
+    and applies it unconditionally: plan.retime IS the ramp plan (warp, points, curve, out_duration; also copied
+    to plan.retime_ramps) and final.ramps is set. The result gains result['smooth'] =
+    {applied, smooth: {total, sync, tight, arc, max_jump, max_accel}, best: {same}}, where `best` is the plan
+    plain auto-sync (smooth off) would have chosen and `smooth` the plan applied. Not applicable (looped,
+    original-locked, no retime) -> the plain result is returned with smooth.applied False and a reason."""
+    if smooth and _force_order is None:
+        return _auto_sync_smooth(song, video, dict(
+            target=target, budget_s=budget_s, max_speed_dev=max_speed_dev, max_tempo_dev=max_tempo_dev,
+            min_section_s=min_section_s, max_cuts=max_cuts, min_gain=min_gain, max_passes=max_passes,
+            allow_splice=allow_splice, lead_s=lead_s, allow_loop=allow_loop, original=original,
+            unlock_original=unlock_original, progress_cb=progress_cb, should_cancel=should_cancel,
+            stem_targets=stem_targets, prefer_energy=prefer_energy, budget_units=budget_units))
     lead_s = S.PERCEPTUAL_LEAD_S if lead_s is None else lead_s
     lead_s = min(0.12, max(0.0, float(lead_s)))   # cuts/peaks land lead_s before the beat (0 = on it)
     t0 = time.perf_counter()
@@ -626,6 +641,9 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
                 seen.add(orders[n]); keep.append(n)
         names = keep
         allow_splice = False
+    if _force_order is not None:         # smooth mode's forced retime-only run (private)
+        orders = {"smooth_forced": tuple(_force_order)}
+        names = ["smooth_forced"]
     best, pruned, runs, skipped_names = None, False, [], []
     memo = {}
     work = _Work(budget_units, max(1.0, float(budget_s)) * TIME_CAP_MULT)
@@ -712,6 +730,82 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
     return {"steps": best["steps"], "final": final, "eligible": True, "plan": best["plan"], "path": best["path"],
             "limits_hit": sorted(set(limits)), "pruned": pruned, "why_not_100": _why(final, target, limits),
             "elapsed_s": round(time.perf_counter() - t0, 2)}
+
+
+def _plan_stats(cur, warp, st=None):
+    """Score numbers + smoothness. st: precomputed speedramp.stats (a ramp plan's own fine-grid figure: the 20 Hz
+    warp it returns would read a ~accel*0.05 jump between samples that is sampling, not a real speed step)."""
+    from . import speedramp
+    if st is None:
+        st = speedramp.stats(warp) if warp else {"max_jump": 0.0, "max_accel": 0.0}
+    t = _tight(cur)
+    return {"total": int(round(_tot(cur))), "sync": round(float(cur["sync_pct"]), 1),
+            "tight": None if t.get("tight_pct") is None else round(float(t["tight_pct"]), 1),
+            "arc": round(float(cur["arc_pct"]), 1),
+            "max_jump": round(float(st["max_jump"]), 4), "max_accel": round(float(st["max_accel"]), 3)}
+
+
+def _auto_sync_smooth(song, video, kw):
+    """auto_sync(smooth=True): the plain best plan (for the comparison) + a forced retime-only eased-ramp plan."""
+    from . import speedramp
+    from .retime import apply_warp as _aw
+    best = auto_sync(song, video, **kw)
+    rt0 = (best.get("plan") or {}).get("retime")
+    best_stats = _plan_stats(best["final"], rt0.get("warp") if rt0 else None) if best.get("eligible") else None
+
+    def _na(reason):
+        best["smooth"] = {"applied": False, "reason": reason, "smooth": None, "best": best_stats}
+        best["limits_hit"] = sorted(set(best["limits_hit"]) | {"smooth: not applicable"})
+        return best
+
+    if not best.get("eligible"):
+        return _na("song shorter than video")
+    res = auto_sync(song, video, smooth=False, _force_order=("retime",), **kw)
+    plan = res["plan"]
+    if plan.get("segments") is not None or plan.get("looped") or plan.get("tempo_ratio", 1.0) != 1.0 or plan.get("nudges"):
+        return _na("looped or segmented plan")
+    lead_s = res["final"]["lead_s"]
+    rt = plan.get("retime")
+    try:
+        rp = speedramp.plan_ramps(song, video, float(plan["offset"]), kw["max_speed_dev"], lead_s=lead_s,
+                                  step_plan=rt if rt and rt.get("warp") else None,
+                                  should_cancel=kw.get("should_cancel"), mode=RAMPS_MODE)
+    except Exception:
+        return _na("ramp planner failed")
+    stem_kw = {"stem_targets": kw["stem_targets"]} if kw.get("stem_targets") is not None else {}
+    cur = S.score_at(song, _aw(video, rp["warp"]), float(plan["offset"]), lead_s=lead_s, **stem_kw)
+    sm_stats = _plan_stats(cur, rp["warp"], st=rp.get("smooth_ramp"))
+    ramp_plan = {k: v for k, v in rp.items() if k != "step"}
+    plan["retime"] = ramp_plan
+    plan["retime_ramps"] = ramp_plan
+    final = res["final"]
+    for k in ("total_pct", "tempo_pct", "sync_pct", "arc_pct"):
+        final[k] = int(round(_tot(cur))) if k == "total_pct" else cur[k]
+    final["tightness"] = _tight(cur) or None
+    final["tight_pct"] = _tight(cur).get("tight_pct")
+    final["median_err_ms"] = _tight(cur).get("median_err_ms")
+    final["out_duration_s"] = round(float(rp["out_duration"]), 3)
+    final["sync_headline"] = int(round(0.6 * cur["sync_pct"] + 0.4 * cur["tempo_pct"]))
+    bs = best_stats or {}
+    # final.ramps compares the plain BEST plan (*_step) with the smooth plan (*_after / max_jump_ramp): this is what
+    # the UI's comparison card reads. (rp's own step-plan numbers are in rp["total_step"] etc. on plan.retime_ramps.)
+    final["ramps"] = {"kept": True, "forced": True, "mode": RAMPS_MODE,
+                      "total_step": bs.get("total"), "total_after": sm_stats["total"],
+                      "sync_step": bs.get("sync"), "sync_after": sm_stats["sync"],
+                      "tight_step": bs.get("tight"), "tight_after": sm_stats["tight"],
+                      "arc_step": bs.get("arc"), "arc_after": sm_stats["arc"],
+                      "max_jump_step": bs.get("max_jump"), "max_jump_ramp": sm_stats["max_jump"],
+                      "smooth_step": bs.get("max_jump"), "smooth_ramp": sm_stats["max_jump"]}
+    ef = effort_of(plan, video["duration"], kw["max_speed_dev"], kw["max_tempo_dev"])
+    final["effort"] = {k: v for k, v in ef.items() if k != "effort_pct"}
+    final["effort_pct"] = ef["effort_pct"]
+    final["fit_after_effort"] = round(max(0.0, final["total_pct"] - EFFORT_K * ef["effort_pct"]), 1)
+    res["limits_hit"] = sorted(set(res["limits_hit"]) | {"smooth: forced retime-only eased ramps"})
+    res["path"] = "smooth"
+    res["smooth"] = {"applied": True, "reason": None, "smooth": sm_stats, "best": best_stats,
+                     "best_path": best.get("path")}
+    res["why_not_100"] = _why(final, kw["target"], res["limits_hit"])
+    return res
 
 
 def _add_ramps(song, video, best, max_speed_dev, lead_s, cancelled, limits):

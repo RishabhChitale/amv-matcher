@@ -781,3 +781,33 @@ def test_time_cap_is_reported(monkeypatch):
     monkeypatch.setattr(AS.time, "perf_counter", lambda: next(t))
     r = auto_sync(make_song(90.0), make_video(np.arange(1, 56) * 0.52, duration=30.0, tempo=115.4), budget_s=5.0)
     assert "budget: time cap hit" in r["limits_hit"]
+
+
+def test_smooth_mode_off_identical_and_on_forces_eased_ramps():
+    """smooth=False is byte-identical to not passing it; smooth=True forces a retime-only eased-ramp plan."""
+    def _ramp_cuts(i0, i1, dur=28.0):
+        t, cuts = 0.0, []
+        while True:
+            t += i0 + (i1 - i0) * min(t / dur, 1.0)
+            if t >= dur:
+                return cuts
+            cuts.append(t)
+    song, vid = make_song(), make_video(_ramp_cuts(0.57, 0.46), duration=28.0)
+    a = auto_sync(song, vid, budget_s=30.0)
+    off = auto_sync(song, vid, budget_s=30.0, smooth=False)
+    assert _det_key(a) == _det_key(off) and "smooth" not in off and "smooth" not in off["final"]
+    runs = [auto_sync(song, vid, budget_s=30.0, smooth=True) for _ in range(2)]
+    on = runs[0]
+    assert _det_key(on) == _det_key(runs[1])
+    sm = on["smooth"]
+    assert set(sm) >= {"applied", "reason", "smooth", "best", "best_path"}
+    if sm["applied"]:
+        rt = on["plan"]["retime"]
+        assert rt["points"] and rt["warp"] and rt is on["plan"]["retime_ramps"] or rt == on["plan"]["retime_ramps"]
+        assert on["final"]["ramps"]["forced"] is True and on["path"] == "smooth"
+        assert sm["smooth"]["max_jump"] <= 0.01  # fine-grid planner figure (step plans ~0.13)
+        assert set(sm["smooth"]) == {"total", "sync", "tight", "arc", "max_jump", "max_accel"}
+        assert set(sm["best"]) == set(sm["smooth"])
+        assert on["final"]["ramps"]["total_after"] == sm["smooth"]["total"]
+    else:
+        assert sm["reason"] and "smooth: not applicable" in on["limits_hit"]
