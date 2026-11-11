@@ -109,9 +109,17 @@ jobs:
         timeout-minutes: 25
         run: |
           $w = Join-Path $env:RUNNER_TEMP "amv-scan-timing"
-          python -I tools\scan_timing.py --exe "dist\AMV Matcher\AMV Matcher.exe" -n 10 --seconds 180 --work $w
-          Write-Host "scan_timing exit code $LASTEXITCODE"
-          if ($LASTEXITCODE -ne 0) { throw "scan_timing exit code $LASTEXITCODE" }
+          $out = python -I tools\scan_timing.py --exe "dist\AMV Matcher\AMV Matcher.exe" -n 10 --seconds 180 --work $w
+          $code = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          foreach ($l in ($out | Where-Object { $_ -match '^scan_timing_detail ' })) {
+            $cfg = ($l -split ' ')[1]
+            $f = @{}; [regex]::Matches($l, '(\w+)=([\d.]+)') | ForEach-Object { $f[$_.Groups[1].Value] = $_.Groups[2].Value }
+            $ok = if ([double]$f['cold_first'] -lt 5) { 'meets' } else { 'misses' }
+            Write-Host "scan_timing_summary $cfg : first ranked row cold $($f['cold_first']) s ($ok the 5 s target), warm $($f['warm_first']) s; whole scan cold $($f['cold_wall']) s, warm $($f['warm_wall']) s; N=$($f['n']) synthetic songs of 180 s (3 min) each + one 60 s video"
+          }
+          Write-Host "scan_timing exit code $code"
+          if ($code -ne 0) { throw "scan_timing exit code $code" }
       - name: Dark-mode screenshots (Windows, CI-only check; synthetic media loaded via the native-drop hand-off)
         if: runner.os == 'Windows'
         continue-on-error: true
