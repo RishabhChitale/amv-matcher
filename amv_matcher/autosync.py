@@ -221,6 +221,7 @@ ARRANGE_MAX_MOVES = 3
 # (budget_s * TIME_CAP_MULT) that is REPORTED as limits_hit 'budget: time cap hit' when it ever fires.
 WORK_COST = {"tempo": 5, "splice": 4, "arrange": 6, "retime": 3, "retime_alt": 1, "micro": 1}
 DEFAULT_WORK_UNITS = 100          # > the cost of every order together (~60): by default nothing is pruned
+RAMPS_MODE = "anchored"           # speedramp.plan_ramps mode used by the opt-in ramps hook
 TIME_CAP_MULT = 3.0
 
 
@@ -544,7 +545,7 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
               max_speed_dev: float = 0.25, max_tempo_dev: float = 0.10, min_section_s: float = 0.75,
               max_cuts: int = 3, min_gain: float = 0.5, max_passes: int = 2, allow_splice: bool = True, lead_s: float | None = None,
               allow_loop: bool = False, original: bool = False, unlock_original: bool = False,
-              *, progress_cb=None, should_cancel=None, stem_targets=None, prefer_energy=True,
+              *, progress_cb=None, should_cancel=None, stem_targets=None, prefer_energy=True, ramps=False,
               budget_units: float = DEFAULT_WORK_UNITS) -> dict:
     """Try several tool orders (each from the baseline) and keep the best path, so the result is never
     worse than any single tool applied directly.
@@ -581,7 +582,14 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
     and percentages on any machine and under any load. budget_s is only a hard wall-clock safety cap
     (budget_s * TIME_CAP_MULT seconds); if it ever fires, limits_hit contains 'budget: time cap hit' and the
     result is NOT reproducible. Running out of work units reports plain 'budget' (+ 'budget: skipped <tool>').
-    The result echoes final.work_units {used, budget}."""
+    The result echoes final.work_units {used, budget}.
+
+    ramps (keyword-only, default False = results unchanged): after the best path is chosen, plan eased speed
+    ramps (speedramp.plan_ramps) from that path's retime. Only for a plain-trim retime plan (no splice/arrange
+    segments, no tempo stretch, not looped). The step-retime plan stays the plan; the ramps are ADDED as
+    plan.retime_ramps (plan_ramps result minus 'step': points, curve, warp, out_duration, sync/total before/step/after)
+    and final.ramps {total_step, total_after, kept} when they beat the step plan, else limits_hit gets 'ramps: no gain'
+    (or 'ramps: not applicable')."""
     lead_s = S.PERCEPTUAL_LEAD_S if lead_s is None else lead_s
     lead_s = min(0.12, max(0.0, float(lead_s)))   # cuts/peaks land lead_s before the beat (0 = on it)
     t0 = time.perf_counter()
@@ -664,6 +672,8 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
                                                                   total_in_that_path=round(_tot(r_["cur"]), 2)),
                                   "score_before": tot, "score_after": tot, "kept": False,
                                   "tightness_before": None, "tightness_after": None})
+    if ramps:
+        _add_ramps(song, video, best, max_speed_dev, lead_s, cancelled, limits)
     if lock:
         limits.append("original audio locked")
     if cflag["on"]:
@@ -676,6 +686,11 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
     for _k in ("quiet_sync", "quiet_sync_beats", "quiet_events"):      # only present when stem_targets were given
         if _k in cur:
             final[_k] = cur[_k]
+    if best["plan"].get("retime_ramps"):
+        _rr = best["plan"]["retime_ramps"]
+        final["ramps"] = {"kept": True, "mode": _rr.get("mode", RAMPS_MODE),
+                          **{k: _rr.get(k) for k in ("total_step", "total_after", "tight_step", "tight_after",
+                                                     "sync_step", "sync_after", "smooth_step", "smooth_ramp")}}
     final["tightness"] = _tight(cur) or None
     final["tight_pct"] = _tight(cur).get("tight_pct")
     final["median_err_ms"] = _tight(cur).get("median_err_ms")
@@ -697,6 +712,27 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
     return {"steps": best["steps"], "final": final, "eligible": True, "plan": best["plan"], "path": best["path"],
             "limits_hit": sorted(set(limits)), "pruned": pruned, "why_not_100": _why(final, target, limits),
             "elapsed_s": round(time.perf_counter() - t0, 2)}
+
+
+def _add_ramps(song, video, best, max_speed_dev, lead_s, cancelled, limits):
+    """Opt-in (auto_sync ramps=True): eased speed ramps on top of the chosen plain-trim retime plan."""
+    plan = best["plan"]
+    rt = plan.get("retime")
+    if not rt or not rt.get("warp") or plan.get("segments") is not None or plan.get("tempo_ratio", 1.0) != 1.0 \
+            or plan.get("nudges"):
+        limits.append("ramps: not applicable")
+        return
+    from . import speedramp
+    try:
+        res = speedramp.plan_ramps(song, video, float(plan["offset"]), max_speed_dev, lead_s=lead_s, step_plan=rt,
+                                   should_cancel=cancelled, mode=RAMPS_MODE)
+    except Exception:
+        limits.append("ramps: not applicable")
+        return
+    if res["total_after"] > res["total_step"] + 1e-9 and not cancelled():
+        plan["retime_ramps"] = {k: v for k, v in res.items() if k != "step"}
+    else:
+        limits.append("ramps: no gain")
 
 
 def _ineligible(song, video, lead_s):

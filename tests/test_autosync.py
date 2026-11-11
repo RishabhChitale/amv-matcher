@@ -725,6 +725,29 @@ def test_prefer_energy_routes_to_arrange(monkeypatch):
     assert calls and all(k == {"prefer_energy": True} for k in calls)
 
 
+def test_ramps_flag_default_off_and_opt_in():
+    """ramps=False (default) leaves results exactly as before; ramps=True only ADDS plan.retime_ramps."""
+    def _ramp_cuts(i0, i1, dur=28.0):
+        t, cuts = 0.0, []
+        while True:
+            t += i0 + (i1 - i0) * min(t / dur, 1.0)
+            if t >= dur:
+                return cuts
+            cuts.append(t)
+    song, vid = make_song(), make_video(_ramp_cuts(0.57, 0.46), duration=28.0)
+    a = auto_sync(song, vid, budget_s=30.0)
+    assert "ramps" not in a["final"] and "retime_ramps" not in a["plan"]
+    assert not any(l.startswith("ramps") for l in a["limits_hit"])
+    b = auto_sync(song, vid, budget_s=30.0, ramps=True)
+    assert b["final"]["total_pct"] == a["final"]["total_pct"] and b["plan"]["retime"] == a["plan"]["retime"]
+    rr = b["plan"].get("retime_ramps")
+    if rr:
+        assert rr["total_after"] > rr["total_step"] and "step" not in rr and rr["warp"]
+        assert b["final"]["ramps"]["kept"] is True
+    else:
+        assert any(l.startswith("ramps") for l in b["limits_hit"])
+
+
 def _det_key(r):
     import json
     return json.dumps({k: r[k] for k in ("steps", "final", "plan", "path", "limits_hit", "pruned")}, sort_keys=True,
