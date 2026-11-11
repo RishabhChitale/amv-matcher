@@ -60,7 +60,7 @@ class Server:
         import uvicorn
         self.port = free_port()
         srv.allow_port(self.port)
-        cfg = uvicorn.Config(srv.app, host="127.0.0.1", port=self.port, log_level="warning", log_config=None)
+        cfg = uvicorn.Config(srv.app, host="127.0.0.1", port=self.port, log_level="info" if os.environ.get("AMV_ACCESS_LOG") else "warning", log_config=None)
         self.srv = uvicorn.Server(cfg)
         self.t = threading.Thread(target=self.srv.run, daemon=True, name="uvicorn")
 

@@ -118,6 +118,7 @@ jobs:
           $env:AMV_DATA_DIR = Join-Path $env:RUNNER_TEMP "amv-dark-data"
           $env:AMV_TEST_DROP = "$m\v.mp4;$m\click.wav"
           $env:AMV_TEST_OPEN_MENU = "1"
+          $env:AMV_ACCESS_LOG = "1"
           $log = Join-Path $env:AMV_DATA_DIR "app.log"
           $app = Start-Process -FilePath "dist\AMV Matcher\AMV Matcher.exe" -PassThru
           $deadline = (Get-Date).AddSeconds(150)
@@ -132,7 +133,7 @@ jobs:
           [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($r.L, $r.T, 0, 0, (New-Object System.Drawing.Size $w, $h))
           $bmp.Save("windows-dark-1000x700.png", [System.Drawing.Imaging.ImageFormat]::Png)
           Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
-          if (Test-Path $log) { Copy-Item $log "windows-dark-app.log"; Select-String -Path $log -Pattern 'windark|test drop|test probe|native drop' | ForEach-Object { $_.Line } }
+          if (Test-Path $log) { Copy-Item $log "windows-dark-app.log"; Select-String -Path $log -Pattern 'windark|test drop|test probe|native drop|js:|HTTP/1.1|ui:' | ForEach-Object { $_.Line.Substring(0, [Math]::Min(300, $_.Line.Length)) } }
           else { throw "no app.log at $log" }
           if (-not (Select-String -Path $log -Pattern 'windark: menu recolour ok dark=True' -Quiet)) { throw "menu recolour did not report ok" }
           if (Select-String -Path $log -Pattern 'FAILED' -Quiet) { throw "windark logged a FAILED line" }

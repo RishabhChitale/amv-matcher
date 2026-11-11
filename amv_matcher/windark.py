@@ -117,6 +117,10 @@ def _paint_items(items, bg, fg, renderer, mode) -> int:
     for it in items:
         n += 1
         it.BackColor, it.ForeColor = bg, fg
+        t = getattr(it, "Text", "") or ""
+        if "\t" in t and hasattr(it, "ShortcutKeyDisplayString"):   # 'New Project<tab>Ctrl+N' -> aligned shortcut column
+            it.Text, it.ShortcutKeyDisplayString = t.split("\t", 1)
+            it.ShowShortcutKeys = True
         dd = getattr(it, "DropDown", None) if getattr(it, "HasDropDownItems", False) else None
         if dd is not None:
             dd.BackColor, dd.ForeColor = bg, fg
