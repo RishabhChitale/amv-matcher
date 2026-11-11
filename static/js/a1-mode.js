@@ -20,6 +20,9 @@
       b.title = ok ? '' : 'Run Auto-sync first: there is nothing to switch to yet';
       b.classList.toggle('on', ok && b.dataset.m === AS.mode);
     });
+    box.dataset.mode = ok ? AS.mode : '';
+    const lb = el('a1-lbl'); if (lb) lb.dataset.mode = ok && AS.mode === 'synced' ? 'synced' : 'orig';
+    if (box.dataset.drawn !== box.dataset.mode) { box.dataset.drawn = box.dataset.mode; if (typeof window.draw === 'function') window.draw(); }
     box.style.left = (cvs.offsetLeft + cvs.offsetWidth - box.offsetWidth - 8) + 'px';
     box.style.top = (cvs.offsetTop + RULER + V1H + A1H - box.offsetHeight - 4) + 'px';
     box.classList.toggle('hidden', !(window.S && S.sel));

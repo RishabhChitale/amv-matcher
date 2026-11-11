@@ -374,6 +374,13 @@ function emptyBand(y, h, text) {
   ctx.save(); ctx.strokeStyle = 'rgba(255,255,255,.22)'; ctx.setLineDash([6, 5]); ctx.strokeRect(6.5, y + 4.5, W - 13, h - 9); ctx.setLineDash([]);
   ctx.fillStyle = '#8b8f9c'; ctx.font = '12px Inter,sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(text, W / 2, y + h / 2); ctx.restore();
 }
+// A1 colour = playback state: Original = green, Auto-synced = purple (tokens --a1-orig / --a1-synced).
+function a1Synced() { return !!(window.AS && AS.mode === 'synced' && AS.curRun && AS.curRun()); }
+function a1Pal() {
+  return a1Synced() ? { hi: '#a78bfa', lo: '#5b21b6', tint: 'rgba(139,92,246,.10)', edge: 'rgba(167,139,250,.9)' }
+                    : { hi: '#34d399', lo: '#0f766e', tint: 'rgba(52,211,153,.08)', edge: 'rgba(52,211,153,.8)' };
+}
+window.a1Synced = a1Synced;
 function draw() {
   if (!W) return; ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.fillRect(0, RULER, W, V1H + A1H + PUMPH);
@@ -403,10 +410,10 @@ function draw() {
   if (w) {
     const sp = spliceActive(), off = S.offset, eo = sp ? 0 : off;
     const segs = sp ? S.sp.plan.segments : [{src_start: off, src_end: off + D, dst_start: 0}];
-    const g = ctx.createLinearGradient(0, a0, 0, a0 + A1H); g.addColorStop(0, '#34d399'); g.addColorStop(1, '#0f766e');
+    const g = ctx.createLinearGradient(0, a0, 0, a0 + A1H); const pal = a1Pal(); g.addColorStop(0, pal.hi); g.addColorStop(1, pal.lo);
     const pk = w.peaks, n = pk.length / 2, amp = (A1H - 12) / 2;
     ctx.save(); ctx.beginPath(); ctx.rect(0, a0, W, A1H - 8); ctx.clip();
-    if (!sp) { const x0 = t2x(-off), x1 = t2x(w.duration - off); ctx.fillStyle = 'rgba(34,211,238,.07)'; ctx.fillRect(x0, a0, x1 - x0, A1H - 8); }
+    if (!sp) { const x0 = t2x(-off), x1 = t2x(w.duration - off); ctx.fillStyle = pal.tint; ctx.fillRect(x0, a0, x1 - x0, A1H - 8); }
     segs.forEach((sg, k) => {
       const len = sg.src_end - sg.src_start, xa = t2x(sg.dst_start), xb = t2x(sg.dst_start + len);
       if (sp) { ctx.fillStyle = k % 2 ? 'rgba(139,92,246,.20)' : 'rgba(34,211,238,.12)'; ctx.fillRect(xa, a0, xb - xa, A1H - 8); }
@@ -420,7 +427,7 @@ function draw() {
       }
       ctx.strokeStyle = 'rgba(255,255,255,.28)';
       (w.beat_times || []).forEach(bt => { if (bt < sg.src_start || bt >= sg.src_end) return; const x = t2x(sg.dst_start + bt - sg.src_start); ctx.beginPath(); ctx.moveTo(x, a0 + A1H - 18); ctx.lineTo(x, a0 + A1H - 8); ctx.stroke(); });
-      ctx.strokeStyle = 'rgba(139,92,246,.8)'; ctx.strokeRect(xa + .5, a0 + .5, xb - xa - 1, A1H - 9);
+      ctx.strokeStyle = pal.edge; ctx.strokeRect(xa + .5, a0 + .5, xb - xa - 1, A1H - 9);
     });
     ctx.restore();
     ctx.shadowBlur = 0;
@@ -484,6 +491,7 @@ function readout() {
   $('vc-chip').classList.toggle('hidden', !$('vc-chip').textContent);
   $('vc-reset').classList.toggle('hidden', !r || orig || !S.manual);
   $('vc-trim').textContent = !r ? '--' : orig ? 'Whole track' : spliceActive() ? partsText(S.sp.plan.segments) : 'Use ' + fmtMS(S.offset) + ' to ' + fmtMS(S.offset + S.dur);
+  { const lb = $('a1-lbl'); lb.dataset.mode = a1Synced() ? 'synced' : 'orig'; }
   let l = ''; if (r) l = orig ? 'Original audio (from video)' : spliceActive() ? 'Spliced song, ' + (S.sp.plan.cuts.length + 1) + ' clips' : `Song ${fmtMS(S.offset)} to ${fmtMS(S.offset + S.dur)} (${S.manual ? 'manual' : 'auto'} start)`;
   $('a1-lbl').textContent = l; $('a1-lbl').classList.toggle('hidden', !l);
   const hint = orig ? 'Original audio: start locked at 0:00, so there is no offset to drag.' : spliceActive() ? 'Smart splice is on: turn it off in Fit to drag the start.' : 'Drag the song clip on A1 (or the bracket in Song overview) to set a manual start. Keys: Space play/pause, \u2190/\u2192 frame, Shift+arrows 1 s, J/K/L shuttle.';

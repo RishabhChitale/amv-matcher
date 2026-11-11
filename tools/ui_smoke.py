@@ -976,6 +976,24 @@ def main():
             ok2 = real_click("#a1-mode [data-m=synced]"); m2 = c.ev("AS.mode")
             check("F10: A1 corner toggle switches Original/Auto-synced (real clicks)", ok1 and ok2 and m1 == "orig" and m2 == "synced", "%s %s" % (m1, m2))
             check("F10: toggle keeps playhead position", abs((t1 or 0) - (t0 or 0)) < 0.5, "%s -> %s" % (t0, t1))
+            # F10b: opaque segmented switch; colour = state (Original green, Auto-synced purple); source/plan really change
+            STATE = ("(()=>{const q=s=>document.querySelector(s);const o=q('#a1-mode [data-m=orig]'),y=q('#a1-mode [data-m=synced]');"
+                     "const on=q('#a1-mode button.on');const R=e=>{const r=e.getBoundingClientRect();return [r.left,r.top,r.right,r.bottom]};"
+                     "return {mode:AS.mode,on:on&&on.dataset.m,onbg:on&&getComputedStyle(on).backgroundColor,lbl:q('#a1-lbl').dataset.mode,pal:window.a1Synced()?'synced':'orig',"
+                     "box:getComputedStyle(q('#a1-mode')).backgroundColor,ro:R(o),ry:R(y),src:aud.src,st:window.asSongT&&window.asSongT(),ac:aud.currentTime,so:S.offset,rate:vid.playbackRate,arate:aud.playbackRate,t:vid.currentTime}})()")
+            real_click("#a1-mode [data-m=orig]"); so = c.ev(STATE)
+            real_click("#a1-mode [data-m=synced]"); sy = c.ev(STATE)
+            check("F10b: Original segment active + GREEN, A1 label/track in orig state", so["on"] == "orig" and so["lbl"] == "orig" and so["pal"] == "orig" and so["onbg"] == "rgb(52, 211, 153)", str(so))
+            check("F10b: Auto-synced segment active + PURPLE, A1 label/track in synced state", sy["on"] == "synced" and sy["lbl"] == "synced" and sy["pal"] == "synced" and sy["onbg"] == "rgb(139, 92, 246)", str(sy))
+            check("F10b: switch background is opaque", so["box"].startswith("rgb(") and not so["box"].startswith("rgba("), so["box"])
+            ro, ry = so["ro"], so["ry"]
+            check("F10b: the two segments are separate (no overlap) at %s" % c.ev("innerWidth+'x'+innerHeight"), ro[2] <= ry[0] + 0.5 and ro[3] > ro[1] and ry[3] > ry[1], "%s %s" % (ro, ry))
+            run_plan = c.ev("(()=>{const p=AS.curRun().result.plan;return {tr:p.tempo_ratio||1,seg:(p.segments||[]).length,off:p.offset}})()") or {}
+            # Original = plain song at S.offset (asSongT() is null); Auto-synced = planned mapping (asSongT() = warp(video time) + plan offset, or the rendered audio)
+            mapped_o = so["st"] is None and abs((so["ac"] or 0) - ((so["t"] or 0) + (so["so"] or 0))) < 0.35
+            mapped_s = sy["st"] is not None and abs((sy["ac"] or 0) - sy["st"]) < 0.35
+            check("F10b: switching really changes what plays (Original = song at its offset, Auto-synced = planned audio mapping)", mapped_o and mapped_s, "orig=%s synced=%s plan=%s" % ({k: so[k] for k in ("src", "st", "ac", "so", "t")}, {k: sy[k] for k in ("src", "st", "ac", "t")}, run_plan))
+            check("F10b: playhead stays mapped across the switch", abs((sy["t"] or 0) - (so["t"] or 0)) < 0.6, "%s -> %s" % (so["t"], sy["t"]))
             ls = c.ev("Object.keys(localStorage).filter(k=>k.indexOf('amv.a1mode.')===0)")
             check("F10: mode remembered per video (key includes the video path)", any(len(k) > len('amv.a1mode.') for k in (ls or [])), str(ls))
             check("window.S / window.FX / window.note are exposed to other scripts", c.ev("window.S===S && window.FX===FX && typeof window.note==='function'") is True)
@@ -1013,6 +1031,10 @@ def main():
                     print("SKIP  F11 no-overlap %dx%d (no legend for this pair)" % (fw, fh))
                 else:
                     check("F11: V1 top-right labels do not overlap at %dx%d" % (fw, fh), not r.get("bad") and (r.get("n") or 0) >= 2, str(r))
+                a1o = c.ev("(()=>{const o=document.querySelector('#a1-mode [data-m=orig]').getBoundingClientRect(),y=document.querySelector('#a1-mode [data-m=synced]').getBoundingClientRect(),b=document.getElementById('a1-mode').getBoundingClientRect();"
+                           "const t=[...document.querySelectorAll('#a1-mode button')].map(e=>e.scrollWidth>e.clientWidth+1);"
+                           "return {sep:o.right<=y.left+.5,w:[o.width,y.width],clip:t,inbox:o.left>=b.left&&y.right<=b.right}})()") or {}
+                check("F10b: A1 switch segments separate, unclipped, inside the switch at %dx%d" % (fw, fh), a1o.get("sep") and a1o.get("inbox") and not any(a1o.get("clip") or [True]), str(a1o))
             # hit-test: each control must be rendered AND topmost at its centre (not clipped/overlapped); real pointer events elsewhere
             HIT = ("(sel=>{const out=[];const els=[...document.querySelectorAll(sel)];if(!els.length)return {missing:1};"
                    "for(const e of els){e.scrollIntoView({block:'center',inline:'center'});const r=e.getBoundingClientRect();const cs=getComputedStyle(e);"
