@@ -204,7 +204,9 @@ def plan_arrangement(song: dict, video: dict, max_moves: int = 3, lead_s: float 
     the ENERGY_GUARD_* margins of the baseline (opt-in; see docs/ARC-RESEARCH.md on g-arc)."""
     vd = float(video["duration"])
     base = S.score(song, video, lead_s=lead_s)
-    if not base.get("eligible", True):
+    if not base.get("eligible", True) or base.get("partial_video"):
+        # F2 partial scores (song shorter than the video) are scored on a video stretch; arrangement
+        # plans cover the whole video, so they stay out of scope here.
         return _empty(song, video, "song shorter than video")
     off = float(base["best_offset_s"])
     base_segs = SP._single(off, vd)
