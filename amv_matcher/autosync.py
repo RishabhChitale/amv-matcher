@@ -218,11 +218,15 @@ ORDER_COST = ("tempo_only", "retime_only", "splice_first", "default", "retime_fi
 ARRANGE_MAX_MOVES = 3
 # Deterministic budget: every step costs a fixed number of WORK UNITS (never wall-clock), so the search depth, and
 # therefore the plan and the percentages, cannot depend on machine load. Wall-clock is only a hard safety cap
-# (budget_s * TIME_CAP_MULT) that is REPORTED as limits_hit 'budget: time cap hit' when it ever fires.
+# (max(TIME_CAP_MIN_S, budget_s * TIME_CAP_MULT)) for a pathological hang: generous enough that it never fires on
+# a slow or loaded machine (a ~30 s real pair stays far below it at 5x slow-down), and when it DOES fire the result
+# says so: limits_hit gets 'budget: time cap hit' + NOT_REPRODUCIBLE and result/final 'deterministic' is False.
 WORK_COST = {"tempo": 5, "splice": 4, "arrange": 6, "retime": 3, "retime_alt": 1, "micro": 1}
 DEFAULT_WORK_UNITS = 100          # > the cost of every order together (~60): by default nothing is pruned
 RAMPS_MODE = "anchored"           # speedramp.plan_ramps mode used by the opt-in ramps hook
-TIME_CAP_MULT = 3.0
+TIME_CAP_MULT = 10.0              # emergency abort only (was 3.0: a loaded/slow runner tripped it and changed results)
+TIME_CAP_MIN_S = 180.0            # floor of the emergency cap, whatever budget_s is
+NOT_REPRODUCIBLE = "budget: not reproducible (wall-clock safety cap hit)"   # 'budget' prefix: the UI shows it
 
 
 class _Work:
@@ -580,8 +584,9 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
     Determinism: the search is bounded by budget_units (keyword-only, default DEFAULT_WORK_UNITS) of WORK, each
     step costing a fixed number of units (WORK_COST), never by the clock, so the same inputs give the same plan
     and percentages on any machine and under any load. budget_s is only a hard wall-clock safety cap
-    (budget_s * TIME_CAP_MULT seconds); if it ever fires, limits_hit contains 'budget: time cap hit' and the
-    result is NOT reproducible. Running out of work units reports plain 'budget' (+ 'budget: skipped <tool>').
+    (max(TIME_CAP_MIN_S, budget_s * TIME_CAP_MULT) seconds, an emergency abort for a hang); if it ever fires,
+    limits_hit contains 'budget: time cap hit' and NOT_REPRODUCIBLE, and result['deterministic'] and
+    final['deterministic'] are False (True otherwise). Running out of work units reports plain 'budget' (+ 'budget: skipped <tool>').
     The result echoes final.work_units {used, budget}.
 
     ramps (keyword-only, default False = results unchanged): after the best path is chosen, plan eased speed
@@ -646,7 +651,7 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
         names = ["smooth_forced"]
     best, pruned, runs, skipped_names = None, False, [], []
     memo = {}
-    work = _Work(budget_units, max(1.0, float(budget_s)) * TIME_CAP_MULT)
+    work = _Work(budget_units, max(TIME_CAP_MIN_S, max(1.0, float(budget_s)) * TIME_CAP_MULT))
     for i, name in enumerate(names):
         if best and cancelled():
             break
@@ -694,11 +699,14 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
         _add_ramps(song, video, best, max_speed_dev, lead_s, cancelled, limits)
     if lock:
         limits.append("original audio locked")
+    if work.cap_hit:                     # the only wall-clock dependence: say so, never pass it off as reproducible
+        limits.extend(("budget: time cap hit", NOT_REPRODUCIBLE))
     if cflag["on"]:
         limits.append("cancelled")
     final = {k: cur[k] for k in ("total_pct", "tempo_pct", "sync_pct", "arc_pct")}
     final["total_pct"] = int(round(_tot(cur)))
     final["work_units"] = {"used": round(work.used, 2), "budget": float(budget_units)}
+    final["deterministic"] = not work.cap_hit
     base0 = best["steps"][0]["score_after"] if best["steps"] else _tot(cur)
     final["natural_total_pct"] = int(round(base0))
     for _k in ("quiet_sync", "quiet_sync_beats", "quiet_events"):      # only present when stem_targets were given
@@ -729,6 +737,7 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
         best["plan"]["looped"] = False
     return {"steps": best["steps"], "final": final, "eligible": True, "plan": best["plan"], "path": best["path"],
             "limits_hit": sorted(set(limits)), "pruned": pruned, "why_not_100": _why(final, target, limits),
+            "deterministic": not work.cap_hit,
             "elapsed_s": round(time.perf_counter() - t0, 2)}
 
 
@@ -801,6 +810,9 @@ def _auto_sync_smooth(song, video, kw):
     final["effort_pct"] = ef["effort_pct"]
     final["fit_after_effort"] = round(max(0.0, final["total_pct"] - EFFORT_K * ef["effort_pct"]), 1)
     res["limits_hit"] = sorted(set(res["limits_hit"]) | {"smooth: forced retime-only eased ramps"})
+    if not best.get("deterministic", True):        # the plain comparison run hit the wall-clock cap: say so here too
+        res["limits_hit"] = sorted(set(res["limits_hit"]) | {"budget: time cap hit", NOT_REPRODUCIBLE})
+    res["deterministic"] = final["deterministic"] = bool(res.get("deterministic", True) and best.get("deterministic", True))
     res["path"] = "smooth"
     res["smooth"] = {"applied": True, "reason": None, "smooth": sm_stats, "best": best_stats,
                      "best_path": best.get("path")}
@@ -835,10 +847,10 @@ def _ineligible(song, video, lead_s):
              "tightness": None, "tight_pct": None, "median_err_ms": None, "out_duration_s": round(vd, 3),
              "video_duration_s": round(vd, 3), "sync_headline": 0, "lead_s": lead_s, "tightness_start": None,
              "effort": effort_of(None, vd), "effort_pct": 0.0, "fit_after_effort": 0.0, "natural_total_pct": 0,
-             "reason": "song shorter than video", "song_duration_s": round(sd, 3)}
+             "reason": "song shorter than video", "song_duration_s": round(sd, 3), "deterministic": True}
     final["effort"].pop("effort_pct")
     return {"steps": [], "final": final, "eligible": False, "reason": "song shorter than video",
-            "plan": None, "path": None, "limits_hit": ["song_shorter_than_video"], "pruned": False,
+            "plan": None, "path": None, "limits_hit": ["song_shorter_than_video"], "pruned": False, "deterministic": True,
             "why_not_100": "Song is shorter than the video, so it is ineligible (pass allow_loop=True to repeat it).",
             "elapsed_s": 0.0}
 

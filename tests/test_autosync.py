@@ -750,30 +750,65 @@ def test_ramps_flag_default_off_and_opt_in():
 
 def _det_key(r):
     import json
-    return json.dumps({k: r[k] for k in ("steps", "final", "plan", "path", "limits_hit", "pruned")}, sort_keys=True,
-                      default=float)
+    return json.dumps({k: r[k] for k in ("steps", "final", "plan", "path", "limits_hit", "pruned", "deterministic")},
+                      sort_keys=True, default=float)
+
+
+def _cpu_burners(n, stop, max_s=120.0):
+    """n allocation-free busy threads; each stops on `stop` OR its own hard deadline, so a failed assert,
+    a hung run or a slow runner can never leak an unbounded CPU/memory hog into later tests."""
+    import threading
+
+    def burn():
+        end = time.perf_counter() + max_s
+        x = 0
+        while not stop.is_set() and time.perf_counter() < end:
+            for i in range(2000):
+                x = (x * 31 + i) & 0xFFFF
+    return [threading.Thread(target=burn, daemon=True, name="det-burner-%d" % i) for i in range(n)]
+
+
+def _assert_same_or_flagged(r, base):
+    """A result is either byte-identical to the unloaded one, or it carries the explicit not-reproducible marker
+    (the wall-clock emergency cap fired); it may never silently differ."""
+    if r["deterministic"]:
+        assert _det_key(r) == base
+    else:
+        assert AS.NOT_REPRODUCIBLE in r["limits_hit"] and "budget: time cap hit" in r["limits_hit"]
+        assert r["final"]["deterministic"] is False
 
 
 def test_deterministic_under_cpu_load():
-    """Same inputs -> byte-identical plan/totals, repeated and while a busy-loop thread hogs the CPU;
-    the wall-clock budget is only a 3x safety cap, never the pruning rule."""
+    """Same inputs -> byte-identical plan/totals, repeated, under CPU load and with a different budget_s: the
+    work-unit budget alone decides the result; the wall clock is only an emergency cap that marks its result."""
     import threading
     fixtures = [(make_song(90.0), make_video(np.arange(1, 56) * 0.52, duration=30.0, tempo=115.4)),
                 (make_song(), make_video(slow_section_cuts(), duration=28.0)),
                 (make_song(60.0), make_video(np.arange(1, 40) * 0.47, duration=24.0, tempo=127.0))]
+    bases = []
+    for song, vid in fixtures:                                   # unloaded reference runs first, no burners alive
+        r = auto_sync(song, vid, budget_s=20.0)
+        assert r["deterministic"] is True and r["final"]["deterministic"] is True
+        assert AS.NOT_REPRODUCIBLE not in r["limits_hit"]
+        bases.append(_det_key(r))
+    assert _det_key(auto_sync(*fixtures[0], budget_s=20.0)) == bases[0]          # plain repeat
     stop = threading.Event()
-    hogs = [threading.Thread(target=lambda: [None for _ in iter(lambda: stop.is_set(), True)], daemon=True) for _ in range(2)]
-    for song, vid in fixtures:
-        base = _det_key(auto_sync(song, vid, budget_s=20.0))
-        assert _det_key(auto_sync(song, vid, budget_s=20.0)) == base
-        for h in hogs:
-            if not h.is_alive():
-                h.start()
-        try:
-            assert _det_key(auto_sync(song, vid, budget_s=120.0)) == base   # cap = 3x budget: busy threads slow runs ~5x, so keep it generous
-        finally:
-            pass
-    stop.set()
+    burners = _cpu_burners(2, stop)
+    try:
+        for b in burners:
+            b.start()
+        for (song, vid), base in zip(fixtures, bases):
+            _assert_same_or_flagged(auto_sync(song, vid, budget_s=20.0), base)
+        _assert_same_or_flagged(auto_sync(*fixtures[1], budget_s=60.0), bases[1])  # budget_s only scales the cap
+    finally:
+        stop.set()
+        for b in burners:
+            b.join(timeout=10.0)
+    assert not any(b.is_alive() for b in burners)
+
+
+def test_cap_is_generous_and_floored():
+    assert AS.TIME_CAP_MIN_S >= 120.0 and AS.TIME_CAP_MULT >= 10.0
 
 
 def test_time_cap_is_reported(monkeypatch):
@@ -781,6 +816,8 @@ def test_time_cap_is_reported(monkeypatch):
     monkeypatch.setattr(AS.time, "perf_counter", lambda: next(t))
     r = auto_sync(make_song(90.0), make_video(np.arange(1, 56) * 0.52, duration=30.0, tempo=115.4), budget_s=5.0)
     assert "budget: time cap hit" in r["limits_hit"]
+    assert AS.NOT_REPRODUCIBLE in r["limits_hit"]                    # explicit marker, shown by the UI ('budget' prefix)
+    assert r["deterministic"] is False and r["final"]["deterministic"] is False
 
 
 def test_smooth_mode_off_identical_and_on_forces_eased_ramps():
