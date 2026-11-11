@@ -109,6 +109,20 @@ def _song_analysis(path, cache_path=None, **_):
     return r
 
 
+def _warm(path, tag=0, **_):
+    """Pre-warm: import the audio stack and JIT the numba kernels on a tiny synthetic signal (no result)."""
+    from . import audio
+    import numpy as np
+    import librosa
+    sr, hop = audio.SR, audio.HOP
+    y = (np.sin(2 * np.pi * 220 * np.arange(sr * 3) / sr) * (np.arange(sr * 3) % (sr // 2) < 800)).astype("float32")
+    env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop)
+    librosa.beat.beat_track(onset_envelope=env, sr=sr, hop_length=hop)
+    S = np.abs(librosa.stft(y, n_fft=2048, hop_length=hop))
+    librosa.feature.rms(S=S, frame_length=2048)
+    return {"warm": True}
+
+
 def _video_cache_file(path, cache_dir=None):
     from . import paths
     st = os.stat(path)
@@ -211,6 +225,7 @@ def _proxy(path, **_):
 
 register_kind("song_analysis", _song_analysis, _song_cached)
 register_kind("video_analysis", _video_analysis, _video_cached)
+register_kind("warm", _warm)
 register_kind("probe", _probe)
 register_kind("thumbnails", _thumbnails, _thumbs_cached)
 

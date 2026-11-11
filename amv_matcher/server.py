@@ -131,7 +131,9 @@ def _song(path):
         try:
             res = analyze_song(path)
         except Exception as e2:
-            raise ValueError(f"worker crashed x2, in-process failed: {type(e2).__name__}: {e2}") from e2
+            n, m = type(e2).__name__, str(e2).strip()
+            tail = f"{n}: {m}" if m else f"unreadable audio file ({n})"
+            raise ValueError(f"worker crashed x2, in-process failed: {tail}") from e2
     except Exception:
         return analyze_song(path)
     try:    # the worker wrote songs.json: drop this process's stale in-memory copy
@@ -316,12 +318,26 @@ def _list_songs(music_dir: Path, recursive: bool):
                   and not p.name.startswith("."))
 
 
+def _prewarm():
+    """While the video is analysed, let idle workers import librosa/numba and JIT the audio kernels so the
+    first song analyses start hot. Fire-and-forget; no effect on results."""
+    wp = _wp()
+    if wp is None:
+        return
+    try:
+        for i in range(max(1, len(wp._slots) - 1)):
+            wp.submit("warm", "", 1, tag=i)
+    except Exception:
+        pass
+
+
 def _run_job(job_id: str, req: ScanRequest):
     job = JOBS[job_id]
     try:
         video_path = Path(req.video_path).expanduser()
         music_dir = Path(req.music_dir).expanduser().resolve()
         job.update(stage="video", message=f"Analyzing video: {video_path.name}")
+        _prewarm()
         video = _full_video(video_path.resolve())
         job["video_path"] = str(video_path.resolve())
         job["video"] = _video_info(video)

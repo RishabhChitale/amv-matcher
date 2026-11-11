@@ -53,3 +53,36 @@ def test_numba_cache_dir_per_version_and_prune(tmp_path, monkeypatch):
         os.utime(d, (1000 + i, 1000 + i))
         seen.append(d)
     assert sorted(x.name for x in root.iterdir()) == ["1.1", "1.2"]      # current + previous kept, 1.0 pruned
+
+
+def test_empty_message_exception_gets_human_tail(env, monkeypatch):
+    server, tmp = env
+    p = tmp / "bad2.wav"
+    make_click_track(p, 120)
+
+    class NoBackendError(Exception):
+        pass
+
+    def boom(path, *a, **k):
+        raise NoBackendError()
+    monkeypatch.setattr(server, "analyze_song", boom)
+    with pytest.raises(ValueError) as ei:
+        server._song(str(p))
+    msg = str(ei.value)
+    assert "worker crashed x2" in msg and msg.endswith("unreadable audio file (NoBackendError)")
+
+
+def test_warm_kind_runs_and_prewarm_is_harmless(tmp_path, monkeypatch):
+    monkeypatch.setenv("AMV_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("AMV_WORKERS", "2")
+    monkeypatch.delenv("AMV_TEST_CRASH_WORKER", raising=False)
+    from amv_matcher import server
+    server.shutdown_workers()
+    try:
+        server._prewarm()
+        wp = server._wp()
+        assert server._wait("warm", "", 1, tag=0) == {"warm": True}
+    finally:
+        server.shutdown_workers()
+    monkeypatch.setenv("AMV_WORKERS", "0")
+    server._prewarm()                                       # no pool: silently skipped
