@@ -1097,6 +1097,37 @@ def main():
                 c.ev("BM.sel=BM.items[2].id"); c.key("Delete", "Delete", vk=46); c.pump(0.3)
                 check("bookmarks: Delete removes the selected bookmark only", c.ev("BM.items.length") == 2 and bool(c.ev("S.videoPath")))
                 c.ev("BM.load({items:[]})")
+            # F7: marker legend (visible, collapsible, real clicks) + tooltips on real mouse moves + extension point
+            lb = vis("#mk-lg-btn")
+            check("F7: legend toggle is visible (box w/h > 0, not hidden)", bool(lb and lb["w"] > 0 and lb["h"] > 0 and not lb["hid"]), str(lb))
+            top = c.ev("(()=>{const b=document.getElementById('mk-lg-btn');if(!b)return false;const r=b.getBoundingClientRect();const e=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);return e===b})()")
+            check("F7: legend toggle is not covered (elementFromPoint)", top is True)
+            if c.ev("document.getElementById('mk-lg-body').classList.contains('hidden')"):
+                real_click("#mk-lg-btn")
+            bv = vis("#mk-lg-body")
+            inview = c.ev("(()=>{const r=document.getElementById('mk-lg-body').getBoundingClientRect();return r.bottom<=innerHeight+1&&r.left>=0&&r.right<=innerWidth+1})()")
+            check("F7: legend opens with a real click, is visible and inside the window", bool(bv and bv["w"] > 0 and bv["h"] > 0 and not bv["hid"]) and inview is True, str(bv))
+            rowsn = c.ev("document.querySelectorAll('#mk-lg-body .mk-row').length")
+            check("F7: legend lists score/video/song/stem/cut/beat markers", (rowsn or 0) >= 12 and c.ev("/score/i.test(document.getElementById('mk-lg-body').innerText)&&/beat/i.test(document.getElementById('mk-lg-body').innerText)") is True, str(rowsn))
+            check("F7: #v1-legend is not duplicated", c.ev("document.querySelectorAll('#v1-legend').length") <= 1 and c.ev("document.querySelectorAll('#mk-legend').length") == 1)
+            c.ev("MKLegend.register({group:'Test',id:'t-x',label:'ext-test',color:'#f0f',shape:'box',desc:'x'})")
+            check("F7: extension point adds a legend row", c.ev("document.getElementById('mk-lg-body').innerText.indexOf('ext-test')>=0") is True)
+            real_click("#mk-lg-btn")
+            bv = vis("#mk-lg-body")
+            check("F7: legend collapses with a real click", bool(bv) and (bv["hid"] or bv["w"] == 0))
+            real_click("#mk-lg-btn")
+            # tooltip: hover a drop / beat / cut tick with a real mouse move
+            tgt = c.ev("(()=>{const cv=document.getElementById('tl').getBoundingClientRect();const w=S.wf||{};const off=S.offset||0;const sp=spliceActive();"
+                       "const t=(w.drops||[]).concat(w.beat_times||[]).map(x=>x-(sp?0:off)).find(x=>x>0&&x<S.dur);"
+                       "if(t==null)return null;return {x:cv.left+t2x(t),y:cv.top+26+84+84-6}})()")
+            if tgt:
+                c.mouse("mouseMoved", tgt["x"], tgt["y"]); c.pump(0.4)
+                tv = vis("#mk-tip")
+                check("F7: tooltip shows on hovering a song marker (real mouse move)", bool(tv and tv["w"] > 0 and not tv["hid"]), str(tv))
+                c.mouse("mouseMoved", 5, 5); c.pump(0.3)
+                check("F7: tooltip hides when the pointer leaves the marker", (vis("#mk-tip") or {"hid": True})["hid"] is True)
+            else:
+                print("SKIP  F7 tooltip (no song marker in this pair)")
             if el_ok and c.ev("(AS.runs[S.videoPath+'|'+S.sel.path].result.plan.retime||{sections:[]}).sections.length") > 0:
                 check("V1 retime bands drawn", (c.ev("AS.bands") or 0) > 0, str(c.ev("AS.bands")))
                 c.ev("document.querySelector('#as-mode [data-m=orig]').click()"); c.pump(0.4)
