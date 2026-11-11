@@ -134,7 +134,27 @@ def _wf_file(key: str, wf_dir: Path) -> Path:
     return wf_dir / (hashlib.sha1(key.encode()).hexdigest() + ".json")
 
 
+_WARMED = False
+
+
+def ensure_warm() -> None:
+    """Once per process: JIT (or load from the on-disk numba cache) the audio kernels on a tiny synthetic signal,
+    under a cross-process lock so several cold processes never compile into the same empty cache at once."""
+    global _WARMED
+    if _WARMED:
+        return
+    from .numba_lock import numba_warm_lock
+    with numba_warm_lock():
+        y = (np.sin(2 * np.pi * 220 * np.arange(SR * 3) / SR) * (np.arange(SR * 3) % (SR // 2) < 800)).astype("float32")
+        env = librosa.onset.onset_strength(y=y, sr=SR, hop_length=HOP)
+        librosa.beat.beat_track(onset_envelope=env, sr=SR, hop_length=HOP)
+        S = np.abs(librosa.stft(y, n_fft=2048, hop_length=HOP))
+        librosa.feature.rms(S=S, frame_length=2048)
+    _WARMED = True
+
+
 def _compute(path: str):
+    ensure_warm()
     y, sr = librosa.load(path, sr=SR, mono=True)  # raises if undecodable
     if y.size == 0:
         raise ValueError("decoded audio is empty")
@@ -226,6 +246,7 @@ def _booms(path, S, freqs, env, beat_grid):
 
 def _boom_inputs(path: str):
     """Booms only (upgrade of an older cached analysis): one decode + STFT, no beat tracking."""
+    ensure_warm()
     y, sr = librosa.load(path, sr=SR, mono=True)
     env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=HOP)
     S = np.abs(librosa.stft(y, n_fft=2048, hop_length=HOP))
