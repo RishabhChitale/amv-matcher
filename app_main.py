@@ -399,6 +399,18 @@ def run_window() -> int:
                 time.sleep(0.5)
             ok = bool(res) and all(res.get(k) and res[k].get("vis") for k in ("a1", "fs", "v1"))
             LOG.info("test probe: %s hooks_visible=%s", res, ok)
+            if os.environ.get("AMV_TEST_DOMDROP"):   # CI aid: does a DOM drop on the stage reach pywebview's document handler (-> "native drop:")?
+                dd = ("(function(){var r=[];var L=function(e){r.push(e.type+':'+(e.defaultPrevented?'prevented':'open'))};"
+                      "['#stage','#tl-wrap','body'].forEach(function(q){var el=document.querySelector(q);if(!el)return;"
+                      "var dt=new DataTransfer();dt.items.add(new File(['x'],'probe.mp4',{type:'video/mp4'}));"
+                      "['dragenter','dragover','drop'].forEach(function(t){var ev=new DragEvent(t,{bubbles:true,cancelable:true,dataTransfer:dt});"
+                      "el.dispatchEvent(ev);r.push(q+' '+t+' '+(ev.defaultPrevented?'prevented':'open'));});});"
+                      "return JSON.stringify(r);})()")
+                try:
+                    LOG.info("test domdrop: js saw %s", win.evaluate_js(dd))
+                except Exception:
+                    LOG.exception("test domdrop")
+                time.sleep(3.0)   # a pywebview-handled drop logs "native drop: [...]" (empty list: the synthetic File has no OS path)
             if os.environ.get("AMV_TEST_OPEN_MENU") and sys.platform == "win32":
                 time.sleep(1.0)
                 windark.open_menu(win, 0)
