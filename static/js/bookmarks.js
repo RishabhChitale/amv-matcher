@@ -34,16 +34,16 @@
   BM.add = function (track, t, type, note) {
     if (!dur()) return null;
     const b = { id: newId(), track: track === 'audio' ? 'audio' : 'video', t: r3(clampT(t)), type: T[type] ? type : 'other', note: note || '', created: nowIso(), modified: nowIso() };
-    BM.items.push(b); BM.sel = b.id; changed(); return b;
+    BM.items.push(b); BM.sel = b.id; changed(); sync('add', b); return b;
   };
   BM.get = id => BM.items.find(b => b.id === id) || null;
-  BM.remove = function (id) { const i = BM.items.findIndex(b => b.id === id); if (i < 0) return; BM.items.splice(i, 1); if (BM.sel === id) BM.sel = null; closePop(); changed(); };
-  BM.update = function (id, patch) { const b = BM.get(id); if (!b) return; if (patch.type && T[patch.type]) b.type = patch.type; if (patch.note != null) b.note = String(patch.note); if (patch.t != null) b.t = r3(clampT(patch.t)); b.modified = nowIso(); changed(); };
+  BM.remove = function (id) { const i = BM.items.findIndex(b => b.id === id); if (i < 0) return; BM.items.splice(i, 1); if (BM.sel === id) BM.sel = null; closePop(); changed(); sync('del', { id }); };
+  BM.update = function (id, patch) { const b = BM.get(id); if (!b) return; if (patch.type && T[patch.type]) b.type = patch.type; if (patch.note != null) b.note = String(patch.note); if (patch.t != null) b.t = r3(clampT(patch.t)); b.modified = nowIso(); changed(); sync('upd', b); };
   BM.snapshot = () => ({ bookmarks: BM.items.map(b => Object.assign({}, b)), perfect_sync_example: !!BM.perfect });   // top-level project fields
   BM.load = function (d) {
-    d = d || {}; BM.perfect = !!d.perfect_sync_example; BM.sel = null; closePop();
+    BM.loading = true; d = d || {}; BM.perfect = !!d.perfect_sync_example; BM.sel = null; closePop();
     BM.items = (Array.isArray(d.bookmarks) ? d.bookmarks : (Array.isArray(d.items) ? d.items : [])).filter(b => b && isFinite(b.t)).map(b => ({ id: b.id || newId(), track: b.track === 'audio' ? 'audio' : 'video', t: +b.t, type: T[b.type] ? b.type : (b.type === 'perfect_sync' ? 'perfect_sync_moment' : 'other'), note: String(b.note || ''), created: b.created || nowIso(), modified: b.modified || nowIso() }));
-    changed();
+    BM.loading = false; changed();
   };
   BM.sig = () => JSON.stringify([BM.perfect, BM.items.map(b => [b.track, b.t, b.type, b.note])]);
 
@@ -90,20 +90,89 @@
     document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); return 'Downloaded ' + name;
   }
   const say = (m, err) => (window.note ? note(m, err) : console.log(m));
+  // ---------- server sync: bookmark CRUD in the saved project file (docs/TIMELINE-LOG-FORMAT.md) ----------
+  // Only when the project has a path on disk; otherwise the bookmarks live in the app state and are saved with the project.
+  // Operations run one after another; a new bookmark adopts the id the server gives it.
+  const alias = {};                                   // local id -> server id (until the item itself is renamed)
+  let chain = Promise.resolve();
+  const projPath = () => (window.PROJECT && PROJECT.path) || '';
+  const J = (url, method, body) => fetch(url, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined })
+    .then(async r => { if (!r.ok) { let m = r.statusText; try { m = (await r.json()).detail || m; } catch (e) { } const er = new Error(m); er.status = r.status; throw er; } return r; });
+  function sync(op, b) {
+    if (BM.loading || !projPath()) return;
+    const path = projPath(), id0 = b.id;
+    chain = chain.then(async () => {
+      try {
+        if (op === 'add') {
+          const cur = BM.get(id0); if (!cur) return;       // already deleted again
+          const r = await (await J('/api/project/bookmarks', 'POST', { project: path, track: cur.track, t: cur.t, type: cur.type, note: cur.note })).json();
+          const sid = r.result && r.result.id, again = BM.get(id0);
+          if (sid && again) { alias[id0] = sid; again.id = sid; if (BM.sel === id0) BM.sel = sid; if (pendingPop === id0) pendingPop = sid; }
+          else if (sid) await J('/api/project/bookmarks/' + sid + '?project=' + encodeURIComponent(path), 'DELETE');
+        } else if (op === 'upd') {
+          const cur = BM.get(b.id) || BM.get(alias[id0] || ''); if (!cur) return;
+          await J('/api/project/bookmarks/' + cur.id, 'PATCH', { project: path, track: cur.track, t: cur.t, type: cur.type, note: cur.note });
+        } else if (op === 'del') {
+          await J('/api/project/bookmarks/' + (alias[id0] || id0) + '?project=' + encodeURIComponent(path), 'DELETE');
+        } else if (op === 'perfect') {
+          await J('/api/project/perfect-sync', 'POST', { project: path, value: !!BM.perfect });
+        }
+      } catch (e) {
+        if (e.status === 404 || e.status === 405) return;   // endpoint absent, or an item the file never had: the project save will carry it
+        say('Bookmark not saved to the project file: ' + e.message, true);
+      }
+    });
+    return chain;
+  }
+  BM.sync = sync; BM.idle = () => chain;
+  let pendingPop = null;
+
+  // ---------- export / import: the server's timeline-log; client-side JSON/CSV only when the endpoints are absent ----------
+  const absent = e => !e.status ? true : (e.status === 404 || e.status === 405);
+  const projectData = async () => (window.PROJECT_UI && PROJECT_UI.collect ? await PROJECT_UI.collect() : { bookmarks: BM.items, perfect_sync_example: BM.perfect });
   BM.exportAll = async function () {
     const stem = ((window.PROJECT && PROJECT.name) || 'timelines').replace(/[^\w.-]+/g, '_');
     try {
-      const a = await saveText(stem + '-timelines.json', BM.toJSON(), 'application/json');
-      const b = await saveText(stem + '-timelines.csv', BM.toCSV(), 'text/csv');
-      say('Timelines: ' + a + ' / ' + b);
+      await chain;
+      let jt, ct, via = 'server';
+      try {
+        const data = await projectData();
+        jt = await (await J('/api/timeline-log', 'POST', { data, format: 'json' })).text();
+        ct = await (await J('/api/timeline-log', 'POST', { data, format: 'csv' })).text();
+      } catch (e) {
+        if (!absent(e)) throw e;
+        jt = BM.toJSON(); ct = BM.toCSV(); via = 'local';
+      }
+      const a = await saveText(stem + '-timelines.json', jt, 'application/json');
+      const b = await saveText(stem + '-timelines.csv', ct, 'text/csv');
+      say('Timelines: ' + a + ' / ' + b + (via === 'local' ? ' (basic format: the server export is unavailable)' : ''));
+      BM.lastExport = { via, json: jt, csv: ct };
     } catch (e) { say('Export failed: ' + e.message, true); }
   };
-  BM.importText = function (text, name) {
+  BM.importText = async function (text, name) {
+    const csv = /\.csv$/i.test(name || '') || !/^\s*[{[]/.test(text);
+    if (/"format"\s*:\s*"amv-timelines"/.test(text)) return importLocal(text, name);     // older client-only export
+    try {
+      await chain;
+      const body = { log: text, format: csv ? 'csv' : 'json', mode: BM.items.length ? 'merge' : 'replace' };
+      if (projPath()) body.project = projPath(); else body.data = await projectData();
+      const r = await (await J('/api/timeline-log/import', 'POST', body)).json();
+      BM.load({ bookmarks: r.bookmarks, perfect_sync_example: r.perfect_sync_example });
+      BM.lastImport = r;
+      const mm = r.media_match || {}, bad = [mm.video === false ? 'video' : '', mm.audio === false ? 'audio' : ''].filter(Boolean);
+      say('Imported ' + BM.items.length + ' bookmarks' + (body.mode === 'merge' ? ' (merged with the current ones)' : '') +
+        (bad.length ? '. Heads-up: this review was made on a different ' + bad.join(' and ') + ' file' : ''), !!bad.length);
+    } catch (e) {
+      if (absent(e)) return importLocal(text, name);
+      say('Import failed: ' + e.message, true);
+    }
+  };
+  function importLocal(text, name) {
     try {
       const d = BM.parseImport(text, name); if (!d.items.length) throw new Error('no bookmarks found');
       BM.load(d); say('Imported ' + BM.items.length + ' bookmarks');
     } catch (e) { say('Import failed: ' + e.message, true); }
-  };
+  }
 
   // ---------- drawing (wraps the track hooks) ----------
   function shape(ctx, s, x, y, r) {
@@ -165,7 +234,7 @@
   }, true);
   cv.addEventListener('pointerup', e => {
     if (!mdrag) return; e.stopImmediatePropagation(); const d = mdrag; mdrag = null; cv.style.cursor = '';
-    const b = BM.get(d.id); if (b) { if (d.moved) changed(); else openPop(b); }
+    const b = BM.get(d.id); if (b) { if (d.moved) { changed(); sync('upd', b); } else openPop(b); }
   }, true);
   cv.addEventListener('dblclick', e => {
     if (!dur()) return; const p = pt(e); if (hit(p.x, p.y)) return;
@@ -195,7 +264,7 @@
     pop.querySelector('#bm-p-type').onchange = e => BM.sel && BM.update(BM.sel, { type: e.target.value });
     pop.querySelector('#bm-p-note').oninput = e => BM.sel && (BM.get(BM.sel).note = e.target.value);
     pop.querySelector('#bm-p-note').onkeydown = e => { if (e.key === 'Enter') closePop(); e.stopPropagation(); if (e.key === 'Escape') closePop(); };
-    pop.querySelector('#bm-p-note').onchange = () => changed();
+    pop.querySelector('#bm-p-note').onchange = () => { changed(); const b = BM.get(BM.sel); if (b) { b.modified = nowIso(); sync('upd', b); } };
     pop.querySelector('#bm-p-del').onclick = () => BM.sel && BM.remove(BM.sel);
     pop.querySelector('#bm-p-ok').onclick = () => closePop();
     return pop;
@@ -235,7 +304,7 @@
     const lg = bar.querySelector('#bm-legend');
     TYPES.forEach(t => { const s = document.createElement('span'); s.className = 'bm-lg'; s.dataset.type = t.id; s.appendChild(sw(t)); const lt = document.createElement('span'); lt.className = 'bm-lt'; lt.textContent = t.label; s.title = t.label; s.appendChild(lt); lg.appendChild(s); });
     el('bm-mark').onclick = () => { BM.markMode = !BM.markMode; cv.classList.toggle('bm-marking', BM.markMode); renderBar(); };
-    el('bm-perfect').onchange = e => { BM.perfect = e.target.checked; renderBar(); if (window.PROJECT_UI) { /* dirty via sig() */ } };
+    el('bm-perfect').onchange = e => { BM.perfect = e.target.checked; renderBar(); sync('perfect', {}); if (window.PROJECT_UI) { /* dirty via sig() */ } };
     el('bm-export').onclick = () => BM.exportAll();
     el('bm-import').onclick = () => el('bm-file').click();
     el('bm-file').onchange = async e => { const f = e.target.files[0]; e.target.value = ''; if (f) BM.importText(await f.text(), f.name); };

@@ -1072,6 +1072,23 @@ def main():
                 js = c.ev("BM.toJSON()"); cs = c.ev("BM.toCSV()")
                 back = c.ev("(()=>{const a=BM.parseImport(BM.toJSON(),'x.json'),b=BM.parseImport(BM.toCSV(),'x.csv');return [a.items.length,b.items.length,a.items.map(i=>i.type).join()===b.items.map(i=>i.type).join()]})()")
                 check("bookmarks: JSON and CSV export re-import to the same bookmarks", back == [3, 3, True] and "timeline_t" in js and cs.startswith("id,track,t,"), str(back))
+                # real round trip on the real server: Export (timeline-log) -> clear -> Import (replace) restores ids/types/times
+                c.ev("BM.exportAll()"); wait_for(c, "!!BM.lastExport", 20); c.pump(0.3)
+                ex = c.ev("JSON.stringify({via:BM.lastExport&&BM.lastExport.via,j:BM.lastExport&&BM.lastExport.json,c:BM.lastExport&&BM.lastExport.csv})") or "{}"
+                ex = json.loads(ex)
+                check("bookmarks: export uses the server timeline-log format", ex.get("via") == "server" and '"amv-timeline-log"' in (ex.get("j") or ""), str(ex.get("via")))
+                pv = c.ev("(()=>{const n=((window.PROJECT&&PROJECT.name)||'')+'';const v=(S.videoPath||'').split('/').pop(),a=((S.sel&&S.sel.path)||'').split('/').pop();return JSON.stringify([n,v,a])})()")
+                names = [x for x in json.loads(pv or "[]") if x and len(x) > 3]
+                blob = (ex.get("j") or "") + (ex.get("c") or "")
+                check("bookmarks: export contains no file or project names", not any(x in blob for x in names), str(names))
+                before = c.ev("JSON.stringify(BM.items.map(b=>[b.id,b.track,b.type,Math.round(b.t*1000)]).sort())")
+                c.ev("BM.load({items:[]})"); c.pump(0.2)
+                c.ev("BM.importText(BM.lastExport.json,'x.json')"); wait_for(c, "BM.items.length>0", 20); c.pump(0.3)
+                after = c.ev("JSON.stringify(BM.items.map(b=>[b.id,b.track,b.type,Math.round(b.t*1000)]).sort())")
+                check("bookmarks: server export -> import round trip restores the same bookmarks", before == after, "%s | %s" % (before, after))
+                c.ev("BM.load({items:[]})"); c.pump(0.2)
+                c.ev("BM.importText(BM.lastExport.csv,'x.csv')"); wait_for(c, "BM.items.length>0", 20); c.pump(0.3)
+                check("bookmarks: CSV export imports through the server too", c.ev("BM.items.length") == 3, str(c.ev("BM.items.length")))
                 c.ev("document.getElementById('bm-perfect').click()"); c.pump(0.2)
                 pj = c.ev("PROJECT_UI.collect().then(d=>JSON.stringify([d.bookmarks,d.perfect_sync_example]))")
                 check("bookmarks: saved in the project with the perfect-sync flag", pj and pj.endswith(',true]') and pj.count('"track"') == 3, str(pj)[:120])
