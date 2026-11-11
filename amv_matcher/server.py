@@ -19,7 +19,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
-from .audio import AUDIO_EXTS, analyze_song, song_waveform
+from .audio import AUDIO_EXTS, analyze_song, exc_reason, song_waveform
 from . import media
 from .pump import pump_keyframes
 from .score import MIN_OFFSET_S, score, score_at
@@ -131,8 +131,7 @@ def _song(path):
         try:
             res = analyze_song(path)
         except Exception as e2:
-            n, m = type(e2).__name__, str(e2).strip()
-            tail = f"{n}: {m}" if m else f"unreadable audio file ({n})"
+            tail = exc_reason(e2)
             raise ValueError(f"worker crashed x2, in-process failed: {tail}") from e2
     except Exception:
         return analyze_song(path)
@@ -263,7 +262,7 @@ def _score_loop_serial(job: dict, video: dict, songs: list, results: list, skipp
             results.append(_song_row(job, p, song, sc))
             _publish_partial(job, results[-1])
         except Exception as e:  # reported, never silently skipped
-            skipped.append({"path": str(p), "name": p.name, "reason": f"{type(e).__name__}: {e}"})
+            skipped.append({"path": str(p), "name": p.name, "reason": exc_reason(e)})
 
 
 # Songs analysed AND scored concurrently in the worker pool (0 = off: the serial loop above). Scoring one song costs
@@ -340,7 +339,7 @@ def _score_loop_parallel(job: dict, video: dict, songs: list, results: list, ski
                 results.append(_song_row(job, p, song, sc))
                 _publish_partial(job, results[-1])
             except Exception as e:
-                skipped.append({"path": str(p), "name": p.name, "reason": f"{type(e).__name__}: {e}"})
+                skipped.append({"path": str(p), "name": p.name, "reason": exc_reason(e)})
     finally:
         for jid in jids.values():
             if jid is not None:
@@ -372,7 +371,7 @@ def _score_songs(job: dict, video: dict, songs: list):
             _publish_partial(job, results[-1])
         except Exception as e:
             skipped.append({"path": orig["path"], "name": orig["name"], "source": "original",
-                            "reason": f"{type(e).__name__}: {e}"})
+                            "reason": exc_reason(e)})
     par = _score_par(len(songs))
     if par:
         _score_loop_parallel(job, video, songs, results, skipped, par)

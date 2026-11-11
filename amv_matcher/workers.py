@@ -244,7 +244,7 @@ def _song_score(path, video=None, cache_path=None, **_):
     try:
         out["sc"] = score(song, v, allow_negative=True)
     except Exception as e:  # noqa: BLE001 - same reason string the serial loop would record
-        out["score_error"] = f"{type(e).__name__}: {e}"
+        out["score_error"] = audio.exc_reason(e)
     report_progress(100)
     return out
 

@@ -16,6 +16,19 @@ from .cache import get_cache
 SR = 22050
 HOP = 512
 AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".flac", ".ogg", ".aac"}
+
+
+def exc_reason(e: BaseException) -> str:
+    """Skip reason for a song that failed: "<Class>: <message>", but an empty message (audioread's NoBackendError, a bare
+    decode error) or one that is only a class name becomes "unreadable audio file (<Class>)"."""
+    import re as _re
+    n, m = type(e).__name__, str(e).strip()
+    if not m:
+        return f"unreadable audio file ({n})"
+    if _re.fullmatch(r"[A-Za-z_][\w.]*:?", m):     # e.g. "NoBackendError: " carried through a worker's ValueError
+        return f"unreadable audio file ({m.rstrip(':').rsplit('.', 1)[-1]})"
+    return f"{n}: {m}"
+
 from . import paths as _paths
 CACHE_PATH = _paths.CACHE / "songs.json"
 WF_DIR = CACHE_PATH.parent / "wf"
