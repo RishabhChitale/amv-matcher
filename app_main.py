@@ -600,14 +600,6 @@ def selftest(log_path: str = "") -> int:
         assert j["status"] == "done", j
         assert j["results"], "no scored songs"
         print("selftest ok: top =", round(j["results"][0]["total_pct"], 1), "%")
-        nd = getattr(paths, "numba_cache_dir", None)
-        if nd:
-            ndp = Path(nd())
-            ndp.mkdir(parents=True, exist_ok=True)
-            (ndp / ".w").write_text("x"); (ndp / ".w").unlink()
-            print("selftest ok: numba cache", ndp, "writable,", sum(1 for _ in ndp.rglob("*") if _.is_file()), "files")
-        else:
-            print("selftest ok: numba cache n/a (paths.numba_cache_dir not present yet)")
         sp = str(sd / "click120.wav")          # scan registered both paths as allowed
 
         def get(path):
