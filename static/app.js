@@ -27,11 +27,13 @@ function songTime() { const a = window.asSongT && window.asSongT(); if (a != nul
 // Audio element follows the video clock. Hard seeks restart buffering (WebKit then plays only short bursts), so they are
 // rate-limited (max 1 per 2 s unless the user seeks), skipped while the element is still seeking/buffering, and the drift
 // threshold is generous; small drift is trimmed with a gentle playbackRate nudge instead. __audLog keeps the last events.
-const AUD = {lastSeek: -1e9, lastRate: -1e9, log: [], seeks: 0};
+const AUD = {lastSeek: -1e9, lastRate: -1e9, log: [], seeks: 0, rates: 0, nudging: 0};
+// Pitch must never follow playbackRate (WebView2 sounds pitchy/static otherwise): force it on both media elements.
+[vid, aud].forEach(m => { m.preservesPitch = true; m.webkitPreservesPitch = true; m.mozPreservesPitch = true; });
 window.__aud = AUD;
 function audLog(k, v) { AUD.log.push([Math.round(performance.now()), k, v]); if (AUD.log.length > 300) AUD.log.shift(); }
-function audSeek(t) { AUD.lastSeek = performance.now(); AUD.seeks++; audLog('seek', +t.toFixed(3)); try { aud.currentTime = t; } catch (e) {} }
-function audRate(r) { if (Math.abs(aud.playbackRate - r) < 1e-3) return; AUD.lastRate = performance.now(); audLog('rate', +r.toFixed(3)); aud.playbackRate = r; }
+function audSeek(t) { AUD.nudging = 0; AUD.lastSeek = performance.now(); AUD.seeks++; audLog('seek', +t.toFixed(3)); try { aud.currentTime = t; } catch (e) {} }
+function audRate(r) { if (Math.abs(aud.playbackRate - r) < 1e-3) return; AUD.lastRate = performance.now(); AUD.rates++; audLog('rate', +r.toFixed(3)); aud.playbackRate = r; }
 function syncAudio(force) {
   if (!S.sel) return;
   const st = songTime();
@@ -40,8 +42,13 @@ function syncAudio(force) {
   if (force) { if (ad > 0.05 || aud.paused) audSeek(st); audRate(S.rate); }
   else if (aud.seeking || aud.readyState < 2) return;   // still buffering from the last seek: leave it alone
   else if (ad > 0.3 && now - AUD.lastSeek > 2000) { audSeek(st); audRate(S.rate); }
-  else if (S.playing && S.rate === 1 && ad > 0.04 && ad <= 0.3) { if (now - AUD.lastRate > 300) audRate(1 - Math.sign(d) * Math.min(0.03, Math.max(0.015, ad * 0.8))); }
-  else if (aud.playbackRate !== S.rate && ad <= 0.02) audRate(S.rate);
+  else if (S.playing && S.rate === 1 && (ad > 0.15 || (AUD.nudging && ad > 0.03))) {
+    // hysteresis: start trimming only on real drift (>150 ms), hold one constant rate until back within 30 ms, then restore 1.0
+    const want = 1 - Math.sign(d) * 0.03;
+    if (!AUD.nudging || Math.abs(aud.playbackRate - want) > 1e-3) { AUD.nudging = 1; audRate(want); }
+  }
+  else if (aud.playbackRate !== S.rate && (ad <= 0.03 || !S.playing || S.rate !== 1)) { AUD.nudging = 0; audRate(S.rate); }
+  else if (ad <= 0.03) AUD.nudging = 0;
   if (S.playing && aud.paused && !aud.seeking) aud.play().catch(() => {});
 }
 function play() {
