@@ -113,13 +113,49 @@ def make_video(path, seconds=VIDEO_S, jump_every=0.5):
     Path(path).write_bytes(b"RIFF" + struct.pack("<I", len(body)) + body)
 
 
-def build_fixtures(work, n, seconds):
+def make_video_hd(path, seconds=240, width=1920, height=1080, fps=60, cut_every=4.0):
+    """Realistic-cost synthetic clip: 1080p60 H.264 (needs PyAV, which the app itself decodes with). A panning noise
+    texture, moving blocks and a hard cut every `cut_every` s, so decode, cut detection and dense flow all have real work."""
+    import numpy as np
+    import av
+    rng = np.random.default_rng(7)
+    tex = []
+    for _ in range(3):                                   # three "shots": smooth-ish colour noise, wider than the frame to pan over
+        small = rng.integers(0, 256, (height // 8, (width * 2) // 8, 3), dtype=np.uint8)
+        tex.append(np.repeat(np.repeat(small, 8, axis=0), 8, axis=1)[:height, :width * 2].copy())
+    total = int(seconds * fps)
+    out = av.open(str(path), "w")
+    st = out.add_stream("libx264", rate=fps)             # what real clips are; mpeg4 here segfaults the app's threaded NONREF decode on macOS
+    st.width, st.height, st.pix_fmt, st.bit_rate = width, height, "yuv420p", 12_000_000
+    st.options = {"preset": "ultrafast", "g": "120"}
+    st.codec_context.thread_type = "AUTO"
+    frame = np.empty((height, width, 3), dtype=np.uint8)
+    per_cut = max(1, int(cut_every * fps))
+    for f in range(total):
+        shot, k = divmod(f, per_cut)
+        x0 = (k * 5) % width
+        frame[:] = tex[shot % 3][:, x0:x0 + width]
+        for j in range(4):                               # blocks sliding at different speeds / directions
+            bx = int((k * (7 + 3 * j) + j * 400) % (width - 160))
+            by = int(120 + 220 * j + 60 * math.sin(k / 15.0 + j))
+            frame[by:by + 120, bx:bx + 160] = (255 - 40 * j, 40 * j, 200)
+        for pkt in st.encode(av.VideoFrame.from_ndarray(frame, format="rgb24")):
+            out.mux(pkt)
+    for pkt in st.encode():
+        out.mux(pkt)
+    out.close()
+
+
+def build_fixtures(work, n, seconds, hd_seconds=0):
     fx = work / "fixtures"
     songs = fx / "music"
     songs.mkdir(parents=True, exist_ok=True)
-    video = fx / "video.avi"
+    video = fx / ("video_hd.mp4" if hd_seconds else "video.avi")
     if not video.exists():
-        make_video(video)
+        if hd_seconds:
+            make_video_hd(video, hd_seconds)
+        else:
+            make_video(video)
     want = {"song_%02d_%ds.wav" % (i, int(seconds)) for i in range(1, n + 1)}
     for stale in songs.glob("song_*.wav"):               # a reused --work dir may hold songs from an earlier -n / --seconds
         if stale.name not in want:
@@ -292,7 +328,7 @@ def scan(proc, port, video, music, settle, timeout=1800):
     c0 = tree_cpu(proc.pid)
     t0 = time.perf_counter()
     jid = http(port, "/api/scan", {"video_path": str(video), "music_dir": str(music)})["job_id"]
-    first = None
+    first = video_s = None
     peak_own = peak_tree = 0.0
     last_rss = 0.0
     every = 2.0 if sys.platform == "win32" else 0.5          # a PowerShell process listing is slow
@@ -305,6 +341,8 @@ def scan(proc, port, video, music, settle, timeout=1800):
             peak_own, peak_tree = max(peak_own, o), max(peak_tree, tr)
         if first is None and j.get("partial"):
             first = t
+        if video_s is None and j.get("stage") not in (None, "video"):
+            video_s = t                                  # video analysis done once the job moves on to the songs
         if j["status"] != "running":
             break
         if t > timeout:
@@ -313,7 +351,8 @@ def scan(proc, port, video, music, settle, timeout=1800):
     wall = time.perf_counter() - t0
     res = j.get("results") or []
     return {"status": j["status"], "message": j.get("message") or j.get("error"), "wall_s": round(wall, 2),
-            "first_s": None if first is None else round(first, 2), "cpu_s": round(tree_cpu(proc.pid) - c0, 1),
+            "first_s": None if first is None else round(first, 2),
+            "video_s": None if video_s is None else round(video_s, 2), "cpu_s": round(tree_cpu(proc.pid) - c0, 1),
             "peak_own_rss_mb": round(peak_own), "peak_tree_rss_mb": round(peak_tree), "ranked": len(res), "skipped": len(j.get("skipped") or []),
             "det": [[Path(r["path"]).name, r.get("bpm"), r.get("total_pct"), r.get("tempo_pct"), r.get("sync_pct")] for r in res]}
 
@@ -333,21 +372,51 @@ def run_config(exe, work, cfg, par, video, music, settle):
             kill_tree(proc)
         r["startup_s"] = round(startup, 2)
         out[phase] = r
-        print("  %-7s %-4s wall %6.2f s  first row %s s  cpu %s s  rss peak own/tree %s/%s MB  ranked %s skipped %s  [%s]" % (
-            cfg, phase, r["wall_s"], r.get("first_s"), r.get("cpu_s"), r.get("peak_own_rss_mb"), r.get("peak_tree_rss_mb"), r.get("ranked"), r.get("skipped"), r["status"]), flush=True)
+        print("  %-7s %-4s wall %6.2f s  video stage %s s  first row %s s  cpu %s s  rss peak own/tree %s/%s MB  ranked %s skipped %s  [%s]" % (
+            cfg, phase, r["wall_s"], r.get("video_s"), r.get("first_s"), r.get("cpu_s"), r.get("peak_own_rss_mb"), r.get("peak_tree_rss_mb"), r.get("ranked"), r.get("skipped"), r["status"]), flush=True)
         if r["status"] != "done":
             break
         time.sleep(2)
     return out
 
 
+def substage_bench(video):
+    """Source mode only (imports the app's modules): decode alone, decode + dense flow, and the whole analyze_video().
+    flow ~= (decode+flow) - decode; the remainder of the full pass is diffs/thumbs/cuts/tempo/camera/subject fields."""
+    sys.path.insert(0, str(REPO))
+    import cv2
+    from amv_matcher import decode, flow, video as vid
+    t = time.perf_counter()
+    fps, frames = vid._frames(str(video))
+    n = sum(1 for _ in frames)
+    t_dec = time.perf_counter() - t
+    t = time.perf_counter()
+    fps, frames = vid._frames(str(video))
+    fp = flow.FlowPass(fps)
+    for g in frames:
+        fp.feed(g)
+    t_flow = time.perf_counter() - t
+    t = time.perf_counter()
+    vid.analyze_video(str(video))
+    t_all = time.perf_counter() - t
+    print("scan_timing_substages decode=%.1f s (%d frames @%.0f fps analysed) decode+flow=%.1f s -> flow~%.1f s | analyze_video total=%.1f s -> cuts/camera/subject/other~%.1f s | decode backend: %s" % (
+        t_dec, n, fps, t_flow, max(0.0, t_flow - t_dec), t_all, max(0.0, t_all - t_flow), "PyAV software"), flush=True)
+
+
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == "--substages-child":
+        substage_bench(sys.argv[2])
+        return 0
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("-n", "--songs", type=int, default=10)
     ap.add_argument("--seconds", type=float, default=180.0, help="length of each synthetic song")
     ap.add_argument("--exe", help="frozen app executable; default: source mode")
     ap.add_argument("--work", help="working dir (default: a fresh temp dir)")
     ap.add_argument("--keep", action="store_true", help="keep the working dir")
+    ap.add_argument("--hd-video", type=float, default=0.0, metavar="SECONDS",
+                    help="use a realistic 1920x1080 60 fps H.264 clip of this many seconds (needs PyAV) instead of the tiny AVI")
+    ap.add_argument("--substages", action="store_true", help="also time decode / flow / full video analysis in-process (needs the source tree)")
+    ap.add_argument("--only", choices=("par=0", "default"), help="run just this config (halves the time; skips the identical-results check)")
     ap.add_argument("--settle", type=float, default=5.0, help="seconds to let a fresh app idle before scanning")
     a = ap.parse_args()
 
@@ -357,12 +426,16 @@ def main():
     mode = "frozen" if a.exe else "source"
     print("scan_timing: mode=%s songs=%d x %d s, work dir %s" % (mode, a.songs, int(a.seconds), work), flush=True)
     t0 = time.perf_counter()
-    video, music = build_fixtures(work, a.songs, a.seconds)
+    video, music = build_fixtures(work, a.songs, a.seconds, a.hd_video)
     print("  fixtures ready in %.1f s" % (time.perf_counter() - t0), flush=True)
 
     res, fail = {}, False
     try:
-        for cfg, par in (("par=0", 0), ("default", None)):
+        if a.substages:
+            r = subprocess.run([sys.executable, str(Path(__file__).resolve()), "--substages-child", str(video)])   # own process: a native crash must not take the timing run down
+            if r.returncode:
+                print("scan_timing_substages unavailable: child exit code %s" % r.returncode, flush=True)
+        for cfg, par in [c for c in (("par=0", 0), ("default", None)) if a.only in (None, c[0])]:
             res[cfg] = run_config(a.exe, work, cfg, par, video, music, a.settle)
             fail |= any(r["status"] != "done" for r in res[cfg].values()) or len(res[cfg]) < 2
     finally:
@@ -389,8 +462,8 @@ def main():
     for cfg in res:
         print("scan_timing %s %s" % (cfg, g(cfg, "cold", "wall_s")))
     for cfg in res:
-        print("scan_timing_detail %s cold_wall=%s cold_first=%s cold_cpu=%s warm_wall=%s warm_first=%s warm_cpu=%s own_rss_mb=%s tree_rss_mb=%s n=%d mode=%s" % (
-            cfg, g(cfg, "cold", "wall_s"), g(cfg, "cold", "first_s"), g(cfg, "cold", "cpu_s"),
+        print("scan_timing_detail %s cold_wall=%s cold_video=%s warm_video=%s cold_first=%s cold_cpu=%s warm_wall=%s warm_first=%s warm_cpu=%s own_rss_mb=%s tree_rss_mb=%s n=%d mode=%s" % (
+            cfg, g(cfg, "cold", "wall_s"), g(cfg, "cold", "video_s"), g(cfg, "warm", "video_s"), g(cfg, "cold", "first_s"), g(cfg, "cold", "cpu_s"),
             g(cfg, "warm", "wall_s"), g(cfg, "warm", "first_s"), g(cfg, "warm", "cpu_s"),
             peak(cfg, "peak_own_rss_mb"), peak(cfg, "peak_tree_rss_mb"), a.songs, mode))
         tr = peak(cfg, "peak_tree_rss_mb")
@@ -398,8 +471,10 @@ def main():
             print("scan_timing WARN %s tree RSS %s MB is over 2500 MB: cap AMV_SCAN_PAR lower on this platform" % (cfg, tr))
     dets = [res[c].get("cold", {}).get("det") for c in res]
     same = len(dets) == 2 and dets[0] is not None and dets[0] == dets[1]
-    print("scan_timing identical=%s" % ("yes" if same else "no"))
-    payload = {"mode": mode, "songs": a.songs, "song_seconds": a.seconds,
+    if a.only:
+        same = bool(dets and dets[0] is not None)
+    print("scan_timing identical=%s" % ("yes" if same else ("n/a" if a.only else "no")))
+    payload = {"mode": mode, "songs": a.songs, "song_seconds": a.seconds, "video_seconds": a.hd_video or 60,
                "results": {c: {p: {k: v for k, v in r.items() if k != "det"} for p, r in ph.items()} for c, ph in res.items()},
                "identical": same}
     print("scan_timing_json " + json.dumps(payload, sort_keys=True))
