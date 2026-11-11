@@ -609,6 +609,10 @@ class WorkerPool:
             j["progress"] = 100
             j["result"] = result
         j["error"] = error
+        if j["kind"] == "song_score":
+            # the shared video analysis is only needed to run the job: don't pin it (once per distinct scanned video)
+            # in the job table for the session. The key and the result stay, so an instant rescan still dedups.
+            j["params"].pop("video", None)
         self._counts[state] += 1
         if state in (ERROR, CANCELLED) and self._by_key.get(j["_key"]) == j["id"]:
             del self._by_key[j["_key"]]

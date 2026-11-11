@@ -135,3 +135,17 @@ def test_crash_fallback_still_ranks_with_same_scores(env, monkeypatch):
     server.shutdown_workers()
     got = _scan(server, video, songs[:3], 3, monkeypatch)
     assert _canon(got) == _canon(serial)
+
+
+def test_finished_song_score_jobs_release_the_video_but_still_dedup(env, monkeypatch):
+    server, songs, video = env
+    serial = _scan(server, video, songs[:3], 0, monkeypatch)
+    first = _scan(server, video, songs[:3], 3, monkeypatch)
+    wp = server._wp()
+    jobs = [j for j in wp._jobs.values() if j["kind"] == "song_score"]
+    assert len(jobs) == 3 and all(j["state"] == "done" for j in jobs)
+    assert all("video" not in j["params"] for j in jobs), "the video must not stay pinned in finished jobs"
+    n_before = wp._nid
+    again = _scan(server, video, songs[:3], 3, monkeypatch)            # an instant rescan: same keys, no new jobs
+    assert wp._nid == n_before, "rescan must hit the dedup (done jobs), not resubmit"
+    assert _canon(again) == _canon(first) == _canon(serial)
