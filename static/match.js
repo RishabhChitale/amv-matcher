@@ -45,8 +45,14 @@
     dropKind = t.closest('#nm-dv') ? 'video' : t.closest('#nm-dm') ? 'dir' : null;
     if (dropKind) e.preventDefault();
   }, true);
-  const origDrop = window.nativeDrop;   // native.js ran first; the shell calls nativeDrop(paths) after the drop event
-  window.nativeDrop = paths => { const k = dropKind; dropKind = null; return k ? setFromPaths(k, paths) : origDrop(paths); };
+  // native.js normally runs first; resolve the previous nativeDrop at call time and re-hook on load, so script order can never break drops
+  function hookDrop() {
+    const prev = window.nativeDrop;
+    if (prev && prev.__nm) return;
+    const w = paths => { const k = dropKind; dropKind = null; const o = prev || window.nativeDropBase; return k ? setFromPaths(k, paths) : (typeof o === 'function' ? o(paths) : undefined); };
+    w.__nm = true; window.nativeDropBase = prev || window.nativeDropBase; window.nativeDrop = w;
+  }
+  hookDrop(); window.addEventListener('load', hookDrop);
   ['nm-dv', 'nm-dm'].forEach(id => { const z = $$(id); z.addEventListener('dragover', e => { e.preventDefault(); z.classList.add('over'); }); z.addEventListener('dragleave', () => z.classList.remove('over')); z.addEventListener('drop', () => z.classList.remove('over')); });
 
   $$('nm-go').onclick = startMatch;
