@@ -102,6 +102,16 @@ jobs:
           if ($p.ExitCode -ne 0) { throw "selftest exit code $($p.ExitCode)" }
           $n = (Select-String -Path selftest.log -Pattern '^selftest ok').Count
           if ($n -ne 9) { throw "expected 9 selftest ok lines, got $n" }
+      - name: Scan timing, serial vs default scoring (Windows, informational; synthetic media)
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        timeout-minutes: 25
+        run: |
+          $w = Join-Path $env:RUNNER_TEMP "amv-scan-timing"
+          python -I tools\scan_timing.py --exe "dist\AMV Matcher\AMV Matcher.exe" -n 10 --seconds 180 --work $w
+          Write-Host "scan_timing exit code $LASTEXITCODE"
+          if ($LASTEXITCODE -ne 0) { throw "scan_timing exit code $LASTEXITCODE" }
       - name: Dark-mode screenshots (Windows, CI-only check; synthetic media loaded via the native-drop hand-off)
         if: runner.os == 'Windows'
         continue-on-error: true
