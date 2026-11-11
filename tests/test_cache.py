@@ -41,3 +41,20 @@ def test_flush_merges_other_writers_entries(tmp_path):
     a.set("x", 1)
     b.set("y", 2)                                    # b never saw "x"; its flush must not drop it
     assert json.loads(path.read_text()) == {"x": 1, "y": 2}
+
+
+def test_stale_tmp_files_are_swept_but_fresh_ones_kept(tmp_path):
+    from amv_matcher.cache import JsonCache
+    path = tmp_path / "songs.json"
+    stale = tmp_path / "songs.4242.1.tmp"            # left by a killed process
+    fresh = tmp_path / "songs.4243.1.tmp"            # could be an in-flight write by a live process
+    other = tmp_path / "other.4242.1.tmp"            # another cache's file: not ours to touch
+    for f in (stale, fresh, other):
+        f.write_text("{}")
+    old = os.path.getmtime(stale) - 3600
+    os.utime(stale, (old, old))
+    os.utime(other, (old, old))
+    JsonCache(path).set("k", 1)
+    assert not stale.exists()
+    assert fresh.exists() and other.exists()
+    assert json.loads(path.read_text()) == {"k": 1}

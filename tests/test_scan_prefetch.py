@@ -56,3 +56,37 @@ def test_ranking_identical_with_and_without_prefetch(monkeypatch):
         pf, _ = _run(server, monkeypatch, 8, ("s02",))
         assert json.dumps(pf["results"], sort_keys=True) == json.dumps(base["results"], sort_keys=True)
         assert pf["skipped"] == base["skipped"]
+
+
+@pytest.mark.parametrize("workers,configured,expect", [(2, 8, 2), (16, 8, 8), (4, 0, 0), (0, 5, 5)])
+def test_prefetch_depth_capped_at_worker_count(monkeypatch, workers, configured, expect):
+    from amv_matcher import server
+
+    class P:
+        def stats(self):
+            return {"workers": workers}
+    monkeypatch.setattr(server, "SCAN_PREFETCH", configured)
+    monkeypatch.setattr(server, "_wp", lambda: P())
+    assert server._prefetch_depth() == expect
+
+
+def test_prefetch_queues_at_most_worker_count_past_current_song(monkeypatch):
+    from amv_matcher import server
+    events = []
+
+    class P(_Pool):
+        def submit(self, kind, path, prio):
+            events.append("submit")
+
+        def stats(self):
+            return {"workers": 2}
+    monkeypatch.setattr(server, "SCAN_PREFETCH", 8)
+    monkeypatch.setattr(server, "_wp", lambda: P(set()))
+    monkeypatch.setattr(server, "_song", lambda p: events.append("song") or {"bpm": 120.0, "duration": 30.0})
+    monkeypatch.setattr(server, "score", lambda *a, **k: {"eligible": True, "total_pct": 1.0, "sync_pct": 1.0})
+    monkeypatch.setattr(server, "best_tempo", lambda *a, **k: {})
+    monkeypatch.setattr(server, "_cached_for", lambda *a, **k: None)
+    job = {"id": "pf", "status": "running", "results": None, "partial": [], "too_short": [], "skipped": [], "video_path": "v"}
+    server._score_songs(job, {"duration": 10.0}, [Path(f"{n}.mp3") for n in NAMES])
+    # before the first song is scored: the current song's own job plus at most 2 (= workers) queued past it
+    assert events.index("song") <= 3

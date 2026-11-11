@@ -48,6 +48,25 @@ class _FileLock:
                 pass
 
 
+STALE_TMP_S = 60
+
+
+def _remove_stale_tmps(path: Path, max_age_s: float = STALE_TMP_S):
+    """Delete `<stem>.<pid>.<tid>.tmp` files left beside a cache by a killed process. Called while holding the
+    cache's file lock (live writers write and rename their temp inside it), and only for files older than
+    `max_age_s`, so an in-flight write is never touched. Best effort."""
+    now = time.time()
+    try:
+        for f in path.parent.glob(f"{path.stem}.*.tmp"):
+            try:
+                if now - f.stat().st_mtime > max_age_s:
+                    f.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
 class JsonCache:
     def __init__(self, path: Path):
         self.path = Path(path)
@@ -55,6 +74,7 @@ class JsonCache:
         self.data = None
         self.dirty = False
         self._pending: dict = {}      # keys set since the last flush (merged over the on-disk copy)
+        self._swept = False           # stale temp files are swept once per process, at the first flush
 
     def _load(self):
         if self.data is None:
@@ -90,6 +110,9 @@ class JsonCache:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_name(f"{self.path.stem}.{os.getpid()}.{threading.get_ident()}.tmp")
         with _FileLock(self.path.with_name(self.path.stem + ".lock")):
+            if not self._swept:
+                self._swept = True
+                _remove_stale_tmps(self.path)
             try:
                 disk = json.loads(self.path.read_text())
                 merged = disk if isinstance(disk, dict) else dict(self.data)

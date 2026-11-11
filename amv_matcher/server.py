@@ -210,6 +210,19 @@ def _prefetch_songs(songs: list):
             return
 
 
+def _prefetch_depth() -> int:
+    """How many songs to analyse ahead: SCAN_PREFETCH, capped at the worker count (more queued than workers
+    only piles up jobs that cannot start)."""
+    if SCAN_PREFETCH <= 0:
+        return 0
+    wp = _wp()
+    try:
+        n = int(wp.stats()["workers"]) if wp is not None else 0
+    except Exception:
+        n = 0
+    return min(SCAN_PREFETCH, n) if n > 0 else SCAN_PREFETCH
+
+
 def _publish_partial(job: dict, r: dict):
     """Stream a scored song (a private copy, unranked, in scan order) so a polling UI can fill its list early.
     The final ranked `results` are computed as before, so the end result is unchanged."""
@@ -237,7 +250,7 @@ def _score_songs(job: dict, video: dict, songs: list):
         except Exception as e:
             skipped.append({"path": orig["path"], "name": orig["name"], "source": "original",
                             "reason": f"{type(e).__name__}: {e}"})
-    ahead = SCAN_PREFETCH if SCAN_PREFETCH > 0 else 0
+    ahead = _prefetch_depth()
     _prefetch_songs(songs[:ahead])
     for i, p in enumerate(songs, 1):
         job.update(done=i - 1, message=f"Analyzing song {i}/{len(songs)}: {p.name}")
