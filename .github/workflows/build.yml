@@ -9,8 +9,15 @@ on:
       - 'THIRD-PARTY-NOTICES*'
       - 'LICENSE*'
   pull_request:
+  schedule:
+    - cron: '0 3 * * *'   # nightly: macOS legs only (push/PR builds are Windows-only)
   workflow_dispatch:
     inputs:
+      platforms:
+        description: 'Which targets to build (and release, if a tag is given)'
+        type: choice
+        options: [windows, macos, all]
+        default: windows
       tag:
         description: 'Existing v* tag to build and publish as a GitHub Release (empty = plain build, no release)'
         required: false
@@ -21,14 +28,42 @@ concurrency:
 permissions:
   contents: read
 jobs:
+  # Windows is the primary target: push, PR and tag builds run Windows only.
+  # macOS runs nightly (schedule) and on manual dispatch with platforms=macos|all.
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.p.outputs.matrix }}
+      labels: ${{ steps.p.outputs.labels }}
+    steps:
+      - id: p
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          PLAT: ${{ inputs.platforms }}
+        run: |
+          case "$EVENT" in
+            schedule) P=macos ;;
+            workflow_dispatch) P="${PLAT:-windows}" ;;
+            *) P=windows ;;
+          esac
+          WIN='{"os":"windows-latest","label":"windows"}'
+          ARM='{"os":"macos-15","label":"macos-arm"}'
+          INTEL='{"os":"macos-15-intel","label":"macos-intel"}'
+          case "$P" in
+            windows) M="$WIN"; L="windows" ;;
+            macos) M="$ARM,$INTEL"; L="macos-arm macos-intel" ;;
+            all) M="$WIN,$ARM,$INTEL"; L="windows macos-arm macos-intel" ;;
+            *) echo "bad platforms: $P"; exit 1 ;;
+          esac
+          echo "matrix={\"include\":[$M]}" >> "$GITHUB_OUTPUT"
+          echo "labels=$L" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: plan
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - {os: macos-15-intel, label: macos-intel}
-          - {os: macos-15, label: macos-arm}
-          - {os: windows-latest, label: windows}
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -112,9 +147,10 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-  # Encrypted GitHub Release: only after every matrix leg (tests, build, selftests, encrypted packaging) is green.
+  # Encrypted GitHub Release: only after every selected leg (tests, build, selftests, encrypted packaging) is green.
+  # Windows-only by default; macOS assets are included only when platforms includes them (never from a tag push or the nightly).
   release:
-    needs: build
+    needs: [plan, build]
     if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.tag != '')
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -136,6 +172,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG_INPUT: ${{ inputs.tag }}
           REF_NAME: ${{ github.ref_name }}
+          LABELS: ${{ needs.plan.outputs.labels }}
         run: |
           set -eu +x
           TAG="${TAG_INPUT:-$REF_NAME}"
@@ -149,7 +186,8 @@ jobs:
           command -v 7zz >/dev/null || command -v 7z >/dev/null || sudo apt-get install -y p7zip-full >/dev/null
           SZ=$(command -v 7zz || command -v 7z)
           mkdir -p out
-          for L in windows macos-arm macos-intel; do
+          N=0
+          for L in $LABELS; do
             SRC="in/AMV-Matcher-${L}-encrypted/AMV-Matcher-${L}.7z"
             DST="out/AMV-Matcher-${VER}-${L}.7z"
             [ -f "$SRC" ] || { echo "missing encrypted archive for $L"; exit 1; }
@@ -166,10 +204,11 @@ jobs:
             BAD="$(awk 'BEGIN{RS="";FS="\n"} /\nFolder = -/ { f=0; e=""; s=0; for(i=1;i<=NF;i++){ if($i=="Encrypted = -")e="-"; if($i ~ /^Size = /){split($i,a," = "); s=a[2]+0} } if(e=="-" && s>0) n++ } END{print n+0}' "list-$L.txt")"
             if [ "$BAD" != "0" ]; then echo "$L: $BAD unencrypted file entries present"; exit 1; fi
             cp "$SRC" "$DST"
+            N=$((N+1))
             echo "$L: 7z, encrypted headers and entries OK"
           done
           rm -f list-*.txt
-          [ "$(ls out | wc -l | tr -d ' ')" = "3" ] || { echo "unexpected asset set"; exit 1; }
+          [ "$N" -ge 1 ] && [ "$(ls out | wc -l | tr -d ' ')" = "$N" ] || { echo "unexpected asset set"; exit 1; }
           (cd out && sha256sum AMV-Matcher-*.7z > SHA256SUMS.txt)
           # notes: commit subjects since the previous tag + fixed install block
           EXC=""
@@ -180,10 +219,10 @@ jobs:
             if [ -n "$PREV" ]; then git log --no-merges --format='- %s' "${PREV}..${TAG}"; else git log --no-merges --format='- %s' "${TAG}"; fi
             echo
             echo "## How to install"
-            echo "1. Download the archive for your system: \`windows\`, \`macos-arm\` (Apple silicon) or \`macos-intel\`, plus \`SHA256SUMS.txt\` to check it."
+            echo "1. Download the archive for your system (\`$LABELS\`), plus \`SHA256SUMS.txt\` to check it."
             echo "2. The archive is encrypted (AES-256, file names hidden). Open it with [7-Zip](https://www.7-zip.org/) (macOS: \`7zz\` or Keka); the password is the owner's key."
-            echo "3. Windows: the extracted folder runs as is. SmartScreen may warn on first launch: More info > Run anyway."
-            echo "4. macOS: the 7z holds a zip made with \`ditto\`; extract it with \`ditto -x -k <file>.zip <dest>\` or Archive Utility. First launch: right-click the app > Open."
+            case " $LABELS " in *" windows "*) echo "3. Windows: the extracted folder runs as is. SmartScreen may warn on first launch: More info > Run anyway." ;; esac
+            case "$LABELS" in *macos*) echo "4. macOS: the 7z holds a zip made with \`ditto\`; extract it with \`ditto -x -k <file>.zip <dest>\` or Archive Utility. First launch: right-click the app > Open." ;; esac
             echo
             echo "Personal-use build: the bundled FFmpeg includes GPL components; see THIRD-PARTY-NOTICES.md."
           } > notes.md
