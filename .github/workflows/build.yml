@@ -106,12 +106,33 @@ jobs:
         if: runner.os == 'Windows'
         continue-on-error: true
         shell: pwsh
-        timeout-minutes: 15
+        timeout-minutes: 25
         run: |
-          $w = Join-Path $env:RUNNER_TEMP "amv-scan-timing"
-          $out = python -I tools\scan_timing.py --exe "dist\AMV Matcher\AMV Matcher.exe" -n 10 --seconds 180 --hd-video 240 --substages --only default --work $w
-          $code = $LASTEXITCODE
-          $out | ForEach-Object { Write-Host $_ }
+          # WER LocalDumps: a crash dump + the faulting module for the frozen exe (uploaded with the logs)
+          $dumps = Join-Path $env:RUNNER_TEMP "amv-scan-timing-dumps"
+          New-Item -ItemType Directory -Force $dumps | Out-Null
+          $k = "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\AMV Matcher.exe"
+          New-Item -Path $k -Force | Out-Null
+          New-ItemProperty -Path $k -Name DumpFolder -Value $dumps -PropertyType ExpandString -Force | Out-Null
+          New-ItemProperty -Path $k -Name DumpType -Value 1 -PropertyType DWord -Force | Out-Null
+          # Bisect: A = plain songs, default scoring (race?); B = + 1080p60 video; C = B with one worker + serial scoring
+          $variants = @(
+            @{ tag = "A"; args = @("-n", "5", "--seconds", "180");                      env = @{} },
+            @{ tag = "B"; args = @("-n", "5", "--seconds", "180", "--hd-video", "120"); env = @{} },
+            @{ tag = "C"; args = @("-n", "5", "--seconds", "180", "--hd-video", "120"); env = @{ AMV_WORKERS = "1"; AMV_SCAN_PAR = "0" } }
+          )
+          $out = @(); $code = 0
+          foreach ($v in $variants) {
+            $w = Join-Path $env:RUNNER_TEMP ("amv-scan-timing-" + $v.tag)
+            foreach ($e in $v.env.Keys) { Set-Item -Path ("Env:" + $e) -Value $v.env[$e] }
+            $o = python -I tools\scan_timing.py --exe "dist\AMV Matcher\AMV Matcher.exe" @($v.args) --substages --only default --work $w
+            $c = $LASTEXITCODE
+            foreach ($e in $v.env.Keys) { Remove-Item -Path ("Env:" + $e) -ErrorAction SilentlyContinue }
+            Write-Host "scan_timing_variant $($v.tag) exit=$c"
+            $o | ForEach-Object { Write-Host "[$($v.tag)] $_" }
+            if ($c -ne 0) { $code = $c }
+            if ($v.tag -eq "A" -and $c -eq 0) { $out = $o }
+          }
           foreach ($l in ($out | Where-Object { $_ -match '^scan_timing_detail ' })) {
             $cfg = ($l -split ' ')[1]
             $f = @{}; [regex]::Matches($l, '(\w+)=([\d.]+)') | ForEach-Object { $f[$_.Groups[1].Value] = $_.Groups[2].Value }
@@ -128,8 +149,9 @@ jobs:
         with:
           name: scan-timing-logs-${{ github.run_id }}
           path: |
-            ${{ runner.temp }}/amv-scan-timing/**/app.log
-            ${{ runner.temp }}/amv-scan-timing/stdout-*.txt
+            ${{ runner.temp }}/amv-scan-timing-*/**/app.log
+            ${{ runner.temp }}/amv-scan-timing-*/stdout-*.txt
+            ${{ runner.temp }}/amv-scan-timing-dumps/*.dmp
           if-no-files-found: ignore
           retention-days: 7
       - name: Dark-mode screenshots (Windows, CI-only check; synthetic media loaded via the native-drop hand-off)
