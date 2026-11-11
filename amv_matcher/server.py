@@ -361,7 +361,7 @@ def _score_songs(job: dict, video: dict, songs: list):
         try:
             song = _song(orig["path"])
             if song["duration"] >= float(video["duration"]) - ORIGINAL_SLACK_S:
-                sc = score_at(song, video, 0.0, offbeat=True)     # F20: the edit's own phase
+                sc = score_at(song, video, 0.0)
             else:
                 sc = score(song, video, allow_negative=True)       # clearly shorter: scored over its best video stretch
             results.append({"path": orig["path"], "name": orig["name"], "source": "original",

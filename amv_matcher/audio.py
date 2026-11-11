@@ -33,7 +33,7 @@ from . import paths as _paths
 CACHE_PATH = _paths.CACHE / "songs.json"
 WF_DIR = CACHE_PATH.parent / "wf"
 WF_POINTS = 4000
-CACHE_VERSION = "v7"
+CACHE_VERSION = "v9"   # v9: half-beat phase check against the kick band (F20)
 GRID_MAX_FIT_MS = 70.0     # use the constant-tempo grid when the robust beat residual is below this
 GRID_MAX_DRIFT_MS = 100.0   # ...and no 16-beat window drifts further than this from the line
 GRID_MIN_BEATS = 8
@@ -166,6 +166,61 @@ def ensure_warm() -> None:
     _WARMED = True
 
 
+KICK_HZ = (30.0, 120.0)
+HALF_FLIP_RATIO = 1.3      # the kick band must be this much stronger half a beat later to move the beats
+
+
+def kick_env(S, freqs):
+    """Kick-band onset envelope (positive log-spectral flux, 30-120 Hz), one value per STFT frame."""
+    b = S[(freqs >= KICK_HZ[0]) & (freqs < KICK_HZ[1])]
+    if not len(b):
+        return np.zeros(S.shape[1])
+    return np.concatenate([[0.0], np.maximum(0.0, np.diff(np.log1p(b), axis=1)).sum(axis=0)])
+
+
+def half_beat_fix(grid: dict, beat_times, kenv, fps):
+    """Beat trackers on full-band onsets can lock onto the off-beat (open hats on the "and" in house), so every
+    beat sits half a beat early or late of the kicks. Compare the kick band on the beats with the kick band half a
+    beat later; when the "and" is clearly stronger, move the beats there. Generic: one rule for every song, no
+    effect on songs whose kicks are on the beat (or that have no steady kick).
+    Returns (grid, beat_times, flipped_grid, flipped_beats)."""
+    bt = np.asarray(beat_times, dtype=float)
+    k = np.asarray(kenv, dtype=float)
+    if len(k) < 8 or not np.any(k > 0):
+        return grid, bt, False, False
+    e = gaussian_filter1d(k / (np.percentile(k, 95) + 1e-9), GRID_SMOOTH_S * fps)
+    t = np.arange(len(e)) / fps
+    dur = (len(e) - 1) / fps
+    per = float(grid.get("grid_period") or 0.0)
+    has_grid = bool(grid.get("beat_grid")) and per > 0
+    want_g = want_b = False
+    if has_grid:
+        ph = float(grid["grid_t0"])
+        want_g = _comb(e, fps, per, (ph + per / 2) % per) > HALF_FLIP_RATIO * _comb(e, fps, per, ph)
+    if len(bt) >= GRID_MIN_BEATS:
+        mid = (bt[:-1] + bt[1:]) / 2
+        want_b = np.interp(mid, t, e).mean() > HALF_FLIP_RATIO * np.interp(bt, t, e).mean()
+    # Two independent views of the kick (comb on the grid, mean at the tracker beats) must agree; a weak or
+    # irregular kick that convinces only one of them is not a phase error and nothing moves.
+    fg = fb = bool(want_g and want_b) if has_grid else bool(want_b)
+    if fg:
+        ph = (ph + per / 2) % per
+        g = np.arange(ph, dur, per)
+        grid = {**grid, "beat_grid": [round(float(x), 4) for x in g], "grid_t0": round(ph, 4)}
+    if fb:
+        d0, d1 = bt[1] - bt[0], bt[-1] - bt[-2]
+        pre = [bt[0] - d0 / 2] if bt[0] - d0 / 2 >= 0 else []
+        post = [bt[-1] + d1 / 2] if bt[-1] + d1 / 2 < dur else []
+        bt = np.concatenate([pre, mid, post])
+    if fg:      # the residual of the (moved) tracker beats against the (moved) grid
+        g = np.asarray(grid["beat_grid"])
+        near = np.abs(bt[:, None] - g[None, :]).min(axis=1)
+        fit_ms = 1000.0 * 1.4826 * float(np.median(near))
+        grid = {**grid, "grid_fit_ms": round(fit_ms, 1),
+                "grid_used": bool(fit_ms <= GRID_MAX_FIT_MS and grid.get("grid_drift_ms", 0.0) <= GRID_MAX_DRIFT_MS)}
+    return grid, bt, fg, fb
+
+
 def _compute(path: str):
     ensure_warm()
     y, sr = librosa.load(path, sr=SR, mono=True)  # raises if undecodable
@@ -189,6 +244,8 @@ def _compute(path: str):
     energy = curves.normalize01(curves.smooth(curves.bin_mean(raw, sr / HOP, n10), 3))
 
     grid = fit_grid(env, sr / HOP, beat_times, bpm)
+    grid, beat_times, flip_g, flip_b = half_beat_fix(grid, beat_times, kick_env(S, freqs), sr / HOP)
+    beats = np.clip(np.round(beat_times * sr / HOP).astype(int), 0, len(env) - 1)
     ft = np.arange(m) * HOP / sr
     strength = _p95_norm(env[:m]) + _p95_norm(low[:m])
     phase = bar_phase(grid["beat_grid"], ft, strength) if grid["beat_grid"] else 0
@@ -196,6 +253,7 @@ def _compute(path: str):
     result = {
         **grid,
         "bar_phase": phase,
+        "half_beat_fix": [bool(flip_g), bool(flip_b)],
         "beats_per_bar": BEATS_PER_BAR,
         "bpm": round(bpm, 2),
         "beat_times": [round(float(t), 4) for t in beat_times],

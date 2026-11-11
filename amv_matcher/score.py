@@ -264,31 +264,11 @@ def _lock_warp(song, ev_t, ev_w, off, lead):
     return z, abs(float(np.angle(z1))) / (2 * np.pi) * float(np.median(np.diff(beats)))
 
 
-# F20: an edit whose cuts sit consistently on the off-beat ("and") is syncopated, not out of sync: its events
-# lock to the song's tempo at half a beat from the expected lag. When the offset is FIXED (the video's own
-# soundtrack, score_at(offbeat=True)) that phase is the editor's choice and cannot be scanned away, so it gets
-# OFFBEAT_W of the sync it would have half a beat later. Offset scans and the auto-sync planners never use it:
-# with a free offset (or a plan to choose) the on-beat placement is always available and preferred.
-OFFBEAT_W = 0.85
-
-
-def _sync_pct_at(song, ev_t, ev_w, vd, off, lead_s=None, offbeat=False):
+def _sync_pct_at(song, ev_t, ev_w, vd, off, lead_s=None):
     """Discriminative sync 0..100: logistic of the tempo-lock prominence z, times how well
-    the offset puts the events at the expected lag from the beat (cosine of phase error).
-    offbeat: also credit a consistent half-beat lag with OFFBEAT_W (fixed-offset scoring only, see above)."""
+    the offset puts the events at the expected lag from the beat (cosine of phase error)."""
     ev_t = np.asarray(ev_t, dtype=float)
     ev_w = np.asarray(ev_w, dtype=float)
-    s = _sync_core(song, ev_t, ev_w, vd, off, lead_s)
-    if offbeat and s < 100.0 * OFFBEAT_W:
-        k = _lock(song, ev_t, ev_w)
-        bt = song.get("beat_times")
-        T = k[2] if k is not None else (float(np.median(np.diff(bt))) if bt is not None and len(bt) >= 2 else 0.0)
-        if T > 0:
-            s = max(s, OFFBEAT_W * _sync_core(song, ev_t, ev_w, vd, off + 0.5 * T, lead_s))
-    return s
-
-
-def _sync_core(song, ev_t, ev_w, vd, off, lead_s):
     kw = _lock_warp(song, ev_t, ev_w, off, _lead(lead_s)) if WARPLOCK_ENABLED else None
     k = _lock(song, ev_t, ev_w)
     if kw is not None and kw[0] >= WARP_MIN_Z and (k is None or kw[0] - WARP_SCAN_Z > k[0]):
@@ -612,19 +592,16 @@ def _tempo(song, video):
     return pct, rate
 
 
-def score_at(song: dict, video: dict, offset: float, lead_s: float = None, stem_targets=None,
-             offbeat: bool = False) -> dict:
+def score_at(song: dict, video: dict, offset: float, lead_s: float = None, stem_targets=None) -> dict:
     """Score one explicit offset (manual placement of the song on the timeline). lead_s: perceptual
     lead in seconds (None = PERCEPTUAL_LEAD_S, clamped 0..0.12), applied to sync and tightness alike.
     stem_targets (stemsync.stem_targets(...), optional): soft targets inside quiet song sections; calm
-    video events may then also lock to them (adds a 'quiet_sync' key). None = unchanged results.
-    offbeat: the offset is the edit's own (original soundtrack): credit cuts locked on the off-beat (OFFBEAT_W).
-    Planners keep the default False so they never prefer an off-beat plan."""
+    video events may then also lock to them (adds a 'quiet_sync' key). None = unchanged results."""
     tempo_pct, rate = _tempo(song, video)
     ev_t, ev_w = _events(video)
     vd = float(video["duration"])
     has = len(ev_t) and len(song["beat_times"]) >= 2
-    sync = _sync_pct_at(song, ev_t, ev_w, vd, offset, lead_s, offbeat=offbeat) if has else 0.0
+    sync = _sync_pct_at(song, ev_t, ev_w, vd, offset, lead_s) if has else 0.0
     quiet = None
     if stem_targets is not None:
         quiet = _quiet_at(song, video, ev_t, ev_w, stem_targets, vd, offset, lead_s) if has else \
