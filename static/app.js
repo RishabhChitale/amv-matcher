@@ -23,15 +23,25 @@ function spliceActive() {  // spliced audio (rendered wav) is playing in place o
   const p = S.sp.plan; return !!(S.sp.on && p && p.segments && p.cuts && p.cuts.length && p.improvement_pct >= 1 && S.sp.url && S.sel && S.sel === S.inUse && S.sp.path === S.sel.path);
 }
 function songTime() { const a = window.asSongT && window.asSongT(); if (a != null) return a; return spliceActive() ? vid.currentTime : vid.currentTime + S.offset; }  // song clock = video clock + offset (spliced wav starts at video time 0)
+// Audio element follows the video clock. Hard seeks restart buffering (WebKit then plays only short bursts), so they are
+// rate-limited (max 1 per 2 s unless the user seeks), skipped while the element is still seeking/buffering, and the drift
+// threshold is generous; small drift is trimmed with a gentle playbackRate nudge instead. __audLog keeps the last events.
+const AUD = {lastSeek: -1e9, lastRate: -1e9, log: [], seeks: 0};
+window.__aud = AUD;
+function audLog(k, v) { AUD.log.push([Math.round(performance.now()), k, v]); if (AUD.log.length > 300) AUD.log.shift(); }
+function audSeek(t) { AUD.lastSeek = performance.now(); AUD.seeks++; audLog('seek', +t.toFixed(3)); try { aud.currentTime = t; } catch (e) {} }
+function audRate(r) { if (Math.abs(aud.playbackRate - r) < 1e-3) return; AUD.lastRate = performance.now(); audLog('rate', +r.toFixed(3)); aud.playbackRate = r; }
 function syncAudio(force) {
   if (!S.sel) return;
   const st = songTime();
   if (st < 0 || st > (aud.duration || 1e9)) { if (!aud.paused) aud.pause(); return; }
-  const d = aud.currentTime - st, ad = Math.abs(d);   // d > 0: audio ahead of video
-  if (force || ad > 0.08) { aud.currentTime = st; aud.playbackRate = S.rate; }
-  else if (S.playing && S.rate === 1 && ad > 0.012) aud.playbackRate = 1 - Math.sign(d) * Math.min(0.03, Math.max(0.015, ad * 0.8));
-  else if (aud.playbackRate !== S.rate && ad <= 0.008) aud.playbackRate = S.rate;
-  if (S.playing && aud.paused) aud.play().catch(() => {});
+  const d = aud.currentTime - st, ad = Math.abs(d), now = performance.now();   // d > 0: audio ahead of video
+  if (force) { if (ad > 0.05 || aud.paused) audSeek(st); audRate(S.rate); }
+  else if (aud.seeking || aud.readyState < 2) return;   // still buffering from the last seek: leave it alone
+  else if (ad > 0.3 && now - AUD.lastSeek > 2000) { audSeek(st); audRate(S.rate); }
+  else if (S.playing && S.rate === 1 && ad > 0.04 && ad <= 0.3) { if (now - AUD.lastRate > 300) audRate(1 - Math.sign(d) * Math.min(0.03, Math.max(0.015, ad * 0.8))); }
+  else if (aud.playbackRate !== S.rate && ad <= 0.02) audRate(S.rate);
+  if (S.playing && aud.paused && !aud.seeking) aud.play().catch(() => {});
 }
 function play() {
   if (!S.dur || !S.video) return;

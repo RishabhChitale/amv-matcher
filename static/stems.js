@@ -172,7 +172,7 @@ function startSrcs(songT) {
     const src = st.ctx.createBufferSource(); src.buffer = b; src.playbackRate.value = S.rate;
     const g = st.ctx.createGain(); st.gains[n] = g; src.connect(g); g.connect(st.master); src.start(0, songT); st.srcs.push(src);
   }
-  st.srcT0 = st.ctx.currentTime; st.srcS0 = songT; applyMuting(); applyAudMute();
+  st.lastStart = performance.now(); st.srcT0 = st.ctx.currentTime; st.srcS0 = songT; applyMuting(); applyAudMute();
 }
 function sync() {
   try {
@@ -180,7 +180,7 @@ function sync() {
     if (on) {
       const sT = songTime();
       if (!st.srcs.length || st.srcRate !== S.rate) startSrcs(sT);
-      else { const pos = st.srcS0 + (st.ctx.currentTime - st.srcT0) * st.srcRate; if (Math.abs(pos - sT) > 0.08) startSrcs(sT); }
+      else { const pos = st.srcS0 + (st.ctx.currentTime - st.srcT0) * st.srcRate; { const dd = Math.abs(pos - sT); if (dd > 1 || (dd > 0.25 && performance.now() - (st.lastStart || 0) > 2000)) startSrcs(sT); } }
     } else if (st.srcs.length) stopSrcs();
   } catch (e) { st.err = String(e && e.stack || e).slice(0, 300); }
 }
