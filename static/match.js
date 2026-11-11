@@ -96,7 +96,7 @@
           const j = await scoreSongs(M.videoPath, [p]);
           if (my !== M.token) return;
           (j.results || []).forEach(r => { if (r.source === 'original') { if (!M.rows.has(r.path)) M.rows.set(r.path, {path: r.path, name: r.name, state: 'done', r}); } else Object.assign(row, {state: 'done', r}); });
-          (j.too_short || []).forEach(r => { if (r.source !== 'original') Object.assign(row, {state: 'short', r}); });
+          (j.too_short || []).forEach(r => { if (r.source !== 'original') Object.assign(row, {state: 'done', r}); });   // F2b: never grouped out for length
           (j.skipped || []).forEach(s => { if (s.source !== 'original') Object.assign(row, {state: 'skipped', reason: s.reason || ''}); });
           if (row.state === 'pending') Object.assign(row, {state: 'skipped', reason: 'No result'});
         } catch (e) { if (my !== M.token) return; Object.assign(row, {state: 'skipped', reason: e.message}); }

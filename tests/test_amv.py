@@ -89,9 +89,9 @@ def test_song_shorter_than_video_uses_a_stretch(tmp_path, video_file):
     assert r["trim_start_s"] == 0.0
     assert r == score(analyze_song(str(p), tmp_path / "x.json"), v)          # deterministic
     tiny = tmp_path / "tiny.wav"
-    make_click_track(tiny, 120, seconds=3)                                  # below PARTIAL_MIN_S
+    make_click_track(tiny, 120, seconds=3)                                  # F2b: no length floor
     r0 = score(analyze_song(str(tiny), tmp_path / "x.json"), v)
-    assert r0["eligible"] is False and r0["total_pct"] == 0
+    assert r0["eligible"] is True and r0["total_pct"] > 0 and r0["video_use"]["label"] == "uses 0:03 of 0:10 video"
     ok = tmp_path / "long.wav"
     make_click_track(ok, 120, seconds=30)                                   # longer songs: unchanged path
     r2 = score(analyze_song(str(ok), tmp_path / "x.json"), v)

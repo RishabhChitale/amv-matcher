@@ -76,8 +76,12 @@ def test_short_song_and_no_sections():
     s2 = dict(song, sections=[])
     r = plan_arrangement(s2, vid)
     assert r["total_after"] == r["total_before"] and r["sections_used"] == []
-    vid2 = dict(vid, duration=200.0)
-    assert plan_arrangement(song, vid2)["eligible"] is False
+    # F2b: a song shorter than the video is still arranged, on its best video stretch (never excluded for length).
+    vid2 = dict(vid, duration=float(song["duration"]) + 40.0)
+    r2 = plan_arrangement(song, vid2)
+    assert r2["eligible"] is not False
+    w = r2.get("video_window")
+    assert w and 0.0 <= w["start_s"] < w["end_s"] <= vid2["duration"] + 1e-6
 
 
 from tests import realmedia

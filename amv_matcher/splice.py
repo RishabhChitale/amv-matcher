@@ -11,7 +11,10 @@ Conventions (deliberate, not bugs):
   * total_pct is the raw score.score_at() result on the assembled song and is what
     improvement_pct uses; 'objective' = raw combined score + drop/lull priority
     bonus - CUT_PENALTY per cut (what the planner maximises).
-  * A song shorter than the video returns {eligible: False, reason, segments: [], ...}.
+  * A song shorter than the video (F2b) is planned on the best video stretch of its length (the window
+    score.score picks): segments are in clip time and plan["video_window"] (score.video_use) says which
+    source stretch they refer to. Only a song with no decodable audio returns {eligible: False,
+    reason: 'unreadable', segments: [], ...}.
 
 plan_splice() does an exact dynamic program over output bar slots. State =
 (source bar of the current segment, cuts used, run length capped at the minimum
@@ -383,6 +386,22 @@ def _empty(reason, phase):
             "baseline": {"offset": 0.0, "total_pct": 0}, "improvement_pct": 0}
 
 
+def on_video_window(song: dict, video: dict, lead_s, plan_fn) -> dict:
+    """F2b: plan a song shorter than the video on the video stretch of its length that score.score picks.
+    plan_fn(clip) plans on that stretch (score.clip_video, times rebased to 0); the result gets
+    video_window = score.video_use(start_s, end_s, video duration), the contract render.video_warp and the
+    UI already read (times in the plan are clip times)."""
+    sd, vd = float(song["duration"]), float(video["duration"])
+    pick = S.score(song, video, lead_s=lead_s)
+    w = float((pick.get("video_use") or {}).get("start_s") or 0.0)
+    end = min(vd, w + sd) - 1e-6
+    clip = S.clip_video(video, w, end)
+    clip["duration"] = min(float(clip["duration"]), sd)   # rounding can never make the clip longer than the song
+    res = plan_fn(clip)
+    res["video_window"] = S.video_use(w, end, vd)
+    return res
+
+
 def plan_splice(song: dict, video: dict, max_cuts: int, min_segment_s: float = 2.0,
                 allow_negative: bool = False, lead_s: float = None, *, should_cancel=None) -> dict:
     """Plan: {"eligible", "segments": [{"src_start","src_end","dst_start"}], "cuts", scores...,
@@ -394,12 +413,13 @@ def plan_splice(song: dict, video: dict, max_cuts: int, min_segment_s: float = 2
     (output 0..lead_silence_s is silent; the song plays from 0 at output time lead_silence_s).
     lead_silence_s is 0.0 for ordinary plans."""
     vd, sd = float(video["duration"]), float(song["duration"])
+    if 0.0 < sd < vd:
+        return on_video_window(song, video, lead_s, lambda clip: plan_splice(
+            song, clip, max_cuts, min_segment_s, allow_negative, lead_s, should_cancel=should_cancel))
     phase = _bar_phase(song)
-    if sd < vd:
-        return _empty("song shorter than video", phase)
     base = S.score(song, video, allow_negative=allow_negative, lead_s=lead_s)
     if not base.get("eligible", True):
-        return _empty("song shorter than video", phase)
+        return _empty(base.get("reason") or "unreadable", phase)
     off = float(base["best_offset_s"])
     base_segs = _single(off, vd)
     base_total = int(base["total_pct"])

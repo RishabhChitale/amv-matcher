@@ -11,7 +11,7 @@ Source: `amv_matcher/score.py` (with `curves.py` and `video.py` for the inputs).
 - **Energy curve** at 10 Hz, with calm stretches (lulls: below 25% energy for 1.5 s or more) and peak segments (top 10% bursts).
 
 ## Length rule and offset
-A song shorter than the video is ineligible. Otherwise the video is a window sliding over the song. Offsets are scanned in steps of 0.1 s or more (max 2000 steps), the best few are refined in 20 ms steps over +-0.15 s, and cross-correlating the cuts with the song's onsets adds extra candidates. Offsets can be negative, down to -3 s (the song starts after the video, no penalty). The offset gives the trim window.
+A song shorter than the video is never excluded: it is scored over its best-matching stretch of the video (`video_use`, label "uses M:SS of M:SS video"), whatever its length. Only an unreadable song is ineligible. Otherwise the video is a window sliding over the song. Offsets are scanned in steps of 0.1 s or more (max 2000 steps), the best few are refined in 20 ms steps over +-0.15 s, and cross-correlating the cuts with the song's onsets adds extra candidates. Offsets can be negative, down to -3 s (the song starts after the video, no penalty). The offset gives the trim window.
 
 ## Tempo (20%)
 The song BPM is compared with the video's tempo and its alternative candidates, also at 0.5x and 2x. The score is a bell curve of relative error (sigma 6.79%): 100 for exact, 50 at about 8% off. It also counts as tempo evidence if the video's events lock to the song's own beat period (see Sync).

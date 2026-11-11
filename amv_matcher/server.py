@@ -237,7 +237,9 @@ def _publish_partial(job: dict, r: dict):
 
 
 def _score_songs(job: dict, video: dict, songs: list):
-    """Analyze + score songs into job (results/too_short/skipped); shared by scan and score-songs."""
+    """Analyze + score songs into job (results/skipped); shared by scan and score-songs. A song shorter than the video
+    is scored over its best video stretch like any other (F2b); only an unreadable song is skipped. `too_short` stays
+    in the job as an always-empty list so older clients keep working."""
     job.update(stage="songs", total=len(songs), done=0, partial=[])
     results, skipped = [], []
     orig = video.get("original_audio")
@@ -248,7 +250,7 @@ def _score_songs(job: dict, video: dict, songs: list):
             if song["duration"] >= float(video["duration"]) - ORIGINAL_SLACK_S:
                 sc = score_at(song, video, 0.0)
             else:
-                sc = score(song, video, allow_negative=True)       # clearly shorter than the video: too_short
+                sc = score(song, video, allow_negative=True)       # clearly shorter: scored over its best video stretch
             results.append({"path": orig["path"], "name": orig["name"], "source": "original",
                             "bpm": song["bpm"], "duration": song["duration"], **sc,
                             "natural_total_pct": sc.get("total_pct"),
@@ -279,7 +281,10 @@ def _score_songs(job: dict, video: dict, songs: list):
         for r in ok:
             r["vs_original"] = {"total": r["total_pct"] - reference["original_total"],
                                 "sync": round(r["sync_pct"] - reference["original_sync"], 1)}
-    short = [r for r in results if not r["eligible"]]
+    for r in results:       # only an undecodable song is out (never for length): report it with its reason
+        if not r["eligible"]:
+            skipped.append({"path": r["path"], "name": r["name"], **({"source": r["source"]} if r.get("source") == "original" else {}),
+                            "reason": r.get("reason") or "unreadable"})
     # primary ranking = natural total (plain trim at the best offset, no auto-sync edits); sync_pct breaks ties
     ok.sort(key=lambda r: (r["natural_total_pct"], r["sync_pct"]), reverse=True)
     for rank, r in enumerate(ok, 1):
@@ -289,8 +294,7 @@ def _score_songs(job: dict, video: dict, songs: list):
             r.update(best_tempo(_song(r["path"]), video, r))
         except Exception:
             pass
-    short.sort(key=lambda r: r["duration"], reverse=True)
-    job.update(done=len(songs), reference=reference, results=ok, too_short=short, skipped=skipped, partial=[], status="done",
+    job.update(done=len(songs), reference=reference, results=ok, too_short=[], skipped=skipped, partial=[], status="done",
                message=f"Done: {len(ok)} ranked, {len(skipped)} skipped")
 
 

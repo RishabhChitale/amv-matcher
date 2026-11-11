@@ -56,11 +56,21 @@ def test_bar_phase_estimated():
         assert plan_splice(accent_song(ph), make_video(20.0, peaks=(5.0,)), 0)["bar_phase"] == ph
 
 
-def test_ineligible_short_song():
+def test_short_song_splices_on_a_video_stretch():
+    # F2b: a song shorter than the video is planned on its best video stretch, never refused for length
     r = plan_splice(make_song(30.0), make_video(40.0), 2)
-    assert r["eligible"] is False and r["reason"] == "song shorter than video"
-    assert r["segments"] == [] and r["cuts"] == [] and "bar_phase" in r
+    assert r["eligible"] is not False and r["segments"] and "bar_phase" in r
+    vw = r["video_window"]
+    assert 0.0 <= vw["start_s"] and vw["end_s"] <= 40.0 + 1e-6 and vw["end_s"] - vw["start_s"] <= 30.0 + 0.05
+    assert all(s["dst_start"] < 30.0 for s in r["segments"])       # clip time inside the window
     assert plan_splice(make_song(), make_video(), 2)["eligible"] is True
+
+
+def test_unreadable_song_not_spliced():
+    s = make_song(30.0); s["duration"] = 0.0
+    r = plan_splice(s, make_video(40.0), 2)
+    assert r["eligible"] is False and r["reason"] == "unreadable"
+    assert r["segments"] == [] and r["cuts"] == [] and "bar_phase" in r
 
 
 def test_zero_cuts_is_baseline():

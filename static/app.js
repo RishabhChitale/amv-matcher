@@ -118,7 +118,7 @@ function poll(id) {
       if (j.status === 'error') return fail(j.error);
       if (j.status === 'running' && (j.partial || []).length !== shownPartial) {   // fill the list as songs score (final ranking still comes with 'done')
         shownPartial = j.partial.length;
-        S.results = j.partial.filter(r => r.eligible).sort((a, b) => (b.natural_total_pct - a.natural_total_pct) || (b.sync_pct - a.sync_pct));
+        S.results = j.partial.filter(r => r.eligible !== false).sort((a, b) => (b.natural_total_pct - a.natural_total_pct) || (b.sync_pct - a.sync_pct));
         renderResults({too_short: [], skipped: []});
       }
       if (j.status === 'done') {
@@ -146,12 +146,13 @@ function ring(p) {
   return `<div class="ring"><svg width="52" height="52"><defs><linearGradient id="g"><stop offset="0" stop-color="#8b5cf6"/><stop offset="1" stop-color="#22d3ee"/></linearGradient></defs>
   <circle class="bg" cx="26" cy="26" r="22"/><circle class="fg" cx="26" cy="26" r="22" stroke-dasharray="${C}" stroke-dashoffset="${C}" data-p="${p}"/></svg><b>${Math.round(p)}%</b></div>`;
 }
-const metaText = r => (r.bpm ? r.bpm.toFixed(0) + ' BPM · ' : '') + (r.source === 'original' ? 'original, start locked at 0:00' : 'starts at ' + fmtMS(r.trim_start_s));
+const metaText = r => (r.bpm ? r.bpm.toFixed(0) + ' BPM · ' : '') + (r.source === 'original' ? 'original, start locked at 0:00' : 'starts at ' + fmtMS(r.trim_start_s))
+  + (r.video_use && r.video_use.label ? ' · ' + r.video_use.label : '');
 function renderResults(j) {
   if (S.inUse) S.inUse = S.results.find(r => r.path === S.inUse.path) || null;
   S.short = j.too_short || []; S.skipped = j.skipped || [];
   const box = $('results'); box.innerHTML = '';
-  if (!S.results.length) box.innerHTML = '<div class="muted pad">No eligible audio (all shorter than the video, or unreadable).</div>';
+  if (!S.results.length) box.innerHTML = '<div class="muted pad">No readable audio (every file was unreadable).</div>';
   const order = S.results.map((r, i) => i).sort((a, b) => (S.results[b].source === 'original') - (S.results[a].source === 'original'));
   let rank = 0;
   order.forEach(i => {
@@ -244,7 +245,7 @@ function updateFit() {
   else if (orig) t = 'Original audio: start locked at 0:00. Run Auto-sync to retime the video to it.';
   else if (S.sp.busy) t = 'Finding the best cuts...';
   else if (!S.sp.on || !p) t = `Single trim: ${fmtMS(S.offset)} to ${fmtMS(S.offset + S.dur)} (${Math.round(u.total_pct)}%)`;
-  else if (p.eligible === false) t = 'This song is too short to splice.';
+  else if (p.eligible === false) t = 'This song has no readable audio to splice.';
   else if (!(p.improvement_pct >= 1) || !p.cuts || !p.cuts.length) t = 'No splice needed: a single trim is already best';
   else t = `Fit: ${Math.round(p.baseline.total_pct)}% → ${Math.round(p.total_pct)}% with ${p.cuts.length} cut${p.cuts.length === 1 ? '' : 's'} (+${Math.round(p.improvement_pct)})`;
   m.textContent = t;

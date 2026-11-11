@@ -419,9 +419,6 @@ def _xcorr_offsets(song, ev_t, ev_w, lo, hi):
     return out
 
 
-PARTIAL_MIN_S = 4.0           # F2: a song shorter than the video but also shorter than this stays too_short
-
-
 def _mmss(s: float) -> str:
     m, sec = divmod(int(round(max(0.0, float(s)))), 60)
     return f"{m}:{sec:02d}"
@@ -533,24 +530,24 @@ def _score_partial(song, video, lead_s, stem_targets):
 
 
 def score(song: dict, video: dict, allow_negative: bool = False, lead_s: float = None, stem_targets=None) -> dict:
-    """Best placement of the video window inside the song. F2: a song shorter than the video (but at least
-    PARTIAL_MIN_S long) is scored over the best-matching stretch of the video instead (see _score_partial;
-    result has partial_video True and video_use {start_s, end_s, used_s, coverage_pct, label}); only songs
-    shorter than PARTIAL_MIN_S stay ineligible (reason 'too_short').
+    """Best placement of the video window inside the song. F2/F2b: a song shorter than the video, however short,
+    is scored over the best-matching stretch of the video (see _score_partial; result has partial_video True and
+    video_use {start_s, end_s, used_s, coverage_pct, label}). Length never makes a song ineligible: only a song
+    with no decodable audio (duration 0) is, with reason 'unreadable'.
     With allow_negative the song may also start up to 3 s after the video (padded with
     silence, no length penalty). Off by default: splice/auto-sync need trim_start_s >= 0.
     lead_s: perceptual lead in seconds (None = PERCEPTUAL_LEAD_S, clamped 0..0.12).
     stem_targets: optional soft targets (see score_at); None = unchanged results."""
     vd, sd = float(video["duration"]), float(song["duration"])
-    if sd < vd and sd >= PARTIAL_MIN_S:
-        return _score_partial(song, video, lead_s, stem_targets)
-    if sd < vd:
+    if not sd > 0.0:
         return {
             "eligible": False, "total_pct": 0, "tempo_pct": 0.0, "sync_pct": 0.0, "arc_pct": 0.0,
             "best_offset_s": 0.0, "trim_start_s": 0.0, "trim_end_s": round(vd, 2), "best_rate": 1.0,
-            "reason": "too_short",
+            "reason": "unreadable",
             "tightness": tightness({"beat_times": []}, {"cut_times": [], "motion_peaks": []}, 0.0), "song_duration": round(sd, 2), "video_duration": round(vd, 2),
         }
+    if sd < vd:
+        return _score_partial(song, video, lead_s, stem_targets)
     tempo_pct, rate = _tempo(song, video)
     ev_t, ev_w = _events(video)
     has_sync = len(ev_t) > 0 and len(song["beat_times"]) >= 2

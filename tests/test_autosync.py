@@ -282,12 +282,22 @@ def test_shorter_song_synced_over_video_stretch():
     assert r["final"]["video_use"]["label"].startswith("uses 0:20 of 0:30")
 
 
-def test_tiny_song_still_ineligible():
+def test_tiny_song_synced_on_a_stretch():
+    # F2b: no song is ever excluded for length; a 3 s song syncs over a 3 s stretch of a 30 s video
     r = auto_sync(make_song(3.0), make_video(np.arange(1, 56) * 0.5, duration=30.0))
     f = r["final"]
-    assert f["eligible"] is False and r["eligible"] is False
-    assert f["total_pct"] == 0 and f["fit_after_effort"] == 0
-    assert "song shorter than video" in (f.get("reason") or r.get("reason"))
+    assert r["eligible"] is not False and f.get("eligible") is not False
+    assert f["total_pct"] > 0 and r["plan"] is not None
+    assert r["plan"]["video_window"]["end_s"] - r["plan"]["video_window"]["start_s"] <= 3.0 + 0.1
+    assert f["video_use"]["label"].startswith("uses 0:03 of 0:30")
+
+
+def test_unreadable_song_ineligible():
+    s = make_song(3.0); s["duration"] = 0.0
+    r = auto_sync(s, make_video(np.arange(1, 56) * 0.5, duration=30.0))
+    f = r["final"]
+    assert f["eligible"] is False and r["eligible"] is False and f["total_pct"] == 0
+    assert (f.get("reason") or r.get("reason")) == "unreadable"
     assert r["plan"] is None
 
 
@@ -397,7 +407,8 @@ def test_arrange_not_picked_when_no_gain(monkeypatch):
 def test_arrange_not_called_when_ineligible(monkeypatch):
     called = []
     monkeypatch.setattr(AS, "plan_arrangement", lambda *a, **k: called.append(1))
-    r = auto_sync(make_song(3.0), make_video(np.arange(1, 56) * 0.52, duration=30.0))   # below PARTIAL_MIN_S
+    s = make_song(3.0); s["duration"] = 0.0                                    # undecodable: the only exclusion
+    r = auto_sync(s, make_video(np.arange(1, 56) * 0.52, duration=30.0))
     assert r["eligible"] is False and not called and r["steps"] == []
 
 

@@ -211,6 +211,10 @@ def main():
         i120 = next((i for i, n in enumerate(order) if "click120" in n), 99)
         i97 = next((i for i, n in enumerate(order) if "click97" in n), 99)
         check("click120 ranks above click97", i120 < i97, f"order={[n[:24] for n in order]}")
+        srow = next((n for n in order if "short" in n.lower()), "")
+        check("short song is listed and scored with 'uses M:SS of M:SS video' (F2b, never excluded for length)",
+              bool(re.search(r"\d+%", srow)) and bool(re.search(r"uses \d+:\d\d of \d+:\d\d video", srow)), srow[:90])
+        check("no 'Too short' group (F2b)", not (c.ev("document.getElementById('short').textContent") or "").strip())
         vc = c.ev("document.getElementById('vcard') ? document.getElementById('vcard').innerText : ''") or ""
         check("video info card filled", "BPM" in vc.upper() or any(ch.isdigit() for ch in vc), vc[:60].replace("\n", " "))
         check("rings and percent pills rendered", bool(c.ev("document.querySelectorAll('.res .ring').length>0 && document.querySelectorAll('.res .pill .pp').length>=3")))
@@ -714,8 +718,7 @@ def main():
             wait_for(c, "document.querySelectorAll('#mr-list .mr-row.pending').length==0", 180)
             sc = c.ev("[...document.querySelectorAll('#mr-list .mr-row.done .ring b')].map(b=>parseInt(b.textContent))")
             check("scores sorted best first", len(sc) >= 2 and sc == sorted(sc, reverse=True), str(sc))
-            check("short songs sit greyed at the bottom with lengths", c.ev("(()=>{const r=document.querySelector('#mr-list .mr-row.short');return !r || /Too short.*vs video/.test(r.innerText)})()") is True)
-            # F2: a song shorter than the video (>= 4 s) is eligible and its row says how much of the video it uses
+            check("short song is a scored row with its video stretch (F2b)", c.ev("(()=>{if(document.querySelector('#mr-list .mr-row.short'))return false;const r=[...document.querySelectorAll('#mr-list .mr-row.done')].find(e=>/short/i.test(e.innerText));return !!r && /uses \\d+:\\d\\d of \\d+:\\d\\d video/.test(r.innerText)})()") is True)
             use = c.ev("(()=>{const r=[...document.querySelectorAll('#mr-list .mr-row')].find(e=>/short/i.test(e.innerText));return r?(r.querySelector('.mr-chip.use')||{}).innerText||'':null})()")
             check("short song row shows 'uses X of Y video'", isinstance(use, str) and bool(re.search(r"uses .* of .* video", use)), str(use)[:60])
             check("sidebar list is filled too", c.ev("document.querySelectorAll('#results .res').length") >= 2)

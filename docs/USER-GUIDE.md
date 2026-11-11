@@ -44,7 +44,7 @@ If the video can't be decoded for preview, the player says so. Scores still work
 ## Audio sources and Match results
 - **New match** (Cmd/Ctrl+N; the new popup is *coming soon*, the current dialog works): pick a video and a music folder. Drag and drop works, or paste a path.
 - **Match results** (a redesigned popup is *coming soon*) list every song with its fit %, BPM and trim window. Search, sort by "Fit now" or "After auto-sync", preview with Space, and press **Use this audio** (Enter) to load it.
-- The **Audio sources** panel holds the same list. Songs shorter than the video are under "Too short". Unreadable files are under "Skipped".
+- The **Audio sources** panel holds the same list. Songs shorter than the video are listed and scored like the rest; they show "uses M:SS of M:SS video" for the stretch of the video they fit. Only unreadable files are under "Skipped".
 - **Auto-sync all** runs auto-sync on the top 5 songs in turn.
 
 ## Auto-sync and Guardrails
@@ -54,7 +54,7 @@ Press **Auto-sync to 100%** after Use this audio. You see live steps, a progress
 - **Max speed change:** how much a section's speed may change (default ±15%).
 - **Max tempo stretch:** how much the song may be stretched (default 4%).
 - **Max cuts:** how many cuts it may make in the song (default 2).
-- **Allow loop:** repeat a song that is too short.
+- **Allow loop:** repeat a song that is shorter than the video instead of using a stretch of the video.
 - **Unlock original:** let it retime or rearrange the video's own audio.
 
 **Smart splice (advanced)** cuts and arranges the song by sections. Turn it on and set its max cuts.

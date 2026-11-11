@@ -108,8 +108,8 @@ def test_score_songs_matches_scan(env):
     assert one["status"] == "done"
     assert one["results"] == scan["results"] and one["too_short"] == scan["too_short"]
     assert one["video"] == scan["video"]
-    # several songs: job + polling; a song shorter than the video scores over a stretch of it (F2),
-    # only a song under PARTIAL_MIN_S lands in too_short
+    # several songs: job + polling; every song shorter than the video scores over a stretch of it (F2b:
+    # nothing is grouped out for length, too_short is always empty)
     short = music / "short.wav"
     make_click_track(short, 100, seconds=3)
     part = music / "part.wav"
@@ -122,8 +122,10 @@ def test_score_songs_matches_scan(env):
         if j["status"] != "running":
             break
         time.sleep(0.2)
-    assert j["status"] == "done" and sorted(x["name"] for x in j["results"]) == ["c120.wav", "part.wav"]
-    assert [x["name"] for x in j["too_short"]] == ["short.wav"]
+    assert j["status"] == "done" and sorted(x["name"] for x in j["results"]) == ["c120.wav", "part.wav", "short.wav"]
+    assert j["too_short"] == [] and j["skipped"] == []
+    sr = next(x for x in j["results"] if x["name"] == "short.wav")
+    assert sr["total_pct"] > 0 and sr["video_use"]["label"].startswith("uses 0:03 of ")
     pr = next(x for x in j["results"] if x["name"] == "part.wav")
     assert pr["partial_video"] and pr["video_use"]["label"].startswith("uses 0:06 of ")
     # an uploaded video + uploaded song work together

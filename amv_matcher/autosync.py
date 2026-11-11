@@ -633,8 +633,9 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
     Length rule (F2): a song shorter than the video (by more than LENGTH_SLACK_S) is synced on the best-fitting
     stretch of the video of the song's length (the window score.score picks; see _auto_sync_window): all plan
     times are clip times and plan.video_window / final.video_use {start_s, end_s, used_s, video_duration_s,
-    coverage_pct, label 'uses 2:10 of 3:40 video'} say which source stretch the renderer uses. Only a song
-    shorter than score.PARTIAL_MIN_S is INELIGIBLE (eligible False, total 0, reason 'song shorter than video').
+    coverage_pct, label 'uses 2:10 of 3:40 video'} say which source stretch the renderer uses. Length never
+    makes a song ineligible (F2b), however short; only a song with no decodable audio (duration 0) is
+    (eligible False, total 0, reason 'unreadable').
     allow_loop=True (default False) instead keeps the whole video: the song is repeated end to end (as plan.segments,
     crossfaded by the renderer) until it covers the video and its retime headroom; plan.looped is True
     and plan.loop = {song_duration_s, repeats}. A looped plan uses retime + micro nudges only (offset
@@ -682,15 +683,14 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
     {applied, smooth: {total, sync, tight, arc, max_jump, max_accel}, best: {same}}, where `best` is the plan
     plain auto-sync (smooth off) would have chosen and `smooth` the plan applied. Not applicable (looped,
     original-locked, no retime) -> the plain result is returned with smooth.applied False and a reason."""
-    if (not allow_loop and _force_order is None
-            and float(song["duration"]) < float(video["duration"]) - LENGTH_SLACK_S
-            and float(song["duration"]) >= S.PARTIAL_MIN_S):
+    if not allow_loop and float(song["duration"]) < float(video["duration"]) - LENGTH_SLACK_S:
         return _auto_sync_window(song, video, dict(
             target=target, budget_s=budget_s, max_speed_dev=max_speed_dev, max_tempo_dev=max_tempo_dev,
             min_section_s=min_section_s, max_cuts=max_cuts, min_gain=min_gain, max_passes=max_passes,
             allow_splice=allow_splice, lead_s=lead_s, original=original, unlock_original=unlock_original,
             progress_cb=progress_cb, should_cancel=should_cancel, stem_targets=stem_targets,
-            prefer_energy=prefer_energy, ramps=ramps, budget_units=budget_units, smooth=smooth))
+            prefer_energy=prefer_energy, ramps=ramps, budget_units=budget_units, smooth=smooth,
+            _force_order=_force_order))
     if smooth and _force_order is None:
         return _auto_sync_smooth(song, video, dict(
             target=target, budget_s=budget_s, max_speed_dev=max_speed_dev, max_tempo_dev=max_tempo_dev,
@@ -712,9 +712,7 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
         return cflag["on"]
 
     loop_info, loop_segs = None, None
-    if float(song["duration"]) < float(video["duration"]) - LENGTH_SLACK_S:
-        if not allow_loop:
-            return _ineligible(song, video, lead_s)
+    if allow_loop and float(song["duration"]) < float(video["duration"]) - LENGTH_SLACK_S:
         sd, vd = float(song["duration"]), float(video["duration"])
         cover = vd / max(0.05, 1.0 - max_speed_dev) + 1.0       # enough for the slowest allowed retime
         n = int(np.ceil(cover / max(sd, 1e-6)))
@@ -856,7 +854,7 @@ def _auto_sync_smooth(song, video, kw):
         return best
 
     if not best.get("eligible"):
-        return _na("song shorter than video")
+        return _na(best.get("reason") or "unreadable")
     res = auto_sync(song, video, smooth=False, _force_order=("retime",), **kw)
     plan = res["plan"]
     if plan.get("segments") is not None or plan.get("looped") or plan.get("tempo_ratio", 1.0) != 1.0 or plan.get("nudges"):
@@ -936,6 +934,8 @@ def _auto_sync_window(song, video, kw):
     which source stretch to use."""
     sd, vd = float(song["duration"]), float(video["duration"])
     pick = S.score(song, video, lead_s=kw["lead_s"], stem_targets=kw["stem_targets"])
+    if not pick.get("eligible", True):
+        return _unreadable(song, video, kw["lead_s"])
     w = float(pick["video_use"]["start_s"])
     end = min(vd, w + sd) - 1e-6                  # clip never longer than the song (float noise)
     clip = S.clip_video(video, w, end)
@@ -953,17 +953,18 @@ def _auto_sync_window(song, video, kw):
     return res
 
 
-def _ineligible(song, video, lead_s):
+def _unreadable(song, video, lead_s):
+    """No decodable audio (duration 0): the only case auto-sync refuses. Never used for a short song (F2b)."""
     sd, vd = float(song["duration"]), float(video["duration"])
     final = {"eligible": False, "total_pct": 0, "tempo_pct": 0.0, "sync_pct": 0.0, "arc_pct": 0.0,
              "tightness": None, "tight_pct": None, "median_err_ms": None, "out_duration_s": round(vd, 3),
              "video_duration_s": round(vd, 3), "sync_headline": 0, "lead_s": lead_s, "tightness_start": None,
              "effort": effort_of(None, vd), "effort_pct": 0.0, "fit_after_effort": 0.0, "natural_total_pct": 0,
-             "reason": "song shorter than video", "song_duration_s": round(sd, 3), "deterministic": True}
+             "reason": "unreadable", "song_duration_s": round(sd, 3), "deterministic": True}
     final["effort"].pop("effort_pct")
-    return {"steps": [], "final": final, "eligible": False, "reason": "song shorter than video",
-            "plan": None, "path": None, "limits_hit": ["song_shorter_than_video"], "pruned": False, "deterministic": True,
-            "why_not_100": "Song is shorter than the video, so it is ineligible (pass allow_loop=True to repeat it).",
+    return {"steps": [], "final": final, "eligible": False, "reason": "unreadable",
+            "plan": None, "path": None, "limits_hit": ["unreadable"], "pruned": False, "deterministic": True,
+            "why_not_100": "The song has no decodable audio.",
             "elapsed_s": 0.0}
 
 

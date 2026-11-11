@@ -77,7 +77,7 @@ Body: `{"video_path": str, "music_dir": str, "recursive": bool=false}`. Video ex
 Response: `{"job_id": "ae64f08cef79"}`
 
 ## GET /api/scan/{job_id}  (poll every ~400 ms)
-`status`: running | done | error. `stage`: starting | video | songs. `video` appears once the video is analyzed (before songs finish). `results`/`too_short`/`skipped` are filled when `status=done` (`results` is null before). While `status=running` and `stage=songs`, `partial` lists the songs scored so far (same per-song shape as `results`, scan order, unranked, ineligible ones included; `done`/`total` give progress). It only grows, is emptied at `status=done`, and the final `results` are identical to a scan without streaming (same ranking), so a UI may show `partial` early but must replace it with `results`. Same for `/api/score-songs` jobs.
+`status`: running | done | error. `stage`: starting | video | songs. `video` appears once the video is analyzed (before songs finish). `results`/`too_short`/`skipped` are filled (F2b: `too_short` is always `[]`, kept for old clients; every readable song is in `results`) when `status=done` (`results` is null before). While `status=running` and `stage=songs`, `partial` lists the songs scored so far (same per-song shape as `results`, scan order, unranked, ineligible ones included; `done`/`total` give progress). It only grows, is emptied at `status=done`, and the final `results` are identical to a scan without streaming (same ranking), so a UI may show `partial` early but must replace it with `results`. Same for `/api/score-songs` jobs.
 ```json
 {
   "id": "ae64f08cef79", "status": "done", "stage": "songs", "done": 3, "total": 3,
@@ -101,14 +101,7 @@ Response: `{"job_id": "ae64f08cef79"}`
      "tightness": {"tight_pct": 86.7, "median_err_ms": 12.4, "p90_err_ms": 38.0, "n_events": 24, "grid": "beat", "chance_pct": 17.0, "lead_ms": 60,
      "raw": {"tight_pct": 70.0, "median_err_ms": 25.0, "p90_err_ms": 80.0, "grid": "beat", "chance_pct": 17.0}}}
   ],
-  "too_short": [
-    {"path": "/abs/music/short.wav", "name": "short.wav", "bpm": 100.0, "duration": 6.0,
-     "eligible": false, "reason": "too_short", "song_duration": 6.0, "video_duration": 10.0,
-     "total_pct": 0, "tempo_pct": 0.0, "sync_pct": 0.0, "arc_pct": 0.0,
-     "best_offset_s": 0.0, "trim_start_s": 0.0, "trim_end_s": 10.0, "best_rate": 1.0,
-     "tightness": {"tight_pct": 0.0, "median_err_ms": null, "p90_err_ms": null, "n_events": 0, "grid": "beat", "chance_pct": 0.0, "lead_ms": 60,
-     "raw": {"tight_pct": 0.0, "median_err_ms": null, "p90_err_ms": null, "grid": "beat", "chance_pct": 0.0}}}
-  ],
+  "too_short": [],
   "skipped": [{"path": "/abs/music/broken.mp3", "name": "broken.mp3", "reason": "NoBackendError: ..."}]
 }
 ```
@@ -198,7 +191,7 @@ A client can handle both: if `status == "done"` use it, else poll.
 - **Zero songs: video analysis only.** `song_paths: []` is allowed and returns synchronously `{"job_id", "status": "done", "video": {...}, "results": [...], "too_short": [], "skipped": []}`; `results` is `[]` for a video without audio, otherwise it holds just the **original audio** entry (see below).
 
 ### Original audio (v2)
-If a video has an embedded audio track it is decoded (PyAV, no system ffmpeg) to `.cache/extracted/<sha12>.wav` and offered as a scoring source. `video` gains `has_audio: bool`, `original_audio: {path, name: "Original audio (<video name>)"}` (absent when no audio) and, if decoding failed, `audio_error`. Every entry in `results` / `too_short` / `skipped` carries `source: "original" | "song"`. The original is already aligned to the video, so it is scored at the fixed offset 0 (`best_offset_s: 0`) when its duration >= video duration - 0.5 s, otherwise it lands in `too_short`. It is ranked alongside the songs. Its `path` works in `/api/audio`, `/api/waveform`, `/api/splice`, `/api/render-audio`.
+If a video has an embedded audio track it is decoded (PyAV, no system ffmpeg) to `.cache/extracted/<sha12>.wav` and offered as a scoring source. `video` gains `has_audio: bool`, `original_audio: {path, name: "Original audio (<video name>)"}` (absent when no audio) and, if decoding failed, `audio_error`. Every entry in `results` / `too_short` / `skipped` carries `source: "original" | "song"`. The original is already aligned to the video, so it is scored at the fixed offset 0 (`best_offset_s: 0`) when its duration >= video duration - 0.5 s, otherwise it is scored over its best stretch of the video like any shorter song (F2b). It is ranked alongside the songs. Its `path` works in `/api/audio`, `/api/waveform`, `/api/splice`, `/api/render-audio`.
 
 ### POST /api/analyze-video
 Body: `{"video_path": str}`. The video must be under `.uploads/` or a previously scanned video (else 403; bad Origin 403; undecodable video 422). Returns `{"video_path": "<resolved>", "video": {...}}` where `video` is the same object as the `video` section of a scan (`duration`, `fps`, `motion_tempo_bpm`, `cut_times`, `cut_count`, `energy_curve`, `energy_hz`, `segments`, `segments_struct`, `lulls`, `peak_segments`, `shots`, `peak_count`, `visual_booms` `[{t, conf, kind, kinds?, strength}]` (video s), `camera_events` `[{start, end, kind pan|tilt|zoom|whip, speed, ...}]` (video s); both `[]` when absent). `segments_struct` is a coarser phrase-level list `[{start, end, kind: calm|build|peak, energy}]` covering 0..duration, every block >= 2 s (shorter fine segments are merged into the neighbour with the closest energy). Synchronous; the result is cached in memory per video, so repeat calls are instant.
@@ -227,7 +220,7 @@ Body `{"video_path", "song_path", "max_cuts": 0-3 (default 2), "crossfade_ms": 4
  "baseline": {"offset": 20.0, "total_pct": 78}, "improvement_pct": 6,
  "bar_phase": "...", "objective": "..."}
 ```
-`baseline` is the best single trim. If the song is shorter than the video the response is still 200 with `{"eligible": false, "reason": "too_short", ...}` and no `segments`. `bar_phase` and `objective` come straight from splice.py (see its docstring for their exact meaning).
+`baseline` is the best single trim. A song shorter than the video is planned on its best stretch of the video: the response has `video_window` `{start_s, end_s, ...}` and segment times are clip times (relative to `start_s`). Only an unreadable song (no decodable audio) gives 200 with `{"eligible": false, "reason": "unreadable", ...}` and no `segments`. `bar_phase` and `objective` come straight from splice.py (see its docstring for their exact meaning).
 
 ### POST /api/render-audio
 Body `{"video_path", "song_path", "segments": [{src_start, src_end, dst_start}, ...] (1-8), "crossfade_ms": 40}`. `video_path` is needed for the output length and file name. Segments are laid at `dst_start` with an equal-power crossfade centred on each join and 10 ms fades at the ends; the wav is exactly `round(video duration * 44100)` samples, 44.1 kHz stereo 16-bit, written to `.exports/<video>__<song>__<hash8>.wav`. 422 if a segment is outside the song/video or the count is bad.
@@ -331,7 +324,7 @@ Scoring: camera speed feeds the energy/arc curve with weight `CAM_ENERGY_W` 0.35
 
 Auto-sync step `"boom"` tries offsets that put the song's main boom on a visual boom (`params`: `main_boom`, `candidates`, `offset`, `boom_before`, `boom_after`; work cost 1). A candidate is kept only if `boom_pct` gains at least `BOOM_MIN_GAIN` 5, the total does not drop, and sync/tight drop by at most 0.5. There is no boom step when either side has no booms.
 
-F2: a song shorter than the video (but at least `PARTIAL_MIN_S` 4 s) is scored and auto-synced over the best-matching stretch of the video instead of being ineligible. The result has `partial_video: true` and `video_use` `{start_s, end_s, used_s, video_duration_s, coverage_pct, label}`, with a label like `"uses 0:08 of 0:20 video"`. Auto-sync puts it in `plan.video_window` and `final.video_use`. Offsets and times in such a result are clip times (relative to `start_s`). Render and the Resolve export trim the source to that stretch. Songs under 4 s stay ineligible ("song shorter than video"), and splice and arrangement stay ineligible for shorter songs.
+F2/F2b: any song shorter than the video, of any length, is scored and auto-synced over the best-matching stretch of the video instead of being ineligible. The result has `partial_video: true` and `video_use` `{start_s, end_s, used_s, video_duration_s, coverage_pct, label}`, with a label like `"uses 0:08 of 0:20 video"`. Auto-sync puts it in `plan.video_window` and `final.video_use`. Offsets and times in such a result are clip times (relative to `start_s`). Render and the Resolve export trim the source to that stretch. No song is ever excluded, zeroed or hidden for length (F2b): splice and arrangement also plan a shorter song on its best video stretch (`video_window`). The only ineligible song is an unreadable one (`reason: "unreadable"`, no decodable audio).
 
 ## Analysis worker jobs (process pool; heavy work never runs on the event loop)
 Analysis, probe, thumbnails and proxy builds run in a process pool (`amv_matcher/workers.py`, cores - 1;

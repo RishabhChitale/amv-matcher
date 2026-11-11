@@ -17,7 +17,7 @@ Owner from here: porygon (core pipeline). Code: `amv_matcher/autosync.py` (`_aut
     sync_step/sync_after, tight_step/tight_after, arc_step/arc_after, max_jump_step/max_jump_ramp,
     smooth_step/smooth_ramp}`; `_step` = what plain auto-sync would have chosen, `_after`/`_ramp` = the smooth plan.
   - `result.smooth = {applied, reason, smooth: {total, sync, tight, arc, max_jump, max_accel}, best: {same}, best_path}`.
-  - Not applicable (song shorter than video, looped, segmented plan, planner error): plain result,
+  - Not applicable (song shorter than video, so planned on a video stretch; looped; segmented plan, planner error): plain result,
     `smooth.applied = false` with `reason`, `limits_hit` has `"smooth: not applicable"`.
 - `max_jump` for the smooth plan is the planner's own fine-grid figure (`plan_ramps()["smooth_ramp"]`, 100 Hz),
   <= 0.01. Measuring it on the returned 20 Hz warp reads ~accel*0.05 (0.018-0.028), which is sampling, not a speed step.

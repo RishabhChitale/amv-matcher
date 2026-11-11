@@ -202,12 +202,15 @@ def plan_arrangement(song: dict, video: dict, max_moves: int = 3, lead_s: float 
     """prefer_energy=False (default) is the original objective. True ranks the beam by energy
     correlation and picks the highest-arc arrangement that keeps total / tight_pct / sync_pct within
     the ENERGY_GUARD_* margins of the baseline (opt-in; see docs/ARC-RESEARCH.md on g-arc)."""
-    vd = float(video["duration"])
+    vd, sd = float(video["duration"]), float(song["duration"])
+    if 0.0 < sd < vd:
+        # F2b: a song shorter than the video is arranged on the best video stretch of its length; the plan's
+        # times are clip times and plan["video_window"] names the source stretch.
+        return SP.on_video_window(song, video, lead_s, lambda clip: plan_arrangement(
+            song, clip, max_moves, lead_s, prefer_energy))
     base = S.score(song, video, lead_s=lead_s)
-    if not base.get("eligible", True) or base.get("partial_video"):
-        # F2 partial scores (song shorter than the video) are scored on a video stretch; arrangement
-        # plans cover the whole video, so they stay out of scope here.
-        return _empty(song, video, "song shorter than video")
+    if not base.get("eligible", True):
+        return _empty(song, video, base.get("reason") or "unreadable")
     off = float(base["best_offset_s"])
     base_segs = SP._single(off, vd)
     base_total = int(base["total_pct"])
