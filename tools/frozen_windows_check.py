@@ -42,6 +42,9 @@ try:
     time.sleep(10)
     port = int(subprocess.run(["lsof", "-nP", "-a", "-p", str(p.pid), "-iTCP", "-sTCP:LISTEN", "-Fn"],
                               capture_output=True, text=True).stdout.split(":")[-1].split()[0])
+    t0 = time.time()                      # wait (up to ~30 s) for the window to exist before counting
+    while time.time() - t0 < 30 and not windows(tree(p.pid)):
+        time.sleep(0.5)
     base = len(windows(tree(p.pid)))
     post(port, "/api/media/roots", {"path": scratch})
     post(port, "/api/media/link", {"path": vid})
