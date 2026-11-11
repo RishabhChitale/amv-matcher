@@ -240,3 +240,9 @@ body.dragging #fit,body.dragging .ovwrap{opacity:.5;transition:opacity var(--eas
 
 #export.flash{outline:2px solid var(--c);outline-offset:2px}
 .m-skel{pointer-events:none}.m-skel .m-th,.m-skel .m-meta b,.m-skel .m-meta span{background:rgba(255,255,255,.08);border-radius:6px;color:transparent;animation:dzp 900ms infinite alternate}
+
+/* U11d retime lane + smooth-vs-best card */
+.rampwrap{display:flex;padding:4px 8px}.rampwrap.hidden,.rl-cvs canvas.hidden{display:none}
+.rl-pad{width:30px;flex:none}.rl-cvs{flex:1;min-width:0}.rl-cvs canvas{width:100%;height:44px;display:block}
+.as-cmp{margin-top:8px;font-size:12px}.as-cmp h4{margin:0 0 4px;font-size:12px}.as-cmp table{border-collapse:collapse}
+.as-cmp th,.as-cmp td{padding:2px 10px 2px 0;text-align:left}.as-cmp td.win{font-weight:800;color:var(--c)}
