@@ -64,6 +64,7 @@ def test_bad_origin_403_everywhere(env):
     bad = {"Origin": "https://evil.example"}
     assert up(c, "song", "a.mp3", b"x", headers=bad).status_code == 403
     assert c.delete("/api/uploads", headers=bad).status_code == 403
+    assert c.delete("/api/exports", headers=bad).status_code == 403
     assert c.post("/api/scan", json={"video_path": str(v), "music_dir": str(s.parent)}, headers=bad).status_code == 403
     assert c.post("/api/score", json={"video_path": str(v), "song_path": str(s), "offset": 0}, headers=bad).status_code == 403
     assert c.post("/api/score-songs", json={"video_path": str(v), "song_paths": [str(s)]}, headers=bad).status_code == 403
@@ -141,8 +142,15 @@ def test_delete_clears_only_uploads(env):
     assert base == {"count": 3, "bytes": 11, "uploads_count": 2, "uploads_bytes": 9,
                     "exports_count": 1, "exports_bytes": 2}
     assert g["proxy_count"] == 0
-    assert c.delete("/api/uploads").json() == {"freed": 11, "uploads_freed": 9, "exports_freed": 2, "skipped": []}
-    assert c.get("/api/uploads").json()["count"] == 0
+    assert c.delete("/api/uploads").json() == {"freed": 9, "uploads_freed": 9, "skipped": []}
+    g = c.get("/api/uploads").json()
+    assert g["uploads_count"] == 0 and g["exports_count"] == 1 and (server.EXPORTS / "x.wav").exists()
+    assert c.delete("/api/exports", headers={"Origin": "http://evil.example"}).status_code == 403
+    assert (server.EXPORTS / "x.wav").exists()
+    up(c, "song", "b.mp3", b"abc")
+    assert c.delete("/api/exports").json() == {"freed": 2, "exports_freed": 2, "skipped": []}
+    g = c.get("/api/uploads").json()
+    assert g["exports_count"] == 0 and g["uploads_count"] == 1
     assert keep.exists() and s.exists() and v.exists()
 
 

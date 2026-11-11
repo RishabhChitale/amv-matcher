@@ -22,7 +22,8 @@ Paths are absolute local paths. `/api/audio`, `/api/waveform`, `/api/pump`, `/ap
 | GET | `/api/pump` | pump keyframes for a song | server.py |
 | POST | `/api/upload` | upload a video or song (guarded) | server.py |
 | GET | `/api/uploads` | list uploads and cache stats | server.py |
-| DELETE | `/api/uploads` | delete uploads (guarded) | server.py |
+| DELETE | `/api/uploads` | delete uploads only, never exports (guarded) | server.py |
+| DELETE | `/api/exports` | delete exports (renders) only, never uploads (guarded) | server.py |
 | POST | `/api/register-paths` | allow native-picked files/folders in place (guarded) | server.py |
 | POST | `/api/analyze-video` | analyze an uploaded video (guarded) | server.py |
 | POST | `/api/score-songs` | score a list of songs against a video (guarded) | server.py |
@@ -208,7 +209,10 @@ Totals cover `.uploads/` plus `.exports/`:
 ```
 
 ### DELETE /api/uploads
-Deletes everything inside `.uploads/` and `.exports/` only (nothing else is touched). `{"freed": 5392050, "uploads_freed": 5292050, "exports_freed": 100000}` (bytes).
+Deletes everything inside `.uploads/` ONLY; `.exports/` is never touched. `{"freed": 5292050, "uploads_freed": 5292050, "skipped": []}` (bytes; `skipped` lists locked files). Bad Origin: 403.
+
+### DELETE /api/exports
+Deletes everything inside `.exports/` ONLY (the user's rendered files); `.uploads/` is never touched. `{"freed": 100000, "exports_freed": 100000, "skipped": []}`. Bad Origin: 403. The UI's "Clear exports" button calls this after a confirmation naming the file count and size.
 
 ## Splice, render and export (v2)
 All POSTs are Origin-guarded (403). Paths follow the usual rules (`video_path` scanned/uploaded video, `song_path` in a scanned folder, `.uploads/` or the extracted original audio).

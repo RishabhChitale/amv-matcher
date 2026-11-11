@@ -638,14 +638,24 @@ def uploads_info():
 
 @app.delete("/api/uploads", dependencies=[Depends(_origin_guard)])
 def uploads_clear():
+    """Clears .uploads/ ONLY. Exports (renders) are never touched here; see DELETE /api/exports."""
     skipped: list = []
     uf = _clear_dir(UPLOADS, skipped)
-    ef = _clear_dir(EXPORTS, skipped)
     for k in [k for k in VIDEOS if _in_uploads(Path(k))]:
         VIDEOS.pop(k, None)
     if skipped:
         print(f"[uploads] skipped locked files: {skipped}", flush=True)
-    return {"freed": uf + ef, "uploads_freed": uf, "exports_freed": ef, "skipped": skipped}
+    return {"freed": uf, "uploads_freed": uf, "skipped": skipped}
+
+
+@app.delete("/api/exports", dependencies=[Depends(_origin_guard)])
+def exports_clear():
+    """Clears .exports/ ONLY (the user's rendered files). Uploads are never touched."""
+    skipped: list = []
+    ef = _clear_dir(EXPORTS, skipped)
+    if skipped:
+        print(f"[exports] skipped locked files: {skipped}", flush=True)
+    return {"freed": ef, "exports_freed": ef, "skipped": skipped}
 
 
 class RegisterRequest(BaseModel):

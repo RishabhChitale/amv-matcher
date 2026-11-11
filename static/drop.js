@@ -124,7 +124,7 @@ $('ex-no').onclick = () => $('ex-pop').classList.add('hidden');
 $('ex-yes').onclick = async () => {
   $('ex-pop').classList.add('hidden');
   try {
-    const r = await fetch('/api/uploads', {method: 'DELETE'}); const j = await r.json(); if (!r.ok) throw new Error(j.detail || r.statusText);
+    const r = await fetch('/api/exports', {method: 'DELETE'}); const j = await r.json(); if (!r.ok) throw new Error(j.detail || r.statusText);
     $('ex-out').innerHTML = '';
     note(`Freed ${fmtB(j.exports_freed ?? j.freed ?? 0)}`);
   } catch (e) { note(e.message, true); }
