@@ -142,7 +142,7 @@ async function runOne(r) {   // returns result or null (cancelled / failed)
   const body = {video_path: v, song_path: r.path, lead_s: g.lead / 1000, allow_loop: !!g.loop,
     guardrails: {max_speed_dev: g.dev / 100, max_tempo_pct: g.tempo, max_cuts: g.cuts}};
   body.prefer_energy = !!g.energyFirst;
-  body.ramps = !!g.ramps;  // job param name per rufflet's U11 backend; swap here if it changes
+  body.smooth = !!g.ramps;  // U11-SMOOTH: top-level 'smooth' bool (guard key stays 'ramps'); the old 'ramps' flag is left at its default
   if (r.source === 'original') body.unlock_original = true;
   AS.lastReq = body; AS.cancelled = false;
   AS.running = {key, name: r.name}; ui();

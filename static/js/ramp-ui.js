@@ -66,20 +66,22 @@
 
   // ---- comparison card: smooth vs best (step) ----
   const pct = (x) => (typeof x === 'number' ? Math.round(x * 10) / 10 + '' : '–');
-  function cardRows(f) {
-    const q = f && f.ramps; if (!q) return null;
-    const row = (name, a, b, hib) => ({ name, a, b, better: typeof a === 'number' && typeof b === 'number' ? (hib ? (b > a ? 'b' : b < a ? 'a' : '') : (b < a ? 'b' : b > a ? 'a' : '')) : '' });
-    return [row('Total', q.total_step, q.total_after, true), row('Sync', q.sync_step, q.sync_after, true), row('Cut timing', q.tight_step, q.tight_after, true),
-      row('Arc', q.arc_step, q.arc_after, true), row('Max jump', q.max_jump_step != null ? q.max_jump_step : q.smooth_step, q.max_jump_ramp != null ? q.max_jump_ramp : q.smooth_ramp, false)]
-      .filter((r) => r.a != null || r.b != null);
+  // Prefers result.smooth.{best,smooth} ({total,sync,tight,arc,max_jump}); falls back to final.ramps (*_step = best, *_after/max_jump_ramp = smooth).
+  function cardRows(res) {
+    const sm = res && res.smooth, q = res && res.final && res.final.ramps, B = sm && sm.best, M = sm && sm.smooth;
+    const get = (k, fk) => (B && M ? [B[k], M[k]] : q ? [q[fk + '_step'], fk === 'max_jump' ? q.max_jump_ramp : q[fk + '_after']] : [null, null]);
+    if (!(B && M) && !q) return null;
+    const row = (name, k, hib) => { const [a, b] = get(k, k); return { name, a, b, better: typeof a === 'number' && typeof b === 'number' ? (hib ? (b > a ? 'b' : b < a ? 'a' : '') : (b < a ? 'b' : b > a ? 'a' : '')) : '' }; };
+    return [row('Total', 'total', true), row('Sync', 'sync', true), row('Cut timing', 'tight', true), row('Arc', 'arc', true), row('Max jump', 'max_jump', false)].filter((r) => r.a != null || r.b != null);
   }
   function renderCard() {
     const host = el('as-done'); if (!host) return;
     let box = el('as-cmp');
-    const r = run(), rows = r && r.result && cardRows(r.result.final);
-    if (!rows || !rows.length) { if (box) box.remove(); return; }
+    const r = run(), res = r && r.result, rows = res && cardRows(res);
+    const why = res && res.smooth === undefined ? '' : (res && res.smooth && res.smooth.applied === false ? res.smooth.reason || 'not applicable' : '');
+    if ((!rows || !rows.length) && !why) { if (box) box.remove(); return; }
     if (!box) { box = document.createElement('div'); box.id = 'as-cmp'; box.className = 'as-cmp'; const m = el('as-mode'); host.insertBefore(box, m ? m.nextSibling : null); }
-    box.innerHTML = '<h4>Smooth vs best</h4><table><tr><th></th><th>Best (steps)</th><th>Smooth</th></tr>' +
+    box.innerHTML = why && !(rows && rows.length) ? '<h4>Smooth speed changes</h4><div class="muted">Not applied: ' + why + '</div>' : '<h4>Smooth vs best</h4><table><tr><th></th><th>Best (steps)</th><th>Smooth</th></tr>' +
       rows.map((q) => '<tr><td>' + q.name + '</td><td' + (q.better === 'a' ? ' class="win"' : '') + '>' + pct(q.a) + '</td><td' + (q.better === 'b' ? ' class="win"' : '') + '>' + pct(q.b) + '</td></tr>').join('') + '</table>';
   }
 

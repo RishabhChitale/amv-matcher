@@ -13,7 +13,7 @@ global.AS={mode:'synced',curRun:()=>({result:res})};
 global.window={AS:global.AS,addEventListener(){}};
 global.document={getElementById:()=>null};
 eval(fs.readFileSync(%s,'utf8'));
-console.log(JSON.stringify({c:window.ASRamp.curve(res),t:window.ASRamp.tempoCurve(res),r:window.ASRamp.cardRows(res.final)}));
+console.log(JSON.stringify({c:window.ASRamp.curve(res),t:window.ASRamp.tempoCurve(res),r:window.ASRamp.cardRows(res)}));
 """
 
 def _run(res):
@@ -23,11 +23,17 @@ def _run(res):
 
 def test_curve_and_card():
     res = {"plan": {"retime_ramps": {"curve": [[0, 0, 1.0], [5, 5, 0.8], [10, 11, 1.2]]}},
-           "final": {"ramps": {"total_step": 80, "total_after": 78, "sync_step": 70, "sync_after": 72, "smooth_step": 3.0, "smooth_ramp": 0.5}}}
+           "final": {"ramps": {"total_step": 80, "total_after": 78, "sync_step": 70, "sync_after": 72, "max_jump_step": 3.0, "max_jump_ramp": 0.5}}}
     o = _run(res)
     assert [p["speed"] for p in o["c"]] == [1.0, 0.8, 1.2]
     rows = {r["name"]: r for r in o["r"]}
     assert rows["Total"]["better"] == "a" and rows["Sync"]["better"] == "b" and rows["Max jump"]["better"] == "b"
+
+def test_result_smooth_preferred():
+    res = {"plan": {}, "smooth": {"applied": True, "best": {"total": 80, "sync": 70, "tight": 90, "arc": 60, "max_jump": 5},
+           "smooth": {"total": 78, "sync": 72, "tight": 80, "arc": 61, "max_jump": 1}}, "final": {}}
+    rows = {r["name"]: r for r in _run(res)["r"]}
+    assert rows["Cut timing"]["better"] == "a" and rows["Max jump"]["better"] == "b" and rows["Arc"]["better"] == "b"
 
 def test_step_fallback_and_none():
     o = _run({"plan": {"retime": {"sections": [{"v_start": 0, "v_end": 4, "speed": 0.9}]}}, "final": {}})
