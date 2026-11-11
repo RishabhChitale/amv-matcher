@@ -184,6 +184,11 @@ def _bonus(asm, video):
     return pts
 
 
+def _raw_total(r):
+    """total_pct without the build_pct bonus (tempo/sync/arc only)."""
+    return S._combine(r["tempo_pct"], r["sync_pct"], r["arc_pct"])
+
+
 def _eval(song, video, segments, ncuts, lead_s=None):
     vd = float(video["duration"])
     asm = _assemble(song, segments, vd)
@@ -396,6 +401,7 @@ def plan_splice(song: dict, video: dict, max_cuts: int, min_segment_s: float = 2
     off = float(base["best_offset_s"])
     base_segs = _single(off, vd)
     base_total = int(base["total_pct"])
+    base_raw = _raw_total(base)   # accept/reject on the pre-bonus total: the build bonus is not comparable across layouts
     base_res = {k: base[k] for k in ("total_pct", "tempo_pct", "sync_pct", "arc_pct")}
     base_obj = _eval(song, video, base_segs, 0, lead_s)["obj"]
 
@@ -404,7 +410,8 @@ def plan_splice(song: dict, video: dict, max_cuts: int, min_segment_s: float = 2
                 "tempo_pct": r["tempo_pct"], "sync_pct": r["sync_pct"], "arc_pct": r["arc_pct"],
                 "objective": round(obj, 3), "bar_phase": phase,
                 "baseline": {"offset": off, "total_pct": base_total},
-                "improvement_pct": r["total_pct"] - base_total, "lead_silence_s": lead_silence(segs)}
+                "improvement_pct": int(round(_raw_total(r))) - int(round(base_raw)),   # sync gain, bonus excluded
+                "lead_silence_s": lead_silence(segs)}
 
     best = (base_segs, base_res, base_obj)
     bars, bt = _bars(song, phase)
@@ -444,10 +451,10 @@ def plan_splice(song: dict, video: dict, max_cuts: int, min_segment_s: float = 2
             if len(segs) - 1 > max_cuts or not _valid(segs, vd, min_segment_s, sd):
                 continue
             e = _eval(song, video, segs, len(segs) - 1, lead_s)
-            if e["obj"] > best[2] and e["r"]["total_pct"] >= base_total:
+            if e["obj"] > best[2] and _raw_total(e["r"]) >= base_raw - 1e-9:
                 best = (segs, e["r"], e["obj"])
         # the free-trim single segment (no cuts) is also a candidate
         e = _eval(song, video, _single(o, vd), 0, lead_s)
-        if e["obj"] > best[2] and e["r"]["total_pct"] >= base_total:
+        if e["obj"] > best[2] and _raw_total(e["r"]) >= base_raw - 1e-9:
             best = (_single(o, vd), e["r"], e["obj"])
     return pack(*best)

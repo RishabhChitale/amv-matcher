@@ -266,3 +266,19 @@ def test_valid_allows_negative_first_segment_only():
     assert not _valid(bad, 18.0, 2.0, 100.0)
     far = [{"src_start": -4.0, "src_end": 10.0, "dst_start": 0.0}, {"src_start": 20.0, "src_end": 26.0, "dst_start": 14.0}]
     assert not _valid(far, 20.0, 2.0, 100.0)
+
+
+def test_cuts_not_rejected_by_baseline_build_bonus(monkeypatch):
+    """A build_pct bonus that only the baseline layout earns must not veto a cut plan that improves sync
+    (the accept gate compares pre-bonus totals)."""
+    from amv_matcher import buildup, score as S
+    song, video = make_song(), make_video()
+    monkeypatch.setattr(buildup, "W_BUILD", 0.0)
+    ref = plan_splice(song, video, 2)
+    assert ref["cuts"], ref
+    base_off = S.score(song, video)["best_offset_s"]
+    monkeypatch.setattr(buildup, "W_BUILD", 0.2)
+    monkeypatch.setattr(buildup, "build_stats", lambda s, v, off: {
+        "build_pct": 100.0 if abs(off - base_off) < 1e-6 else 0.0, "launch_pct": 0.0, "n_launches": 0, "n_builds": 0})
+    r = plan_splice(song, video, 2)
+    assert len(r["cuts"]) >= 1, r
