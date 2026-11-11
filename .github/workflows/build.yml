@@ -121,8 +121,8 @@ jobs:
           foreach ($l in ($out | Where-Object { $_ -match '^scan_timing_substages ' })) { Write-Host "scan_timing_summary video substages (240 s 1080p60 clip): $l" }
           Write-Host "scan_timing exit code $code"
           if ($code -ne 0) { throw "scan_timing exit code $code" }
-      - name: Upload scan timing app logs (Windows, on failure)
-        if: runner.os == 'Windows' && failure()
+      - name: Upload scan timing app logs (Windows)
+        if: runner.os == 'Windows' && always()
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
