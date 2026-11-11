@@ -308,6 +308,17 @@ Validation (`paths.exports_member`): the path is `resolve()`d and must exist and
 `POST /api/auto-sync` accepts `unlock_original: bool` (default false). When `song_path` is the video's own audio (the extracted `original_audio` path) the server passes `original=True` to `auto_sync`, which fixes offset 0 and only allows retime + micro unless `unlock_original` is true. `job.source` is `"original"` or `"song"`.
 `GET /api/auto-sync/{id}` `steps_so_far` grows during the run (events `{step, status: start|end, score_before, score_after, kept, elapsed_s}`). After `POST .../cancel` the job ends `status: "cancelled"` with `result` = best-so-far (`limits_hit` contains `"cancelled"`, never cached), or `null` if none. Arrange is not interruptible (about 5 s worst case).
 
+## Auto-sync all (PROPOSAL, F4; not implemented yet)
+Batch version of `/api/auto-sync` for the scan list: one video, many songs, run through the worker pool, cancellable as a whole.
+The UI (`static/js/autosync-all.js`) is built against this shape and runs a mock of it with `?mockbatch=1`.
+
+- `POST /api/auto-sync-batch` `{video_path, song_paths:[str], options?}` (Origin-guarded; same path validation and option clamping as `/api/auto-sync`)
+  -> `{batch_id, total, status:"running"}`. Songs whose pair already has a running job are attached to it, not re-run; songs with a cached `final` for the same options finish immediately (`cached:true`).
+- `GET /api/auto-sync-batch/{batch_id}` -> `{batch_id, status: running|done|cancelled|error, total, done, songs:[{path, status: queued|running|done|error|cancelled, job_id|null, progress: 0..1, natural_pct, auto_pct|null, error|null, cached?}]}`.
+  `natural_pct` = the song's plain `total_pct`; `auto_pct` = `result.final.total_pct` once done. `progress` per song comes from the per-song job (`steps_so_far` / planned steps); overall progress is `done / total`. Same song order as the request.
+- `POST /api/auto-sync-batch/{batch_id}/cancel` -> same body as GET. Queued songs become `cancelled`; running ones are cancelled through `/api/auto-sync/{job_id}/cancel` (best-so-far is kept, never cached). Idempotent.
+- At most one batch at a time (409 with the running `batch_id` otherwise). Concurrency = a thin server-side loop over the existing per-song auto-sync job, bounded by the heavy-work pool, so no new engine code is needed.
+
 ## Analysis worker jobs (process pool; heavy work never runs on the event loop)
 Analysis, probe, thumbnails and proxy builds run in a process pool (`amv_matcher/workers.py`, cores - 1;
 `AMV_WORKERS=N` sets the size, `AMV_WORKERS=0` runs everything inline, used by the test suite).

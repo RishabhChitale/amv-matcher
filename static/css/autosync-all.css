@@ -1,0 +1,6 @@
+.asa-prog{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--mut)}
+.asa-trk{flex:1;height:6px;border-radius:3px;background:rgba(255,255,255,.12);overflow:hidden}.asa-trk i{display:block;height:100%;width:0;background:var(--acc,#7aa2ff);transition:width .25s}
+#mr-asall.asa-cancel{border-color:#d9534f}
+.mr-row .asa-row{display:inline-flex;align-items:center;gap:6px;font-size:12px;margin-left:6px}
+.asa-arrow{color:var(--mut)}.asa-auto{color:var(--txt)}.asa-row.err{color:#d9534f}
+.asa-bar{display:inline-block;width:80px;height:5px;border-radius:3px;background:rgba(255,255,255,.12);overflow:hidden}.asa-bar i{display:block;height:100%;background:var(--acc,#7aa2ff)}

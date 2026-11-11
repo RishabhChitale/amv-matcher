@@ -735,6 +735,7 @@ def main():
                 v = vis(sel, root); c.pump(0.1); v = vis(sel, root)
                 if not v or not v.get("vis"): return False
                 c.mouse("mouseMoved", v["x"], v["y"]); c.mouse("mousePressed", v["x"], v["y"]); c.mouse("mouseReleased", v["x"], v["y"]); c.pump(0.4); return True
+            c.pump(0.8)   # let the row-reorder transition settle before measuring boxes
             v_btn, v_rng = vis(".pvs-btn"), vis(".pvs-rng")
             check("F8 done rows show a visible play button and seek slider", bool(v_btn and v_btn.get("vis") and v_rng and v_rng.get("vis") and v_rng["w"] > 60), json.dumps([v_btn, v_rng]))
             check("F8 no audio created before play", c.ev("PVS.active()===''") is True)
@@ -748,6 +749,27 @@ def main():
             tk = c.ev("[...document.querySelectorAll('#mr-list .mr-row.playing .pvs-tick')].map(e=>{const r=e.getBoundingClientRect();return [r.width,r.height]})")
             check("F8 marker ticks render from the hook and are visible", isinstance(tk, list) and len(tk) == 2 and all(w > 0 and h > 0 for w, h in tk), str(tk) + c.ev("JSON.stringify({a:PVS.active(),pl:document.querySelectorAll('#mr-list .mr-row.playing').length,max:(document.querySelector('#mr-list .mr-row.playing .pvs-rng')||{}).max,ti:(document.querySelector('#mr-list .mr-row.playing .pvs-ticks')||{}).innerHTML})"))
             check("F8 pointer click on pause stops it", tap(".pvs-btn", "#mr-list .mr-row.playing") and c.ev("PVS.active()===''") is True)
+            # F4: Auto-sync all (mock batch transport; real pointer events, visibility asserted)
+            c.ev("window.ASA_MOCK=true")
+            v_all = vis("#mr-asall", "#mr")
+            check("F4 Auto-sync all button is visible with its label", bool(v_all and v_all.get("vis")) and c.ev("document.getElementById('mr-asall').textContent") == "Auto-sync all", json.dumps(v_all))
+            check("F4 tap starts the batch: button turns into Cancel, overall progress shows", tap("#mr-asall", "#mr") and c.ev("document.getElementById('mr-asall').textContent") == "Cancel auto-sync all"
+                  and bool((vis("#mr-asp span", "#mr") or {}).get("vis")), c.ev("document.getElementById('mr-asp').innerText"))
+            check("F4 rows show natural % -> progress bar", wait_for(c, "document.querySelectorAll('#mr-list .mr-row .asa-row.running .asa-bar').length>=1", 15)
+                  and bool((vis(".asa-row.running .asa-bar", "#mr-list") or {}).get("vis")))
+            check("F4 finished rows show natural -> auto-synced %", wait_for(c, "document.querySelectorAll('#mr-list .mr-row .asa-row.done').length>=1", 30)
+                  and bool((vis(".asa-row.done .asa-auto", "#mr-list") or {}).get("vis")))
+            wait_for(c, "ASA.state.status==='done'", 60)
+            check("F4 overall progress reaches done/total", c.ev("ASA.state.done===ASA.state.total && ASA.state.total>=2") is True and "done" in (c.ev("document.getElementById('mr-asp').innerText") or ""), c.ev("document.getElementById('mr-asp').innerText"))
+            c.ev("document.getElementById('mr-sort').value='after';document.getElementById('mr-sort').dispatchEvent(new Event('change'))"); c.pump(0.5)
+            aft = c.ev("[...document.querySelectorAll('#mr-list .mr-row.done .asa-auto')].map(b=>parseInt(b.textContent))")
+            check("F4 sort by auto-synced % orders rows by it", len(aft) >= 2 and aft == sorted(aft, reverse=True), str(aft))
+            c.ev("document.getElementById('mr-sort').value='now';document.getElementById('mr-sort').dispatchEvent(new Event('change'))"); c.pump(0.4)
+            # cancel: restart, then tap Cancel while songs are queued/running
+            tap("#mr-asall", "#mr"); wait_for(c, "ASA.state.status==='running'", 5); c.pump(0.4)
+            check("F4 tap on Cancel stops the batch (rest cancelled, label restored)", tap("#mr-asall", "#mr") and wait_for(c, "ASA.state.status==='cancelled'", 10)
+                  and c.ev("document.getElementById('mr-asall').textContent") == "Auto-sync all" and "Cancelled" in (c.ev("document.getElementById('mr-asp').innerText") or ""), c.ev("document.getElementById('mr-asp').innerText"))
+            c.ev("window.ASA_MOCK=false")
             c.ev("document.getElementById('mr-list').focus()")
             for k in ("ArrowDown", "ArrowDown", "ArrowUp"):
                 c.ev("window.dispatchEvent(new KeyboardEvent('keydown',{key:%s,bubbles:true}))" % json.dumps(k))

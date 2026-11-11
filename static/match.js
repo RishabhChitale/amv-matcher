@@ -126,7 +126,7 @@
     if (x.state === 'skipped') return `<div class="mr-rk">–</div><div class="mr-n"><b title="${esc(x.name)}">${esc(x.name)}</b><span class="muted">skipped: ${esc(x.reason)}</span></div>`;
     const p = x.state === 'short' ? 0 : r.total_pct, af = after(r);
     const rg = x.state === 'short' ? '<div class="mr-rg dim">–</div>' : `<div class="mr-rg">${ring(p)}</div>`;
-    const sub = x.state === 'short' ? `<span class="muted">Too short: ${fmtMS(r.song_duration)} vs video ${fmtMS(r.video_duration)}</span>` : `<span class="mr-chip">${chip(r)}</span>${af != null ? `<span class="mr-chip aft">after auto-sync ${Math.round(af)}%</span>` : ''}`;
+    const sub = x.state === 'short' ? `<span class="muted">Too short: ${fmtMS(r.song_duration)} vs video ${fmtMS(r.video_duration)}</span>` : `<span class="mr-chip">${chip(r)}</span>${af != null ? `<span class="mr-chip aft">after auto-sync ${Math.round(af)}%</span>` : ''}${window.ASA ? ASA.rowHTML(x) : ''}`;
     const act = x.state === 'short' ? '' : `<button class="mr-use" title="Use this audio (Enter)">Use this audio</button><button class="mr-as" title="Auto-sync this song">${x.syncing ? 'Syncing…' : 'Auto-sync'}</button>`;
     return `<div class="mr-rk">${x.state === 'short' ? '' : rank}</div>${rg}<div class="mr-n"><b title="${esc(x.name)}">${esc(x.name)}</b>${sub}</div><div class="mr-bpm">${r.bpm ? Math.round(r.bpm) + ' BPM' : ''}</div><div class="mr-dur">${fmtMS(r.song_duration)}</div><div class="mr-act">${act}</div>${x.state === 'done' && window.PVS ? PVS.html(x) : ''}`;
   }
@@ -136,6 +136,7 @@
   function renderResNow() {
     if ($$('mr').classList.contains('hidden')) return;
     const v = visible(), box = $$('mr-list'), n = M.rows.size;
+    if (window.ASA) ASA.paint();   // F4: enable the Auto-sync all button as rows finish
     const rem = M.total - M.doneN, el = (Date.now() - M.t0) / 1000, eta = M.doneN ? fmtETA(el / M.doneN * rem / 2) : '…';
     $$('mr-head').textContent = `${M.videoName} · ${n} songs · ${M.doneN} analyzed${rem > 0 ? ' · ETA ' + eta : ''}`;
     const old = new Map(); if (!reduce && els.size <= 80) els.forEach((e, p) => old.set(p, e.getBoundingClientRect().top));
@@ -150,7 +151,7 @@
     const seen = new Set(), frag = [];
     want.forEach(w => {
       if (typeof w[0] === 'string') { let h = els.get(w[0]); if (!h) { h = document.createElement('div'); h.className = 'mr-grp'; els.set(w[0], h); } h.textContent = w[1]; seen.add(w[0]); frag.push(h); return; }
-      const x = w[0]; let e = els.get(x.path), sig = x.state + '|' + w[1] + '|' + (x.r ? x.r.total_pct : '') + '|' + after(x.r) + '|' + !!x.syncing;
+      const x = w[0]; let e = els.get(x.path), sig = x.state + '|' + w[1] + '|' + (x.r ? x.r.total_pct : '') + '|' + after(x.r) + '|' + !!x.syncing + '|' + (window.ASA ? ASA.sig(x) : '');
       if (!e) { e = document.createElement('div'); els.set(x.path, e); e.onclick = () => { M.kb = visibleIdx(x.path); markKb(); }; e.ondblclick = () => useRow(x); }
       if (e.dataset.sig !== sig) {
         e.dataset.sig = sig; e.className = 'mr-row ' + x.state; e.innerHTML = rowHTML(x, w[1]); e.dataset.path = x.path;
@@ -206,7 +207,7 @@
     else if (e.key === ' ' && !typing) { e.preventDefault(); const x = l[M.kb >= 0 ? M.kb : 0]; if (x) { if (M.kb < 0) { M.kb = 0; markKb(); } preview(x); } }
   });
 
-  window.MATCH = {M, NM, openNew, openRes, closeRes};
+  window.MATCH = {M, NM, openNew, openRes, closeRes, render: renderRes};
   // first launch with no project: ask for a match (desktop shell, or ?newmatch=1)
   const first = () => { if (!S.video && !M.hasMatch && $$('nm').classList.contains('hidden')) openNew(); };
   if (/[?&]newmatch=1/.test(location.search)) setTimeout(first, 0);
