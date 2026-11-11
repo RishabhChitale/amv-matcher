@@ -90,3 +90,14 @@ def test_prefetch_queues_at_most_worker_count_past_current_song(monkeypatch):
     server._score_songs(job, {"duration": 10.0}, [Path(f"{n}.mp3") for n in NAMES])
     # before the first song is scored: the current song's own job plus at most 2 (= workers) queued past it
     assert events.index("song") <= 3
+
+
+def test_prefetch_default_is_two(monkeypatch):
+    import importlib
+    from amv_matcher import server
+    monkeypatch.delenv("AMV_SCAN_PREFETCH", raising=False)
+    try:
+        importlib.reload(server)
+        assert server.SCAN_PREFETCH == 2
+    finally:
+        importlib.reload(server)

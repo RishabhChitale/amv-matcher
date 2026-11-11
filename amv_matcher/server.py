@@ -192,7 +192,11 @@ def _cached_for(video_path, song_path):
         return None
 
 
-SCAN_PREFETCH = int(os.environ.get("AMV_SCAN_PREFETCH", "8"))     # songs analysed ahead of scoring (0 = off)
+# Songs analysed ahead of scoring (0 = off). Default 2: every fresh pool worker pays ~8 s CPU on its first song
+# (lazy librosa imports + numba ufunc compiles), so a deep lookahead spins up ~9 workers and burns ~2.2x the CPU of
+# 2 ahead for the same wall time (30 songs: 30.6 s / 147 s CPU at 8 vs ~30 s / 66 s at 2; UI ping p95 32-47 ms and
+# max ~1.4 s at 8 vs ~21 ms / ~0.2 s at 2; serial = 51 s / 46 s CPU).
+SCAN_PREFETCH = int(os.environ.get("AMV_SCAN_PREFETCH", "2"))
 TEMPO_SWEEP_TOP = 5       # best-tempo sweep runs only for the top N ranked songs (keeps scans fast)
 
 
