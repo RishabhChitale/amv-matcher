@@ -1128,6 +1128,24 @@ def main():
                 check("F7: tooltip hides when the pointer leaves the marker", (vis("#mk-tip") or {"hid": True})["hid"] is True)
             else:
                 print("SKIP  F7 tooltip (no song marker in this pair)")
+            # F7 / MARKERS.md: detected booms + visual booms (synthetic data injected, real mouse, text format, visibility)
+            c.ev("(()=>{const d=MKLegend.detected;d.busy=true;const off=spliceActive()?0:(S.offset||0);d.booms=[{t:off+2,class:'drop',conf:1,main:true},{t:off+4,class:'initial_boom',conf:.5}];d.main=off+2;"
+                 "d.vbooms=[{t:3,kind:'motion+flash',conf:.7}];d.cams=[];draw();})()")
+            rb = c.ev("(()=>{const cv=document.getElementById('tl').getBoundingClientRect();return {x:cv.left+t2x(2),y:cv.top+26+84+30,vx:cv.left+t2x(3),vy:cv.top+26+84-6}})()")
+            c.mouse("mouseMoved", rb["x"], rb["y"]); c.pump(0.4)
+            tv = vis("#mk-tip"); tx = c.ev("document.getElementById('mk-tip').innerText") or ""
+            check("F7: main drop tooltip visible, 'Main drop · m:ss.mmm · conf N%'", bool(tv and tv["w"] > 0 and not tv["hid"]) and bool(__import__('re').search(r"Main drop · \d+:\d\d\.\d{3} · conf \d+%", tx)), tx)
+            check("F7: tooltip never shows a file name", not __import__('re').search(r"\.(wav|mp3|mp4|mkv)", tx, __import__('re').I), tx)
+            c.mouse("mouseMoved", rb["vx"], rb["vy"]); c.pump(0.4)
+            tx = c.ev("document.getElementById('mk-tip').innerText") or ""
+            check("F7: visual boom tooltip 'Visual boom · t · motion burst + flash · conf 70%'", "Visual boom" in tx and "motion burst + flash" in tx and "conf 70%" in tx, tx)
+            c.mouse("mouseMoved", 5, 5); c.pump(0.3)
+            real_click("#mk-lg-btn")
+            lt = c.ev("document.getElementById('mk-lg-body').innerText") or ""
+            check("F7: legend lists main drop / initial boom / encore / visual boom / camera whip / high energy", all(k in lt.lower() for k in ("main drop", "initial boom", "encore", "visual boom", "camera whip", "high energy")), lt[:200])
+            check("F7: --mk-* tokens defined", c.ev("getComputedStyle(document.documentElement).getPropertyValue('--mk-visual').trim()") == "#fbbf24")
+            real_click("#mk-lg-btn")
+            c.ev("(()=>{const d=MKLegend.detected;d.booms=[];d.vbooms=[];d.main=null;d.busy=false;d.key='';})()")
             if el_ok and c.ev("(AS.runs[S.videoPath+'|'+S.sel.path].result.plan.retime||{sections:[]}).sections.length") > 0:
                 check("V1 retime bands drawn", (c.ev("AS.bands") or 0) > 0, str(c.ev("AS.bands")))
                 c.ev("document.querySelector('#as-mode [data-m=orig]').click()"); c.pump(0.4)

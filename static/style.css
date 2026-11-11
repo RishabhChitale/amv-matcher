@@ -1,4 +1,4 @@
-:root{--bg:#0e0f12;--panel:rgba(255,255,255,.045);--line:rgba(255,255,255,.09);--txt:#e8e9ee;--mut:#8b8f9c;
+:root{--mk-drop:#22d3ee;--mk-initial:#ff6b81;--mk-encore:#a78bfa;--mk-beat:rgba(229,231,235,.25);--mk-lull:rgba(139,92,246,.12);--mk-cut:rgba(229,231,235,.55);--mk-visual:#fbbf24;--mk-camera:#f97316;--mk-peak:rgba(34,211,238,.12);--bg:#0e0f12;--panel:rgba(255,255,255,.045);--line:rgba(255,255,255,.09);--txt:#e8e9ee;--mut:#8b8f9c;
 --v:#8b5cf6;--c:#22d3ee;--grad:linear-gradient(90deg,#8b5cf6,#22d3ee);--red:#ff3b4e;--ease:200ms cubic-bezier(.2,.7,.2,1)}
 *{box-sizing:border-box}
 body{margin:0;background:radial-gradient(1200px 600px at 80% -10%,rgba(139,92,246,.14),transparent),radial-gradient(900px 500px at -10% 110%,rgba(34,211,238,.09),transparent),var(--bg);

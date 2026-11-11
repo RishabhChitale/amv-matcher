@@ -423,8 +423,6 @@ function draw() {
       ctx.strokeStyle = 'rgba(139,92,246,.8)'; ctx.strokeRect(xa + .5, a0 + .5, xb - xa - 1, A1H - 9);
     });
     ctx.restore();
-    ctx.shadowColor = '#22d3ee'; ctx.shadowBlur = 12; ctx.fillStyle = '#e0faff';
-    segs.forEach(sg => (w.drops || []).forEach(d => { if (d < sg.src_start || d >= sg.src_end) return; const x = t2x(sg.dst_start + d - sg.src_start); ctx.beginPath(); ctx.moveTo(x, mid - 7); ctx.lineTo(x + 6, mid); ctx.lineTo(x, mid + 7); ctx.lineTo(x - 6, mid); ctx.fill(); }));
     ctx.shadowBlur = 0;
     if (sp) (S.sp.plan.cuts || []).forEach(c => {  // crossfade wedge + scissors at each cut
       const x = t2x(c.dst_time), ww = Math.max(6, t2x(0.04 * 2));
@@ -440,6 +438,7 @@ function draw() {
       ctx.fillStyle = e.d ? '#22d3ee' : '#8b5cf6'; ctx.fillRect(x - 1, p0 + ph - h, 2, h); });
   }
   if (window.asDrawA1) window.asDrawA1(ctx, a0, A1H, t2x, W);
+  if (window.mkDraw) window.mkDraw(ctx, RULER, V1H, A1H, t2x, W);  // F7: detected markers (legend.js)
   if (S.selClip) {  // selection outline
     ctx.save(); ctx.shadowColor = '#22d3ee'; ctx.shadowBlur = 14; ctx.strokeStyle = '#67e8f9'; ctx.lineWidth = 2;
     if (S.selClip !== 'a') ctx.strokeRect(1, RULER + 1, W - 2, V1H - 2);
