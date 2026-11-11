@@ -38,6 +38,14 @@ DROP_MATCH_S = 0.15
 _FPS_TABLE = {Fraction(24000, 1001): (1001, 24000), Fraction(30000, 1001): (1001, 30000),
               Fraction(60000, 1001): (1001, 60000)}
 
+# U11c speed-ramp export. Resolve import of <timeMap> is untested (no Resolve on the dev Mac), so two
+# conventions for where the source offset lives are kept behind RAMP_ANCHOR:
+#   "absolute-values": asset-clip start="0s", timept values are absolute source times
+#   "relative-values": asset-clip start=<first source frame>, timept values count from 0
+# They are identical while the ramp starts at source 0 (always true for speedramp plans).
+RAMP_ANCHOR = "absolute-values"
+RAMP_MODE_DEFAULT = "stepped"     # "smooth" = smooth2 timepts with ease times (opt-in)
+
 SETTING_DIR_MAC = "~/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Templates/Edit/Effects/"
 SETTING_DIR_WIN = r"%AppData%\Blackmagic Design\DaVinci Resolve\Support\Fusion\Templates\Edit\Effects" + "\\"
 
@@ -108,6 +116,34 @@ def video_clips(plan: dict, video_duration: float, fps) -> list:
                       "speed": 1.0 if abs(sp - 1.0) < 1e-4 else round(sp, 6)})
         prev_end = d1
     return clips or [{"src_f": 0, "dst_f": 0, "dur_f": to_frames(video_duration, fps), "speed": 1.0}]
+
+
+def ramp_plan(plan: dict):
+    """(plan', ramp retime dict) when the plan carries a speed ramp (retime_ramps, else retime, with
+    >= 2 `points` and a `warp`); plan' has retime replaced by it. Otherwise (plan, None)."""
+    plan = plan or {}
+    for k in ("retime_ramps", "retime"):
+        rt = plan.get(k)
+        if rt and len(rt.get("points") or []) >= 2 and len(rt.get("warp") or []) >= 2:
+            return dict(plan, retime=rt), rt
+    return plan, None
+
+
+def tempo_ramp_warp(plan: dict):
+    """Song tempo-ramp warp [[song_s, out_s]...] from plan['tempo_ramp'], or None."""
+    tr = (plan or {}).get("tempo_ramp")
+    w = tr.get("warp") if isinstance(tr, dict) else None
+    return w if w and len(w) >= 2 else None
+
+
+def ramp_timemap(rt: dict, video_duration: float, fps, mode=None) -> dict:
+    """{xml, pts, n_out} for one clip carrying the whole ramp (see RAMP_ANCHOR)."""
+    from . import resolve_ramps as RR
+    mode = mode or rt.get("resolve_mode") or RAMP_MODE_DEFAULT
+    src = rt["points"] if mode == "smooth" else rt["warp"]
+    pts = RR.build_timemap(src, fps, mode, vd=float(video_duration))
+    s0 = pts[0]["_v"]     # 0 for speedramp plans, so both RAMP_ANCHOR conventions emit the same XML
+    return {"xml": RR.timemap_xml(pts), "pts": pts, "n_out": pts[-1]["_t"], "s0": s0}
 
 
 def out_duration_of(plan: dict, video_duration: float) -> float:
@@ -185,13 +221,18 @@ def build_markers(song_heard: dict, plan: dict, video: dict, clips: list, out_du
 # ------------------------------------------------------------------ FCPXML
 def build_fcpxml(video_path: Path, video_duration: float, fps, width: int, height: int,
                  plan: dict, song_heard: dict, video: dict, audio_rel: str, audio_dur: float,
-                 name: str = "AMV Matcher") -> str:
+                 name: str = "AMV Matcher", ramp_mode: Optional[str] = None) -> str:
     """`video_path` is the ORIGINAL video (absolute file URI); `audio_rel` is the bundle-relative
     path of the wav the audio clips read (song-as-heard)."""
     q = quoteattr
     fr = snap_fps(fps)
     fd = frame_dur(fr)
+    plan, ramp_rt = ramp_plan(plan)
     clips = video_clips(plan, video_duration, fr)
+    tm = None
+    if ramp_rt:
+        tm = ramp_timemap(ramp_rt, video_duration, fr, ramp_mode)
+        clips = [{"src_f": 0, "dst_f": 0, "dur_f": tm["n_out"], "speed": 1.0}]
     nf = sum(c["dur_f"] for c in clips)
     out_dur = nf / float(fr)
     vf = to_frames(video_duration, fr)
@@ -207,7 +248,10 @@ def build_fcpxml(video_path: Path, video_duration: float, fps, width: int, heigh
         o = []
         for f, n in marks:
             if c["dst_f"] <= f < c["dst_f"] + c["dur_f"]:
-                st = c["src_f"] + int(round((f - c["dst_f"]) * c["speed"]))
+                if tm:
+                    st = int(round(np.interp(f, [t["_t"] for t in tm["pts"]], [t["_v"] for t in tm["pts"]])))
+                else:
+                    st = c["src_f"] + int(round((f - c["dst_f"]) * c["speed"]))
                 done = ' completed="0"' if n == "DROP" else ""
                 o.append('<marker start="%s" duration="%s" value="%s"%s/>' % (tstr(st, fd), tstr(1, fd), n, done))
         return o
@@ -216,9 +260,12 @@ def build_fcpxml(video_path: Path, video_duration: float, fps, width: int, heigh
     for i, c in enumerate(clips):
         sp = c["speed"]
         attrs = 'ref="r2" offset="%s" name=%s start="%s" duration="%s" format="r1" tcFormat="NDF"' % (
-            tstr(c["dst_f"], fd), q(vname), tstr(c["src_f"], fd), tstr(c["dur_f"], fd))
+            tstr(c["dst_f"], fd), q(vname),
+            tstr(tm["s0"] if tm and RAMP_ANCHOR == "relative-values" else c["src_f"], fd), tstr(c["dur_f"], fd))
         inner = []
-        if abs(sp - 1.0) > 1e-9:
+        if tm:
+            inner.append(tm["xml"])
+        elif abs(sp - 1.0) > 1e-9:
             src_end = c["src_f"] + int(round(c["dur_f"] * sp))
             inner.append('<timeMap><timept time="0s" value="%s" interp="linear"/>'
                          '<timept time="%s" value="%s" interp="linear"/></timeMap>'
@@ -341,6 +388,21 @@ def prepare_audio(song_path: Path, ratio: float, audio_dir: Path) -> tuple:
         return dst.name, dur
     dst = audio_dir / (Path(song_path).stem + "_tempo.wav")
     _tempo_wav(song_path, ratio, dst)
+    return dst.name, float(sf.info(str(dst)).duration)
+
+
+def prepare_audio_ramp(song_path: Path, warp, audio_dir: Path) -> tuple:
+    """Tempo-ramped song baked to a stereo wav at speed 1 (temporamp.stretch_warped per channel).
+    Returns (filename, duration_s)."""
+    import soundfile as sf
+    from .temporamp import stretch_warped
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    y, sr = sf.read(str(song_path), always_2d=True, dtype="float32")
+    chans = [stretch_warped(y[:, i], sr, warp) for i in range(min(2, y.shape[1]))]
+    if len(chans) == 1:
+        chans = chans * 2
+    dst = audio_dir / (Path(song_path).stem + "_tempoR.wav")
+    sf.write(str(dst), np.stack(chans, axis=1), sr, subtype="FLOAT")
     return dst.name, float(sf.info(str(dst)).duration)
 
 
@@ -509,11 +571,24 @@ def export_bundle(video_path: Path, song_path: Path, plan: dict, song: dict, vid
     fps = float(video.get("fps") or 30)
     width, height = _dims(video_path)
     ratio = float(plan.get("tempo_ratio") or 1.0)
-    heard = apply_tempo(song, ratio) if abs(ratio - 1.0) > 1e-9 else song
+    tw = tempo_ramp_warp(plan)
+    if tw:
+        from .temporamp import apply_tempo_warp
+        heard = apply_tempo_warp(song, tw)
+    else:
+        heard = apply_tempo(song, ratio) if abs(ratio - 1.0) > 1e-9 else song
     prog("audio", 1)
-    aname, adur = prepare_audio(Path(song_path), ratio, folder / "audio")
-    clips = video_clips(plan, float(video["duration"]), fps)
-    out_dur = sum(c["dur_f"] for c in clips) / float(snap_fps(fps))
+    if tw:
+        aname, adur = prepare_audio_ramp(Path(song_path), tw, folder / "audio")
+    else:
+        aname, adur = prepare_audio(Path(song_path), ratio, folder / "audio")
+    plan_r, ramp_rt = ramp_plan(plan)
+    if ramp_rt:
+        out_dur = ramp_timemap(ramp_rt, float(video["duration"]), fps)["n_out"] / float(snap_fps(fps))
+        clips = [None]
+    else:
+        clips = video_clips(plan, float(video["duration"]), fps)
+        out_dur = sum(c["dur_f"] for c in clips) / float(snap_fps(fps))
     xml = build_fcpxml(video_path, float(video["duration"]), fps, width, height, plan, heard, video,
                        "audio/" + aname, adur)
     (folder / "timeline.fcpxml").write_text(xml, encoding="utf-8")
