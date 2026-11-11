@@ -45,11 +45,23 @@
     dropKind = t.closest('#nm-dv') ? 'video' : t.closest('#nm-dm') ? 'dir' : null;
     if (dropKind) e.preventDefault();
   }, true);
+  // A native drop while the New-match popup is open but not on one of its zones (the shell only reports paths): fill the zones from what
+  // was dropped and, when both a video and music are there, start the match exactly like "Find best songs" (closes the popup, shows the scan list).
+  async function dropIntoNew(paths) {
+    if (!paths || !paths.length || NM.busy) return;
+    try {
+      const j = await register(paths);
+      if (!j.videos.length && !j.songs.length) return note('Nothing usable in that drop (video: mp4 mov mkv webm avi m4v; audio: mp3 wav m4a flac ogg aac)', true);
+      if (j.videos.length) NM.video = j.videos[0];
+      if (j.songs.length) NM.dir = paths.find(p => !kindOf(p)) || dirOf(j.songs[0]);
+    } catch (e) { return note(e.message, true); }
+    nmUI(); if (NM.video && NM.dir) return startMatch();
+  }
   // native.js normally runs first; resolve the previous nativeDrop at call time and re-hook on load, so script order can never break drops
   function hookDrop() {
     const prev = window.nativeDrop;
     if (prev && prev.__nm) return;
-    const w = paths => { const k = dropKind; dropKind = null; const o = prev || window.nativeDropBase; return k ? setFromPaths(k, paths) : (typeof o === 'function' ? o(paths) : undefined); };
+    const w = paths => { const k = dropKind; dropKind = null; const o = prev || window.nativeDropBase; return k ? setFromPaths(k, paths) : !$$('nm').classList.contains('hidden') ? dropIntoNew(paths) : (typeof o === 'function' ? o(paths) : undefined); };
     w.__nm = true; window.nativeDropBase = prev || window.nativeDropBase; window.nativeDrop = w;
   }
   hookDrop(); window.addEventListener('load', hookDrop);

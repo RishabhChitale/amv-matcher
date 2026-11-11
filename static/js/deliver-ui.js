@@ -23,7 +23,8 @@
   const busy = () => !!(window.AS && AS.rd && AS.rd.running && !AS.rd.installing);
   const locked = () => D2.page === 'deliver' || busy();
   const msg = () => busy() ? 'A render is running: media changes are disabled until it finishes or is cancelled.' : 'Media drops and linking are disabled on Deliver. Switch to Edit to change media.';
-  const warn = () => { if (typeof note === 'function') note(msg(), true); };
+  const why = () => D2.page === 'deliver' ? 'deliver page' : busy() ? 'render running' : 'unlocked';
+  const warn = (what) => { try { const a = window.pywebview && window.pywebview.api; if (a && a.log) a.log('drop swallowed (' + (what || 'drop') + '): ' + why()); } catch (e) {} if (typeof note === 'function') note(msg(), true); };
 
   function setPage(p) { D2.page = p; document.body.classList.toggle('page-deliver', p === 'deliver');
     bar.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.pg === p)); sync(); }
@@ -31,7 +32,7 @@
 
   // media lock: capture-phase drop/dragover guard + wrap the shared entry points
   ['dragover', 'drop'].forEach(t => window.addEventListener(t, e => {
-    if (!locked()) return; e.preventDefault(); e.stopImmediatePropagation(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'none'; if (t === 'drop') warn();
+    if (!locked()) return; e.preventDefault(); e.stopImmediatePropagation(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'none'; if (t === 'drop') warn('window drop');
   }, true));
   const origND = window.nativeDrop;
   if (origND) window.nativeDrop = function (paths) { if (locked()) { warn(); return Promise.resolve(); } return origND.apply(this, arguments); };
