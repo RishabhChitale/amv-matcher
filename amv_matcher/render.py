@@ -12,7 +12,7 @@ render_plan(video_path, plan, audio_wav, out_path, interp="auto", progress_cb=No
 * Audio: song at plan.tempo_ratio (PyAV atempo), segments spliced with media.render_audio
   (crossfades), plan.lead_silence_s of silence at the start. `audio_wav` may be a pre-rendered
   wav; None builds it from `song_path` + the plan.
-* Output length = plan.retime.out_duration (or the source duration); audio and video lengths
+* Output length = plan.retime_ramps.out_duration if a valid ramp plan is present, else plan.retime.out_duration (or the source duration); audio and video lengths
   agree within one frame.
 
 HTTP contract (include with ONE line in server.py:  `from .render import router as render_router;
@@ -622,9 +622,7 @@ def estimate_render(plan: dict, interp: str, video, measure: bool = False,
     if mode not in ("rife", "blend", "dup"):
         raise RenderError(f"Unknown interp {interp!r}")
     pr = _probe(video)
-    rt = plan.get("retime") or {}
-    warp = rt.get("warp") or [[0.0, 0.0], [pr["dur"], pr["dur"]]]
-    out_dur = float(rt.get("out_duration") or warp[-1][1])
+    warp, out_dur = video_warp(plan, pr["dur"])
     i, f, slow = frame_plan(warp, out_dur, pr["fps"], max(1, pr["frames"]))
     n_out = len(i)
     n_int = 0 if mode == "dup" else int(_interp_mask(f, slow).sum())
@@ -732,6 +730,29 @@ def _set_encoder_options(vs, source_bps=None, fps: float = 30.0) -> None:
         vs.options = {"allow_sw": "1", "realtime": "0"}
     else:
         vs.options = {"preset": "veryfast", "crf": "20", "threads": "0"}
+
+
+def video_warp(plan: dict, src_dur: float):
+    """(warp, out_duration) the video is rendered with. A smooth speed-ramp plan (plan["retime_ramps"], same
+    [src_s, out_s] contract as retime.plan_retime()["warp"], docs/U11C-RAMP-FORMAT.md) wins when it is
+    valid (>= 2 finite rows, starts [0, 0], src and out non-decreasing, out_duration > 0); otherwise the
+    step plan's plan["retime"]; otherwise identity. Frames in slowed parts get interp, speed 1 is untouched."""
+    for key in ("retime_ramps", "retime"):
+        rt = plan.get(key) or {}
+        w = rt.get("warp")
+        try:
+            a = np.asarray(w, dtype=float)
+        except Exception:
+            continue
+        if a.ndim != 2 or a.shape[0] < 2 or a.shape[1] != 2 or not np.isfinite(a).all():
+            continue
+        if abs(a[0, 0]) > 1e-6 or abs(a[0, 1]) > 1e-6 or (np.diff(a, axis=0) < -1e-9).any():
+            continue
+        out_dur = float(rt.get("out_duration") or a[-1, 1])
+        if out_dur > 0 and a[-1, 1] > 0:
+            return a.tolist(), out_dur
+    warp = [[0.0, 0.0], [src_dur, src_dur]]
+    return warp, float(src_dur)
 
 
 def frame_plan(warp, out_duration: float, fps: float, src_frames: int):
@@ -1001,9 +1022,7 @@ def render_plan(video_path, plan: dict, audio_wav, out_path, interp: str = "auto
         src_dur = float(vin.duration / av.time_base) if vin.duration else (vs_in.frames or 0) / fps
         src_frames = vs_in.frames or int(round(src_dur * fps))
         src_bps = vs_in.bit_rate or vin.bit_rate or 0
-    rt = plan.get("retime") or {}
-    warp = rt.get("warp") or [[0.0, 0.0], [src_dur, src_dur]]
-    out_dur = float(rt.get("out_duration") or warp[-1][1])
+    warp, out_dur = video_warp(plan, src_dur)
     i_arr, f_arr, slow = frame_plan(warp, out_dur, fps, max(1, src_frames))
     n_out = len(i_arr)
     if n_out < 1:

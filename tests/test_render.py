@@ -464,3 +464,70 @@ def test_vt_bitrate_clamp():
     assert f(None, 1920, 1080, 30) == int(1920 * 1080 * 30 * 0.05)   # fallback ~3.1 Mbps
     assert f(0, 3840, 2160, 60) == 12_000_000                 # fallback also capped
     assert f("junk", 160, 90, 24) == 2_000_000
+
+
+# ---- U11c: smooth speed-ramp plans (plan["retime_ramps"], docs/U11C-RAMP-FORMAT.md) -------------------
+
+def _ramp_warp(hz=20, dur=4.0):
+    """Synthetic smooth ramp: speed 1 for 0-1 s, eases to 0.8 over 1-2 s, holds, eases back to 1 by 3 s."""
+    ts = np.arange(0, dur * hz + 1) / hz
+    sp = np.interp(ts, [0, 1, 1.5, 2.5, 3.0, dur], [1, 1, 0.8, 0.8, 1, 1])
+    out = np.concatenate([[0.0], np.cumsum(np.diff(ts) / ((sp[1:] + sp[:-1]) / 2))])
+    return [[float(a), float(b)] for a, b in zip(ts, out)]
+
+
+def _ramp_plan(warp, **kw):
+    p = {"offset": 0.0, "tempo_ratio": 1.0, "segments": [], "nudges": [], "lead_silence_s": 0.0,
+         "retime_ramps": {"warp": warp, "out_duration": warp[-1][1]}}
+    p.update(kw)
+    return p
+
+
+def test_video_warp_prefers_valid_ramps_else_retime():
+    rw = _ramp_warp()
+    w, od = render.video_warp({"retime_ramps": {"warp": rw, "out_duration": rw[-1][1]}, "retime": {"warp": FAST, "out_duration": 3.8}}, 4.0)
+    assert w == rw and abs(od - rw[-1][1]) < 1e-9
+    # invalid ramps (non-monotonic / not starting at 0) fall back to the step plan, then to identity
+    bad = [[0, 0], [2, 1], [1, 2]]
+    w, od = render.video_warp({"retime_ramps": {"warp": bad, "out_duration": 2}, "retime": {"warp": FAST, "out_duration": 3.8}}, 4.0)
+    assert w == FAST and od == 3.8
+    w, od = render.video_warp({"retime_ramps": {"warp": [[0.5, 0], [1, 1]]}}, 4.0)
+    assert w == [[0.0, 0.0], [4.0, 4.0]] and od == 4.0
+    assert render.video_warp({}, 4.0)[1] == 4.0
+
+
+def test_ramp_frame_timing_monotonic_and_length():
+    rw = _ramp_warp()
+    out_dur = rw[-1][1]
+    i, f, slow = frame_plan(rw, out_dur, FPS, 96)
+    assert len(i) == round(out_dur * FPS)
+    pos = i + f
+    assert (np.diff(pos) >= -1e-9).all()                      # monotonic source mapping
+    assert (i[:int(0.9 * FPS)] == np.arange(int(0.9 * FPS))).all()   # speed-1 head: identity
+    assert not slow[:int(0.9 * FPS)].any() and not slow[-int(0.9 * FPS):].any()
+    mid = int(2.0 * FPS)
+    assert slow[mid]                                         # inside the 0.8x hold
+    # source position at output t follows the warp (linear interp)
+    t = np.arange(len(i)) / FPS
+    want = np.interp(t, [r[1] for r in rw], [r[0] for r in rw]) * FPS
+    assert np.abs(pos - want).max() < 1.01
+
+
+def test_ramp_render_duration_frames_and_audio_untouched(clip, tmp_path):
+    rw = _ramp_warp()
+    out_dur = rw[-1][1]
+    wav = make_wav(tmp_path / "a.wav", out_dur)
+    out = tmp_path / "o.mp4"
+    r = render_plan(clip, _ramp_plan(rw), wav, out, interp="blend")
+    assert r["interp"] == "blend" and r["interpolated"] > 0
+    i = check_sync(out, out_dur)
+    assert i["frames"] == round(out_dur * FPS) > 96
+    # supplied audio (e.g. the tempo-ramp WAV) is muxed as-is: same length, same samples (up to codec)
+    pcm_in = sf.read(str(wav), dtype="float32")[0][:, 0]
+    pcm_out = _pcm(out).astype(np.float32)
+    n = min(len(pcm_in), len(pcm_out), 44100)
+    assert abs(len(pcm_out) / 44100 - out_dur) < 0.1 and np.abs(pcm_out[:n]).max() > 0.1
+    # speed-1 head is not interpolated: first second frames equal the source frames
+    src, res = frames(clip), frames(out)
+    for k in (2, 8, 15):
+        assert np.abs(res[k] - src[k]).mean() < 6.0
