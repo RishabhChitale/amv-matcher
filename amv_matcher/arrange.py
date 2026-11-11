@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from . import motif
 from . import score as S
 from . import splice as SP
 
@@ -225,6 +226,7 @@ def plan_arrangement(song: dict, video: dict, max_moves: int = 3, lead_s: float 
                 "improvement_pct": int(r["total_pct"]) - base_total}
 
     secs = _secs(song)
+    gate = motif.gate(song)
     guard = None
     if prefer_energy:
         _bt = base.get("tightness") or {}
@@ -297,6 +299,8 @@ def plan_arrangement(song: dict, video: dict, max_moves: int = 3, lead_s: float 
         seen.add(key)
         for ent in _entries(song, secs, o2, off):
             segs = _segments(secs, o2, vd, ent)
+            if gate is not None and not gate.ok(segs[0]["src_start"]):
+                continue                          # F17: the arranged song must start on a valid start
             if any(g["src_end"] - g["src_start"] <= 1e-6 or g["src_end"] > float(song["duration"]) + 1e-6 for g in segs):
                 continue
             merged = _merge(segs)

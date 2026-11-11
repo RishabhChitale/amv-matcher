@@ -9,6 +9,7 @@ import time
 
 import numpy as np
 
+from . import motif
 from . import score as S
 from . import stemsync
 from .retime import Cancelled, apply_warp, plan_retime
@@ -136,7 +137,9 @@ def _fast(d):
 
 
 def _best_offset(song, video, center=None, half=None, step=0.05, lead_s=None):
-    """Best offset by sync+arc (same rule as score.score); full scan or a window around center."""
+    """Best offset by sync+arc (same rule as score.score); full scan or a window around center.
+    F17: only starts the song's motif gate allows (a window with none falls back to the nearest valid start)."""
+    g = motif.gate(song)
     song, video = _fast(song), _fast(video)
     vd, sd = float(video["duration"]), float(song["duration"])
     lo_lim, hi = S.MIN_OFFSET_S, max(0.0, sd - vd)       # offsets may be negative (song starts late)
@@ -146,6 +149,15 @@ def _best_offset(song, video, center=None, half=None, step=0.05, lead_s=None):
         offs = np.arange(max(lo_lim, center - half), min(hi, center + half) + 1e-9, step)
         if len(offs) == 0:
             offs = np.array([min(max(center, lo_lim), hi)])
+    if g is not None:
+        a, b = float(offs[0]), float(offs[-1])
+        keep = [float(o) for o in offs[g.mask(offs)]] + g.points(a, b)
+        if center is None:
+            keep.append(min(max(0.0, lo_lim), hi))
+        if not keep:
+            allv = g.points(lo_lim, hi) + [min(max(0.0, lo_lim), hi)]
+            keep = [min(allv, key=lambda p: (abs(p - center), p))]
+        offs = np.array(sorted(set(round(o, 6) for o in keep)), dtype=float)
     ev_t, ev_w = S._events(video)
     ok = len(ev_t) > 0 and len(song["beat_times"]) >= 2
     best = None
@@ -169,6 +181,12 @@ def _alt_offsets(song, video, exclude, k=3, min_sep=0.5, lead_s=None):
     if len(ev_t) == 0 or len(song["beat_times"]) < 2:
         return []
     offs = np.arange(lo_lim, hi + 1e-9, 0.1)
+    g = motif.gate(song)
+    if g is not None:                                     # F17: valid starts only
+        keep = [float(o) for o in offs[g.mask(offs)]] + g.points(lo_lim, hi)
+        offs = np.array(sorted(set(round(o, 6) for o in keep)), dtype=float)
+        if len(offs) == 0:
+            return [0.0] if hi >= 0.0 and all(abs(x) >= 1e-9 for x in exclude) else []
     sc = [S.W_SYNC * S._sync_pct_at(song, ev_t, ev_w, vd, float(o), lead_s) + S.W_ARC * S._arc_pct_at(song, video, float(o))
           for o in offs]
     out = []
@@ -209,6 +227,7 @@ def _boom_offsets(song, video, offset, lead_s=None):
     bpm = float(song.get("bpm") or 0.0)
     per = 60.0 / bpm if bpm > 0 else None
     top = sorted(vb, key=lambda v: (-float(v.get("conf", 1.0)), float(v["t"])))[:BOOM_MAX_CANDIDATES]
+    g = motif.gate(song)                                  # F17: a boom move must still start on a valid start
     out = []
     for v in top:
         raw = float(mb) - lead - float(v["t"])
@@ -217,7 +236,8 @@ def _boom_offsets(song, video, offset, lead_s=None):
             cands.append(offset + round((raw - offset) / per) * per)
         for o in cands:
             o = round(float(o), 3) + 0.0
-            if lo - 1e-9 <= o <= hi + 1e-9 and abs(o - offset) > 1e-6 and all(abs(o - x) > 1e-6 for x in out):
+            if (lo - 1e-9 <= o <= hi + 1e-9 and abs(o - offset) > 1e-6 and all(abs(o - x) > 1e-6 for x in out)
+                    and (g is None or g.ok(o))):
                 out.append(o)
     return out
 

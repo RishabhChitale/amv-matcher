@@ -31,6 +31,7 @@ import math
 
 import numpy as np
 
+from . import motif
 from . import score as S
 from .retime import Cancelled
 
@@ -477,10 +478,12 @@ def plan_splice(song: dict, video: dict, max_cuts: int, min_segment_s: float = 2
     # (repeat the drop), so o + video duration may exceed the song length.
     cands = [off]
     pk = _strongest_peak(video)
+    gate = motif.gate(song)                       # F17: the first segment may only start on a valid start
     if pk is not None:
         for d in song.get("drops", []):
             o = round(round((d - pk - S._lead(lead_s)) / 0.05) * 0.05, 2)
-            if 0 <= o <= sd - min_segment_s and all(abs(o - c) > 1e-6 for c in cands):
+            if (0 <= o <= sd - min_segment_s and all(abs(o - c) > 1e-6 for c in cands)
+                    and (gate is None or gate.ok(o))):
                 cands.append(o)
     for o in cands:
         if should_cancel is not None and should_cancel():

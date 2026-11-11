@@ -5,6 +5,7 @@ import os
 
 import numpy as np
 
+from . import motif
 from ._memo import farr
 
 # F15 (story gate cap, story/key-moment fields) is held out of releases. Off by default; AMV_F15=1 turns it on.
@@ -559,6 +560,7 @@ def _pack(song, video, off, tempo_pct, rate, sync_pct, arc_pct, lead_s=None, qui
         "trim_end_s": round(off + float(video["duration"]), 2),
         "best_rate": rate,
         "tightness": tightness(song, video, off, lead_s),
+        "starts_on": motif.starts_on(song, off),     # F17: 'intro' / 'hook' / 'phrase N' (None = no gate)
     }
     if f15:
         out.update(story_z=st["story_z"], story_capped=bool(total > cap),
@@ -789,15 +791,24 @@ def score(song: dict, video: dict, allow_negative: bool = False, lead_s: float =
         arc = _arc_pct_at(song, video, o)
         return W_SYNC * sync + W_ARC * arc, sync, arc
 
+    g = motif.gate(song)               # F17: only starts the motif rule allows (None = no constraint)
+    if g is not None:
+        keep = [float(o) for o in offsets[g.mask(offsets)]] + g.points(lo, max_off) + [min(max(0.0, lo), max_off)]
+        offsets = np.array(sorted(set(round(o, 6) for o in keep)), dtype=float)
     scanned = [(comb_at(float(o)), float(o)) for o in offsets]
     scanned.sort(key=lambda x: -x[0][0])
     seeds = [o for _, o in scanned[:3]]
     if has_sync:
         seeds += _xcorr_offsets(song, ev_t, ev_w, lo, max_off)
     best = None
+    if g is not None:
+        (c, sy, ar), o = scanned[0]
+        best = (c, o, sy, ar)
     for seed in seeds:
         for o in np.arange(seed - REFINE_S, seed + REFINE_S + 1e-9, REFINE_STEP_S):
             o = float(min(max(o, lo), max_off))
+            if g is not None and not g.ok(o):
+                continue
             (c, sy, ar) = comb_at(o)
             if best is None or c > best[0]:
                 best = (c, o, sy, ar)
