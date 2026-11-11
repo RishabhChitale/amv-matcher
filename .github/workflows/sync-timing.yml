@@ -26,11 +26,36 @@ concurrency:
 permissions:
   contents: read
 jobs:
+  resolve:
+    # actions/checkout cannot fetch an abbreviated SHA (it asks for refs/heads/<sha>* and fails), so turn the inputs
+    # into full 40-char SHAs first.
+    runs-on: ubuntu-latest
+    outputs:
+      refs: ${{ steps.r.outputs.refs }}
+    steps:
+      - uses: actions/checkout@v5
+        with: {fetch-depth: 0}
+      - id: r
+        env:
+          REF_A: ${{ inputs.ref_a }}
+          REF_B: ${{ inputs.ref_b }}
+        run: |
+          set -eu
+          out='['
+          for r in "$REF_A" "$REF_B"; do
+            [ -n "$r" ] || continue
+            full=$(git rev-parse --verify --quiet "$r^{commit}" || git rev-parse --verify --quiet "origin/$r^{commit}") || { echo "cannot resolve $r"; exit 1; }
+            [ "$out" = '[' ] || out="$out,"
+            out="$out\"$full\""
+          done
+          echo "refs=$out]" >> "$GITHUB_OUTPUT"
+          echo "resolved: $out]"
   timing:
+    needs: resolve
     strategy:
       fail-fast: false
       matrix:
-        ref: ${{ fromJSON(inputs.ref_b != '' && format('["{0}","{1}"]', inputs.ref_a, inputs.ref_b) || format('["{0}"]', inputs.ref_a)) }}
+        ref: ${{ fromJSON(needs.resolve.outputs.refs) }}
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
