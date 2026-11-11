@@ -272,9 +272,18 @@ def _short_pair():
     return make_song(20.0), make_video(np.arange(1, 56) * 0.5, duration=30.0)
 
 
-def test_shorter_song_ineligible_by_default():
+def test_shorter_song_synced_over_video_stretch():
+    # F2: a shorter song is no longer disqualified; it syncs to the best-fitting stretch of the video
     song, vid = _short_pair()
     r = auto_sync(song, vid)
+    assert r["final"].get("eligible", True) is not False
+    vw = r["plan"]["video_window"]
+    assert abs((vw["end_s"] - vw["start_s"]) - 20.0) < 0.1
+    assert r["final"]["video_use"]["label"].startswith("uses 0:20 of 0:30")
+
+
+def test_tiny_song_still_ineligible():
+    r = auto_sync(make_song(3.0), make_video(np.arange(1, 56) * 0.5, duration=30.0))
     f = r["final"]
     assert f["eligible"] is False and r["eligible"] is False
     assert f["total_pct"] == 0 and f["fit_after_effort"] == 0
@@ -388,7 +397,7 @@ def test_arrange_not_picked_when_no_gain(monkeypatch):
 def test_arrange_not_called_when_ineligible(monkeypatch):
     called = []
     monkeypatch.setattr(AS, "plan_arrangement", lambda *a, **k: called.append(1))
-    r = auto_sync(make_song(20.0), make_video(np.arange(1, 56) * 0.52, duration=30.0))
+    r = auto_sync(make_song(3.0), make_video(np.arange(1, 56) * 0.52, duration=30.0))   # below PARTIAL_MIN_S
     assert r["eligible"] is False and not called and r["steps"] == []
 
 

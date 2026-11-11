@@ -108,19 +108,24 @@ def test_score_songs_matches_scan(env):
     assert one["status"] == "done"
     assert one["results"] == scan["results"] and one["too_short"] == scan["too_short"]
     assert one["video"] == scan["video"]
-    # several songs: job + polling, short song lands in too_short
+    # several songs: job + polling; a song shorter than the video scores over a stretch of it (F2),
+    # only a song under PARTIAL_MIN_S lands in too_short
     short = music / "short.wav"
-    make_click_track(short, 100, seconds=6)
-    r = c.post("/api/score-songs", json={"video_path": str(v),
-                                         "song_paths": [str(music / "c120.wav"), str(short)]}).json()
+    make_click_track(short, 100, seconds=3)
+    part = music / "part.wav"
+    make_click_track(part, 100, seconds=6)
+    r = c.post("/api/score-songs", json={"video_path": str(v), "song_paths": [
+        str(music / "c120.wav"), str(short), str(part)]}).json()
     assert r["status"] == "running"
     for _ in range(300):
         j = c.get(f"/api/scan/{r['job_id']}").json()
         if j["status"] != "running":
             break
         time.sleep(0.2)
-    assert j["status"] == "done" and [x["name"] for x in j["results"]] == ["c120.wav"]
+    assert j["status"] == "done" and sorted(x["name"] for x in j["results"]) == ["c120.wav", "part.wav"]
     assert [x["name"] for x in j["too_short"]] == ["short.wav"]
+    pr = next(x for x in j["results"] if x["name"] == "part.wav")
+    assert pr["partial_video"] and pr["video_use"]["label"].startswith("uses 0:06 of ")
     # an uploaded video + uploaded song work together
     uv = up(c, "video", "jump.avi", v.read_bytes()).json()["path"]
     us = up(c, "song", "c120.wav", s.read_bytes()).json()["path"]

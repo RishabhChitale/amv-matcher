@@ -61,6 +61,8 @@ def apply_tempo_warp(song: dict, warp) -> dict:
         n = max(1, int(round(od * hz)))
         src = R._winv(w, np.arange(n) / hz)
         out["energy_curve"] = np.interp(src, np.arange(len(se)) / hz, se).tolist()
+    from .boom import map_song_booms
+    out.update(map_song_booms(song, lambda t: float(_map(w, t))))
     return out
 
 

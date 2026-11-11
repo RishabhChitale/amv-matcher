@@ -184,6 +184,57 @@ def _alt_offsets(song, video, exclude, k=3, min_sep=0.5, lead_s=None):
     return out
 
 
+# F6 boom anchor: try to land the song's main audio boom (drop) on a visual boom by moving the plain-trim
+# offset. Guarded like energy-first arrange: the move is kept only when the pre-bonus total does not drop,
+# sync and tightness drop by at most BOOM_GUARD_SYNC / BOOM_GUARD_TIGHT points, and the boom sub-score
+# improves by BOOM_MIN_GAIN. Never forced (lesson ef69c85: a forced anchor broke the beat chain).
+BOOM_GUARD_TOTAL = 0.0
+BOOM_GUARD_SYNC = 0.5
+BOOM_GUARD_TIGHT = 0.5
+BOOM_MIN_GAIN = 5.0
+BOOM_MAX_CANDIDATES = 8      # strongest visual booms tried (raw landing + whole-beat-snapped landing each)
+
+
+def _boom_offsets(song, video, offset, lead_s=None):
+    """Candidate offsets that put the song's main boom on one of the video's visual booms, deterministic order:
+    for each of the strongest visual booms, the exact landing and the landing snapped to a whole-beat shift of
+    the current offset (keeps the beat grid where it is). Empty when either side has no boom."""
+    mb = song.get("main_boom")
+    vb = video.get("visual_booms") or []
+    if mb is None or not vb:
+        return []
+    vd, sd = float(video["duration"]), float(song["duration"])
+    lo, hi = S.MIN_OFFSET_S, max(0.0, sd - vd)
+    lead = S._lead(lead_s)
+    bpm = float(song.get("bpm") or 0.0)
+    per = 60.0 / bpm if bpm > 0 else None
+    top = sorted(vb, key=lambda v: (-float(v.get("conf", 1.0)), float(v["t"])))[:BOOM_MAX_CANDIDATES]
+    out = []
+    for v in top:
+        raw = float(mb) - lead - float(v["t"])
+        cands = [raw]
+        if per:
+            cands.append(offset + round((raw - offset) / per) * per)
+        for o in cands:
+            o = round(float(o), 3) + 0.0
+            if lo - 1e-9 <= o <= hi + 1e-9 and abs(o - offset) > 1e-6 and all(abs(o - x) > 1e-6 for x in out):
+                out.append(o)
+    return out
+
+
+def _boom_pct(r):
+    b = r.get("boom_pct") if isinstance(r, dict) else None
+    return float(b) if b is not None else 0.0
+
+
+def _boom_ok(new, old):
+    """Guard of the boom anchor (see BOOM_GUARD_*)."""
+    return (_tot(new) >= _tot(old) - BOOM_GUARD_TOTAL - 1e-9
+            and float(new["sync_pct"]) >= float(old["sync_pct"]) - BOOM_GUARD_SYNC - 1e-9
+            and (not _has_tight(old) or _tp(new) >= _tp(old) - BOOM_GUARD_TIGHT - 1e-9)
+            and _boom_pct(new) >= _boom_pct(old) + BOOM_MIN_GAIN - 1e-9)
+
+
 def _nudge(song, video, offset, max_shift, lead=0.0):
     """Move cuts/peaks by at most max_shift s (one frame) when that brings them inside the tolerance."""
     beats = np.asarray(song["beat_times"], dtype=float)
@@ -221,7 +272,7 @@ ARRANGE_MAX_MOVES = 3
 # (max(TIME_CAP_MIN_S, budget_s * TIME_CAP_MULT)) for a pathological hang: generous enough that it never fires on
 # a slow or loaded machine (a ~30 s real pair stays far below it at 5x slow-down), and when it DOES fire the result
 # says so: limits_hit gets 'budget: time cap hit' + NOT_REPRODUCIBLE and result/final 'deterministic' is False.
-WORK_COST = {"tempo": 5, "splice": 4, "arrange": 6, "retime": 3, "retime_alt": 1, "micro": 1}
+WORK_COST = {"tempo": 5, "splice": 4, "arrange": 6, "retime": 3, "retime_alt": 1, "micro": 1, "boom": 1}
 DEFAULT_WORK_UNITS = 100          # > the cost of every order together (~60): by default nothing is pruned
 RAMPS_MODE = "anchored"           # speedramp.plan_ramps mode used by the opt-in ramps hook
 TIME_CAP_MULT = 10.0              # emergency abort only (was 3.0: a loaded/slow runner tripped it and changed results)
@@ -336,6 +387,28 @@ def _run(song, video, order, target, work, max_speed_dev, max_tempo_dev, min_sec
                       "tightness_before": _tvals(rb) if rb is not None else None,
                       "tightness_after": _tvals(ra if (kept and ra is not None) else rb) if rb is not None else None})
 
+    def boom_step(s_, v_, o_, r_):
+        """Guarded boom anchor on a plain trim: returns (offset, result); unchanged unless every guard holds."""
+        if lock_original or loop_segs is not None or cancel() or not work.can(WORK_COST["boom"]):
+            return o_, r_
+        cands = _boom_offsets(s_, v_, o_, lead_s)
+        if not cands:
+            return o_, r_
+        begin("boom", _tot(r_))
+        work.spend(WORK_COST["boom"])
+        best = None
+        for o2 in cands:
+            r2 = sa(s_, v_, o2)
+            if _boom_ok(r2, r_) and (best is None or (_rank(r2), _boom_pct(r2)) > (_rank(best[1]), _boom_pct(best[1]))):
+                best = (o2, r2)
+        kept = best is not None
+        ra = best[1] if kept else r_
+        rec("boom", {"main_boom": s_.get("main_boom"), "candidates": len(cands),
+                     "offset": round(best[0], 3) if kept else round(o_, 3),
+                     "boom_before": r_.get("boom_pct"), "boom_after": ra.get("boom_pct")},
+            _tot(r_), _tot(ra), kept, r_, ra)
+        return (best[0], best[1]) if kept else (o_, r_)
+
     cur_song, offset = song, 0.0
     cur_video = video                       # original video + retime (nudges are applied on top)
     tempo_ratio, segs, retime, nudges = 1.0, None, None, []
@@ -352,6 +425,8 @@ def _run(song, video, order, target, work, max_speed_dev, max_tempo_dev, min_sec
         limits.append("song_shorter_than_video")
     cur = sa(cur_song, cur_video, offset)
     rec("offset", {"offset": round(offset, 2)}, _tot(r0), _tot(cur), True, r0, cur)
+    if segs is None and float(song["duration"]) >= vd:
+        offset, cur = boom_step(cur_song, cur_video, offset, cur)
 
     def src_video():                        # video the song-side tools see (retimed, no nudges)
         return aw(retime) if retime else video
@@ -393,6 +468,7 @@ def _run(song, video, order, target, work, max_speed_dev, max_tempo_dev, min_sec
                     tempo_ratio, cur_song, offset = best[1], best[2], best[3]
                     nudges, cur_video = [], sv
                     cur = newr
+                    offset, cur = boom_step(cur_song, cur_video, offset, cur)
                 if abs(best[1] - 1.0) >= max_tempo_dev - 1e-9:
                     limits.append("max_tempo_dev")
             elif tool == "splice" and allow_splice and segs is None and work.can(WORK_COST["splice"]) \
@@ -554,9 +630,12 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
     """Try several tool orders (each from the baseline) and keep the best path, so the result is never
     worse than any single tool applied directly.
 
-    Length rule: a song shorter than the video is INELIGIBLE (same as score.score): the result has
-    eligible False, total 0, reason 'song shorter than video', and nothing is retimed or filled.
-    allow_loop=True (default False) lifts that: the song is repeated end to end (as plan.segments,
+    Length rule (F2): a song shorter than the video (by more than LENGTH_SLACK_S) is synced on the best-fitting
+    stretch of the video of the song's length (the window score.score picks; see _auto_sync_window): all plan
+    times are clip times and plan.video_window / final.video_use {start_s, end_s, used_s, video_duration_s,
+    coverage_pct, label 'uses 2:10 of 3:40 video'} say which source stretch the renderer uses. Only a song
+    shorter than score.PARTIAL_MIN_S is INELIGIBLE (eligible False, total 0, reason 'song shorter than video').
+    allow_loop=True (default False) instead keeps the whole video: the song is repeated end to end (as plan.segments,
     crossfaded by the renderer) until it covers the video and its retime headroom; plan.looped is True
     and plan.loop = {song_duration_s, repeats}. A looped plan uses retime + micro nudges only (offset
     locked at 0, no tempo stretch, no splice), so the segments stay valid.
@@ -603,6 +682,15 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
     {applied, smooth: {total, sync, tight, arc, max_jump, max_accel}, best: {same}}, where `best` is the plan
     plain auto-sync (smooth off) would have chosen and `smooth` the plan applied. Not applicable (looped,
     original-locked, no retime) -> the plain result is returned with smooth.applied False and a reason."""
+    if (not allow_loop and _force_order is None
+            and float(song["duration"]) < float(video["duration"]) - LENGTH_SLACK_S
+            and float(song["duration"]) >= S.PARTIAL_MIN_S):
+        return _auto_sync_window(song, video, dict(
+            target=target, budget_s=budget_s, max_speed_dev=max_speed_dev, max_tempo_dev=max_tempo_dev,
+            min_section_s=min_section_s, max_cuts=max_cuts, min_gain=min_gain, max_passes=max_passes,
+            allow_splice=allow_splice, lead_s=lead_s, original=original, unlock_original=unlock_original,
+            progress_cb=progress_cb, should_cancel=should_cancel, stem_targets=stem_targets,
+            prefer_energy=prefer_energy, ramps=ramps, budget_units=budget_units, smooth=smooth))
     if smooth and _force_order is None:
         return _auto_sync_smooth(song, video, dict(
             target=target, budget_s=budget_s, max_speed_dev=max_speed_dev, max_tempo_dev=max_tempo_dev,
@@ -839,6 +927,30 @@ def _add_ramps(song, video, best, max_speed_dev, lead_s, cancelled, limits):
         plan["retime_ramps"] = {k: v for k, v in res.items() if k != "step"}
     else:
         limits.append("ramps: no gain")
+
+
+def _auto_sync_window(song, video, kw):
+    """F2: song shorter than the video. The video stretch [w, w + song] that score.score picks (best sync+arc
+    window) is cut out (score.clip_video) and auto-synced like a normal pair; every plan time is in CLIP time
+    and plan.video_window {start_s, end_s, used_s, video_duration_s, coverage_pct, label} tells the renderer
+    which source stretch to use."""
+    sd, vd = float(song["duration"]), float(video["duration"])
+    pick = S.score(song, video, lead_s=kw["lead_s"], stem_targets=kw["stem_targets"])
+    w = float(pick["video_use"]["start_s"])
+    end = min(vd, w + sd) - 1e-6                  # clip never longer than the song (float noise)
+    clip = S.clip_video(video, w, end)
+    res = auto_sync(song, clip, allow_loop=False, **kw)
+    use = S.video_use(w, end, vd)
+    res["video_window"] = use
+    if res.get("plan") is not None:
+        res["plan"]["video_window"] = use
+    fin = res.get("final") or {}
+    fin["video_use"] = use
+    fin["source_video_duration_s"] = round(vd, 3)
+    res.setdefault("limits_hit", []).append("video window: " + use["label"])
+    if isinstance(res.get("why_not_100"), str):
+        res["why_not_100"] += " Song is shorter than the video: synced on the best stretch (%s)." % use["label"]
+    return res
 
 
 def _ineligible(song, video, lead_s):

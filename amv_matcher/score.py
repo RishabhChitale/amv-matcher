@@ -193,14 +193,57 @@ def _sync_pct_at(song, ev_t, ev_w, vd, off, lead_s=None):
     return float(np.clip((1 - LOCK_FINE_W - LOCK_RAW_W) * lock + LOCK_FINE_W * fine + LOCK_RAW_W * 100.0 * b, 0, 100))
 
 
+# F9: pan/tilt/zoom start/stop (and whip-pan midpoints) as sync events weighted below cuts/peaks. OFF by default:
+# on the A/B/S1 ground truth weight 0.4/1.0 dropped A own 88 -> 80 and A+S1 68 (extra events the beat grid
+# cannot all hit dilute sync). Camera intensity still feeds the energy arc (video.CAM_ENERGY_W).
+CAM_EVENT_WEIGHT = 0.0
+CAM_WHIP_WEIGHT = 0.0
+CAM_EVENT_GUARD_S = 0.25     # camera boundaries this close to a cut/peak/edge are cut-induced: skipped
+
+
+def _camera_events(video, taken):
+    """F9 camera sync events (t, w): pan/tilt/zoom starts and stops plus whip midpoints, skipping those
+    within CAM_EVENT_GUARD_S of an already-taken event (cuts, peaks) or of the clip edges."""
+    evs = video.get("camera_events") or []
+    if not evs or (CAM_EVENT_WEIGHT <= 0 and CAM_WHIP_WEIGHT <= 0):
+        return np.zeros(0), np.zeros(0)
+    vd = float(video.get("duration") or 0.0)
+    cand = []
+    for e in evs:
+        if e.get("kind") == "whip":
+            if CAM_WHIP_WEIGHT > 0:
+                cand.append((0.5 * (float(e["start"]) + float(e["end"])), CAM_WHIP_WEIGHT))
+        elif CAM_EVENT_WEIGHT > 0:
+            cand += [(float(e["start"]), CAM_EVENT_WEIGHT), (float(e["end"]), CAM_EVENT_WEIGHT)]
+    if not cand:
+        return np.zeros(0), np.zeros(0)
+    cand.sort()
+    ct = np.asarray([c[0] for c in cand], dtype=float)
+    cw = np.asarray([c[1] for c in cand], dtype=float)
+    ok = ct >= CAM_EVENT_GUARD_S
+    if vd > 0:
+        ok &= ct <= vd - CAM_EVENT_GUARD_S
+    ref = np.sort(np.asarray(taken, dtype=float))
+    if len(ref):
+        ok &= _dist_to(ct, ref) > CAM_EVENT_GUARD_S
+    out_t, out_w, last = [], [], -1e9
+    for t, w in zip(ct[ok], cw[ok]):          # camera boundaries closer than the guard: keep the first
+        if t - last > CAM_EVENT_GUARD_S:
+            out_t.append(t)
+            out_w.append(w)
+            last = t
+    return np.asarray(out_t, dtype=float), np.asarray(out_w, dtype=float)
+
+
 def _events(video):
     cuts = np.asarray(video["cut_times"], dtype=float)
     peaks = np.asarray(video["motion_peaks"], dtype=float)
     # A peak coinciding with a cut is the same event; keep it once (as a cut).
     if len(cuts) and len(peaks):
         peaks = peaks[np.min(np.abs(peaks[:, None] - cuts[None, :]), axis=1) > 0.1]
-    t = np.concatenate([cuts, peaks])
-    w = np.concatenate([np.full(len(cuts), CUT_WEIGHT), np.full(len(peaks), PEAK_WEIGHT)])
+    ct, cw = _camera_events(video, np.concatenate([cuts, peaks]))
+    t = np.concatenate([cuts, peaks, ct])
+    w = np.concatenate([np.full(len(cuts), CUT_WEIGHT), np.full(len(peaks), PEAK_WEIGHT), cw])
     return t, w
 
 
@@ -280,11 +323,12 @@ def tightness(song: dict, video: dict, offset: float, lead_s: float = None) -> d
 
 
 def _pack(song, video, off, tempo_pct, rate, sync_pct, arc_pct, lead_s=None, quiet=None):
-    from . import buildup
+    from . import boom, buildup
     bs = buildup.build_stats(song, video, off) if buildup.W_BUILD > 0 else None
+    bm = boom.boom_stats(song, video, off, _lead(lead_s)) if boom.W_BOOM > 0 else None
     out = {
         "eligible": True,
-        "total_pct": int(round(buildup.blend_total(_combine(tempo_pct, sync_pct, arc_pct), bs))),
+        "total_pct": int(round(boom.blend_total(buildup.blend_total(_combine(tempo_pct, sync_pct, arc_pct), bs), bm))),
         "tempo_pct": round(tempo_pct, 1),
         "sync_pct": round(sync_pct, 1),
         "arc_pct": round(arc_pct, 1),
@@ -296,6 +340,8 @@ def _pack(song, video, off, tempo_pct, rate, sync_pct, arc_pct, lead_s=None, qui
     }
     if bs is not None:
         out.update(build_pct=bs["build_pct"], launch_pct=bs["launch_pct"], n_launches=bs["n_launches"], n_builds=bs["n_builds"])
+    out["boom_pct"] = None if bm is None else bm["boom_pct"]
+    out["boom"] = None if bm is None else dict(bm["boom"], n_booms=bm["n_booms"], n_matched=bm["n_matched"])
     if quiet is not None:
         out["quiet_sync"] = quiet["quiet_sync_pct"]
         out["quiet_sync_beats"] = quiet["quiet_sync_beats_pct"]
@@ -373,13 +419,131 @@ def _xcorr_offsets(song, ev_t, ev_w, lo, hi):
     return out
 
 
+PARTIAL_MIN_S = 4.0           # F2: a song shorter than the video but also shorter than this stays too_short
+
+
+def _mmss(s: float) -> str:
+    m, sec = divmod(int(round(max(0.0, float(s)))), 60)
+    return f"{m}:{sec:02d}"
+
+
+def video_use(start_s: float, end_s: float, video_duration: float) -> dict:
+    """F2 'uses 2:10 of 3:40 video' block: which stretch of the video a shorter song is scored/synced on."""
+    vd = float(video_duration)
+    used = max(0.0, float(end_s) - float(start_s))
+    return {"start_s": round(float(start_s), 3), "end_s": round(float(end_s), 3), "used_s": round(used, 3),
+            "video_duration_s": round(vd, 3), "coverage_pct": round(100.0 * used / vd, 1) if vd > 0 else 100.0,
+            "label": f"uses {_mmss(used)} of {_mmss(vd)} video"}
+
+
+def _clip_pairs(pairs, a, b):
+    out = []
+    for x, y in pairs or []:
+        x, y = max(float(x), a), min(float(y), b)
+        if y > x:
+            out.append([round(x - a, 3), round(y - a, 3)])
+    return out
+
+
+def _clip_spans(spans, a, b):
+    out = []
+    for d in spans or []:
+        x, y = max(float(d["start"]), a), min(float(d["end"]), b)
+        if y > x:
+            out.append({**d, "start": round(x - a, 3), "end": round(y - a, 3)})
+    return out
+
+
+def _clip_series(xs, hz, a, b):
+    if not xs or not hz:
+        return xs
+    i0, i1 = int(round(a * float(hz))), int(round(b * float(hz)))
+    return list(xs[max(0, i0):max(i0 + 1, i1)])
+
+
+def clip_video(video: dict, start_s: float, end_s: float) -> dict:
+    """The [start_s, end_s] stretch of a video analysis as its own analysis (times rebased to 0). Used by F2
+    (shorter songs). Tempo fields stay whole-video (tempo evidence is global). Unknown keys are copied."""
+    a, b = max(0.0, float(start_s)), min(float(video["duration"]), float(end_s))
+    out = dict(video)
+    out["duration"] = round(b - a, 3)
+    times = lambda xs: [round(float(t) - a, 3) for t in xs or [] if a <= float(t) <= b]
+    out["cut_times"] = [t for t in times(video.get("cut_times")) if 0.0 < t < b - a]
+    out["motion_peaks"] = times(video.get("motion_peaks"))
+    out["energy_curve"] = _clip_series(video.get("energy_curve"), video.get("energy_hz") or ENERGY_HZ, a, b)
+    if video.get("motion_curve") and video.get("fps"):
+        out["motion_curve"] = _clip_series(video["motion_curve"], video["fps"], a, b)
+    if video.get("subject_curve"):
+        out["subject_curve"] = _clip_series(video["subject_curve"], video.get("subject_hz") or ENERGY_HZ, a, b)
+    for k in ("lulls", "peak_segments"):
+        if k in video:
+            out[k] = _clip_pairs(video[k], a, b)
+    for k in ("segments", "segments_struct", "shots"):
+        if k in video:
+            out[k] = _clip_spans(video[k], a, b)
+    if video.get("camera_events"):
+        out["camera_events"] = _clip_spans(video["camera_events"], a, b)
+    if video.get("visual_booms"):
+        out["visual_booms"] = [{**v, "t": round(float(v["t"]) - a, 3)} for v in video["visual_booms"]
+                               if a <= float(v["t"]) <= b]
+    cm = video.get("camera_motion")
+    if cm and cm.get("hz"):
+        out["camera_motion"] = {k: (_clip_series(v, cm["hz"], a, b) if isinstance(v, list) else v) for k, v in cm.items()}
+    out["video_window"] = video_use(a, b, video["duration"]) | {"source_duration_s": round(float(video["duration"]), 3)}
+    return out
+
+
+def _score_partial(song, video, lead_s, stem_targets):
+    """F2: the song (shorter than the video) plays whole, from 0; choose the video stretch [w, w + sd] that
+    fits it best (same W_SYNC*sync + W_ARC*arc objective as the offset search, coarse scan + refine), then
+    score the song on that stretch. Result carries video_use (start/end/label) and offsets in clip time."""
+    vd, sd = float(video["duration"]), float(song["duration"])
+    ev_t, ev_w = _events(video)
+    has_sync = len(ev_t) > 0 and len(song["beat_times"]) >= 2
+    hi = vd - sd
+    arc_v = {"energy_curve": video["energy_curve"], "peak_segments": video.get("peak_segments", []),
+             "lulls": video.get("lulls", [])}
+
+    def comb_at(w):
+        m = (ev_t >= w) & (ev_t <= w + sd)
+        sync = _sync_pct_at(song, ev_t[m] - w, ev_w[m], sd, 0.0, lead_s) if (has_sync and m.sum()) else 0.0
+        hz = float(video.get("energy_hz") or ENERGY_HZ)
+        i0 = int(round(w * hz))
+        clip = {"energy_curve": arc_v["energy_curve"][i0:i0 + int(round(sd * hz))],
+                "peak_segments": _clip_pairs(arc_v["peak_segments"], w, w + sd),
+                "lulls": _clip_pairs(arc_v["lulls"], w, w + sd)}
+        return W_SYNC * sync + W_ARC * _arc_pct_at(song, clip, 0.0)
+
+    step = max(0.1, round(hi / MAX_OFFSET_STEPS, 1))
+    scanned = sorted(((comb_at(float(w)), float(w)) for w in np.arange(0.0, hi + 1e-9, step)), key=lambda x: -x[0])
+    best = None
+    for _, seed in scanned[:3]:
+        for w in np.arange(seed - REFINE_S, seed + REFINE_S + 1e-9, REFINE_STEP_S):
+            w = round(float(min(max(w, 0.0), hi)), 3)
+            c = comb_at(w)
+            if best is None or c > best[0] + 1e-12 or (abs(c - best[0]) <= 1e-12 and w < best[1]):
+                best = (c, w)
+    w = best[1]
+    clip = clip_video(video, w, w + sd)
+    out = score_at(song, clip, 0.0, lead_s, stem_targets)   # tempo fields are kept whole-video by clip_video
+    out["video_use"] = clip["video_window"]
+    out["partial_video"] = True
+    out["song_duration"], out["video_duration"] = round(sd, 2), round(vd, 2)
+    return out
+
+
 def score(song: dict, video: dict, allow_negative: bool = False, lead_s: float = None, stem_targets=None) -> dict:
-    """Best placement of the video window inside the song; ineligible if the song is shorter.
+    """Best placement of the video window inside the song. F2: a song shorter than the video (but at least
+    PARTIAL_MIN_S long) is scored over the best-matching stretch of the video instead (see _score_partial;
+    result has partial_video True and video_use {start_s, end_s, used_s, coverage_pct, label}); only songs
+    shorter than PARTIAL_MIN_S stay ineligible (reason 'too_short').
     With allow_negative the song may also start up to 3 s after the video (padded with
     silence, no length penalty). Off by default: splice/auto-sync need trim_start_s >= 0.
     lead_s: perceptual lead in seconds (None = PERCEPTUAL_LEAD_S, clamped 0..0.12).
     stem_targets: optional soft targets (see score_at); None = unchanged results."""
     vd, sd = float(video["duration"]), float(song["duration"])
+    if sd < vd and sd >= PARTIAL_MIN_S:
+        return _score_partial(song, video, lead_s, stem_targets)
     if sd < vd:
         return {
             "eligible": False, "total_pct": 0, "tempo_pct": 0.0, "sync_pct": 0.0, "arc_pct": 0.0,

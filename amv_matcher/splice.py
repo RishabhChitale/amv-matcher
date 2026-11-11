@@ -168,6 +168,8 @@ def _assemble(song, segments, vd):
         out["onset_env"], out["onset_env_fps"] = oe.tolist(), fps
     if "sections" in song:
         out["sections"] = secs
+    from .boom import splice_song_booms
+    out.update(splice_song_booms(song, segments))
     return out
 
 

@@ -53,6 +53,8 @@ def apply_tempo(song: dict, ratio: float) -> dict:
         out["energy_curve"] = np.interp(np.arange(n) / hz * ratio, np.arange(len(se)) / hz, se).tolist()
     if "onset_env_fps" in song:
         out["onset_env_fps"] = float(song["onset_env_fps"]) * ratio
+    from .boom import map_song_booms
+    out.update(map_song_booms(song, lambda t: t / ratio))
     return out
 
 

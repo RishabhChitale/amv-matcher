@@ -732,8 +732,31 @@ def _set_encoder_options(vs, source_bps=None, fps: float = 30.0) -> None:
         vs.options = {"preset": "veryfast", "crf": "20", "threads": "0"}
 
 
+def _window(plan: dict, src_dur: float):
+    """F2 plan["video_window"] (song shorter than the video): (start_s, length_s) of the source stretch the
+    plan's clip times refer to, clamped to the file; None when absent/invalid."""
+    vw = plan.get("video_window") or {}
+    try:
+        a, b = float(vw["start_s"]), float(vw["end_s"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    a, b = max(0.0, a), min(float(src_dur), b)
+    return (a, b - a) if np.isfinite(a) and np.isfinite(b) and b > a else None
+
+
 def video_warp(plan: dict, src_dur: float):
-    """(warp, out_duration) the video is rendered with. A smooth speed-ramp plan (plan["retime_ramps"], same
+    """(warp, out_duration) the video is rendered with, src column in SOURCE-file seconds. With
+    plan["video_window"] (F2) the plan's warp is in clip time: it is shifted by window start_s and the identity
+    covers only the window, so the source is trimmed to that stretch."""
+    win = _window(plan, src_dur)
+    if win is None:
+        return _clip_warp(plan, src_dur)
+    warp, out_dur = _clip_warp(plan, win[1])
+    return [[float(s_) + win[0], float(o_)] for s_, o_ in warp], out_dur
+
+
+def _clip_warp(plan: dict, src_dur: float):
+    """(warp, out_duration) in plan (clip) time. A smooth speed-ramp plan (plan["retime_ramps"], same
     [src_s, out_s] contract as retime.plan_retime()["warp"], docs/U11C-RAMP-FORMAT.md) wins when it is
     valid (>= 2 finite rows, starts [0, 0], src and out non-decreasing, out_duration > 0); otherwise the
     step plan's plan["retime"]; otherwise identity. Frames in slowed parts get interp, speed 1 is untouched."""

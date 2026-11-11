@@ -93,7 +93,8 @@ def _songs_cache_path(cache_path=None):
 def _song_cached(path, cache_path=None, **_):
     try:
         from . import audio
-        return _fresh_json(_songs_cache_path(cache_path), audio._key(path))
+        hit = _fresh_json(_songs_cache_path(cache_path), audio._key(path))
+        return hit if audio.is_current(hit) else None     # older entries: upgraded by analyze_song
     except Exception:
         return None
 
@@ -117,7 +118,8 @@ def _video_cache_file(path, cache_dir=None):
 def _video_cached(path, cache_dir=None, **_):
     try:
         with open(_video_cache_file(path, cache_dir)) as f:
-            return json.load(f)
+            hit = json.load(f)
+        return hit if "camera_motion" in hit else None     # pre-F9 entries: re-analysed in place
     except Exception:
         return None
 

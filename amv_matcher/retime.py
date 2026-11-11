@@ -43,6 +43,11 @@ def apply_warp(video: dict, warp) -> dict:
     out["lulls"] = [[float(_wmap(w, a)), float(_wmap(w, b))] for a, b in video.get("lulls", [])]
     out["segments"] = [dict(s, start=float(_wmap(w, s["start"])), end=float(_wmap(w, s["end"])))
                        for s in video.get("segments", [])]
+    if video.get("camera_events"):
+        out["camera_events"] = [dict(e, start=float(_wmap(w, e["start"])), end=float(_wmap(w, e["end"])))
+                                for e in video["camera_events"]]
+    if video.get("visual_booms"):
+        out["visual_booms"] = [dict(b, t=float(_wmap(w, b["t"]))) for b in video["visual_booms"]]
     ve = np.asarray(video.get("energy_curve", []), dtype=float)
     if len(ve):
         hz = S.ENERGY_HZ

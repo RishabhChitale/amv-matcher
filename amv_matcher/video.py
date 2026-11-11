@@ -6,7 +6,7 @@ import numpy as np
 from scipy.signal import find_peaks
 from scipy.ndimage import gaussian_filter1d, median_filter, uniform_filter1d
 
-from . import curves
+from . import boom, curves, flow
 
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
 MAX_FPS = 60.0       # analyse up to this many frames per second (full rate for 60 fps sources)
@@ -223,7 +223,9 @@ def analyze_video(path: str) -> dict:
 
     diffs, thumbs, bright = [], [], []
     prev = None
+    fp = flow.FlowPass(fps)          # F9: one dense-flow pass on the same decoded frames
     for g in frames:
+        fp.feed(g)
         gray = g.astype(np.float32)
         if prev is not None:
             diffs.append(float(np.mean(np.abs(gray - prev))))
@@ -250,25 +252,13 @@ def analyze_video(path: str) -> dict:
     motion_bpm = motion_tempo(curve, fps)
     ev_bpm, ev_cands = events_tempo(cut_times, motion_peaks, duration)
 
-    # Energy arc @10 Hz: motion magnitude + cut density over a sliding 1 s window.
-    n10 = int(np.ceil(duration * curves.HZ))
-    mot = curves.bin_mean(curve, fps, n10)
-    mot = mot / (np.percentile(mot, 95) + 1e-9)
-    cut_hist = np.zeros(n10)
-    for t in cut_times:
-        cut_hist[min(n10 - 1, int(t * curves.HZ))] += 1
-    density = uniform_filter1d(cut_hist, size=int(curves.HZ), mode="nearest") * curves.HZ  # cuts/s
-    density = density / (density.max() + 1e-9) if density.max() > 0 else density
-    energy = curves.normalize01(uniform_filter1d(np.clip(mot, 0, 1.5) + 0.5 * density, size=int(curves.HZ), mode="nearest"))
-    shots = _shots(cut_times, duration, energy, curve, fps)
+    motion = _flow_fields(fp, cut_times, duration, bright, fps)
+    ef = energy_fields(curve, fps, cut_times, duration, motion.get("camera_motion"))
+    shots = _shots(cut_times, duration, np.asarray(ef["energy_curve"]), curve, fps)
 
     return {
-        "energy_curve": [round(float(v), 3) for v in energy],
-        "energy_hz": curves.HZ,
-        "segments": curves.label_segments(energy),
-        "segments_struct": struct_segments(curves.label_segments(energy), duration, energy),
-        "lulls": curves.find_lulls(energy),
-        "peak_segments": curves.find_peak_segments(energy),
+        **motion,
+        **ef,
         "shots": shots,
         "duration": round(duration, 3),
         "fps": round(fps, 3),
@@ -280,6 +270,67 @@ def analyze_video(path: str) -> dict:
         "motion_tempo_motion_bpm": round(motion_bpm, 2),
         "motion_tempo_candidates": [[float(x) for x in c] for c in ev_cands],
     }
+
+
+CAM_ENERGY_W = 0.35     # F9: camera intensity term in the energy arc (0 = pre-F9 arc)
+CAM_WHIP_BOOST = 0.5    # a whip reads as a drop on top of its speed
+
+
+def camera_energy(camera_motion, n10: int) -> np.ndarray:
+    """Camera-move intensity resampled to the 10 Hz energy grid: intensity**2 so slow pans stay calm
+    (0.25 -> 0.06) while fast moves (0.6 -> 0.36) and whips (+CAM_WHIP_BOOST) read as drops."""
+    out = np.zeros(n10)
+    if not camera_motion or not camera_motion.get("curve"):
+        return out
+    hz = float(camera_motion.get("hz") or flow.CAM_HZ)
+    c = np.asarray(camera_motion["curve"], dtype=float)
+    whip = np.asarray(camera_motion.get("whip") or [0] * len(c), dtype=float)[:len(c)]
+    v = c ** 2 + CAM_WHIP_BOOST * whip
+    t = np.arange(n10) / curves.HZ
+    src = (np.arange(len(v)) + 0.5) / hz
+    return np.interp(t, src, v, left=0.0, right=0.0)
+
+
+def energy_fields(curve, fps: float, cut_times, duration: float, camera_motion=None,
+                  cam_w: float | None = None) -> dict:
+    """Energy arc @10 Hz from the motion curve, cut density over a sliding 1 s window and (F9) camera
+    intensity, plus the segment views derived from it. Pure: rebuilds the arc from a cached analysis."""
+    cam_w = CAM_ENERGY_W if cam_w is None else cam_w
+    curve = np.asarray(curve, dtype=float)
+    n10 = int(np.ceil(duration * curves.HZ))
+    mot = curves.bin_mean(curve, fps, n10)
+    mot = mot / (np.percentile(mot, 95) + 1e-9)
+    cut_hist = np.zeros(n10)
+    for t in cut_times:
+        cut_hist[min(n10 - 1, int(t * curves.HZ))] += 1
+    density = uniform_filter1d(cut_hist, size=int(curves.HZ), mode="nearest") * curves.HZ  # cuts/s
+    density = density / (density.max() + 1e-9) if density.max() > 0 else density
+    raw = np.clip(mot, 0, 1.5) + 0.5 * density
+    if cam_w > 0:
+        raw = raw + cam_w * camera_energy(camera_motion, n10)
+    energy = curves.normalize01(uniform_filter1d(raw, size=int(curves.HZ), mode="nearest"))
+    segs = curves.label_segments(energy)
+    return {
+        "energy_curve": [round(float(v), 3) for v in energy],
+        "energy_hz": curves.HZ,
+        "segments": segs,
+        "segments_struct": struct_segments(segs, duration, energy),
+        "lulls": curves.find_lulls(energy),
+        "peak_segments": curves.find_peak_segments(energy),
+    }
+
+
+def _flow_fields(fp, cut_times, duration, bright, fps):
+    """F9 camera vs subject motion + F6 visual booms (never fails the analysis)."""
+    try:
+        ser = fp.series()
+        out = flow.summarize(ser, cut_times, duration)
+        out["visual_booms"] = boom.visual_booms(out["subject_curve"], out["subject_hz"], bright, fps,
+                                                flow_series=ser, camera_events=out["camera_events"],
+                                                duration=duration)
+        return out
+    except Exception:
+        return {"camera_motion": None, "camera_events": [], "subject_curve": [], "visual_booms": []}
 
 
 def _shots(cut_times, duration, energy, curve, fps):

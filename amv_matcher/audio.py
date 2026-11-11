@@ -176,6 +176,7 @@ def _compute(path: str):
         "drops": curves.find_drops(energy),
         "lulls": curves.find_lulls(energy),
     }
+    result.update(_booms(path, S, freqs, env, result.get("beat_grid")))
     from .structure import analyze_structure
     try:
         result["sections"] = analyze_structure(y, sr, result)
@@ -184,11 +185,62 @@ def _compute(path: str):
     return result, waveform_peaks(y)
 
 
+BOOM_FIELDS = ("booms", "main_boom", "boom_source")
+
+
+def is_current(hit) -> bool:
+    """A cached analysis has every field this version computes (older entries are upgraded on read)."""
+    return isinstance(hit, dict) and all(f in hit for f in BOOM_FIELDS)
+
+
+def _stem_low(path, n_frames):
+    """|STFT| of the cached drums(+bass) stems, or None. Never separates stems itself."""
+    try:
+        from . import stems
+        for prov, names in (("demucs", ("drums", "bass")), ("hpss", ("drums",))):
+            c = stems.cached(path, prov)
+            if not c:
+                continue
+            ys = [librosa.load(c["stems"][n], sr=SR, mono=True)[0] for n in names]
+            n = min(len(v) for v in ys)
+            y = np.sum([v[:n] for v in ys], axis=0)
+            L = np.abs(librosa.stft(y, n_fft=2048, hop_length=HOP))
+            return L[:, :n_frames] if L.shape[1] >= n_frames * 0.98 else None
+    except Exception:
+        return None
+    return None
+
+
+def _booms(path, S, freqs, env, beat_grid):
+    """F6 audio booms (sub-bass / kick re-entry), see boom.audio_booms."""
+    from . import boom
+    low = _stem_low(path, S.shape[1])
+    try:
+        r = boom.audio_booms(S, freqs, SR, HOP, env, low_S=low,
+                             source="stems" if low is not None else "mix", beat_grid=beat_grid)
+    except Exception:
+        r = {"booms": [], "main": None, "source": "mix"}
+    return {"booms": r["booms"], "main_boom": r["main"], "boom_source": r["source"]}
+
+
+def _boom_inputs(path: str):
+    """Booms only (upgrade of an older cached analysis): one decode + STFT, no beat tracking."""
+    y, sr = librosa.load(path, sr=SR, mono=True)
+    env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=HOP)
+    S = np.abs(librosa.stft(y, n_fft=2048, hop_length=HOP))
+    freqs = librosa.fft_frequencies(sr=sr, n_fft=2048)
+    return S, freqs, env
+
+
 def analyze_song(path: str, cache_path: Path = CACHE_PATH, flush: bool = True) -> dict:
     cache = get_cache(cache_path)
     key = _key(path)
     hit = cache.get(key)
     if hit is not None:
+        if not is_current(hit):
+            S, freqs, env = _boom_inputs(path)
+            hit = {**hit, **_booms(path, S, freqs, env, hit.get("beat_grid"))}
+            cache.set(key, hit, flush=flush)
         return hit
     result, peaks = _compute(path)
     wf_dir = Path(cache_path).parent / "wf"

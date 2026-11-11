@@ -146,11 +146,36 @@ def ramp_timemap(rt: dict, video_duration: float, fps, mode=None) -> dict:
     return {"xml": RR.timemap_xml(pts), "pts": pts, "n_out": pts[-1]["_t"], "s0": s0}
 
 
+def window_frames(plan: dict, video_duration: float, fps):
+    """(start_frame, clip_duration_s, start_s) for an F2 plan["video_window"] (song shorter than the video: the
+    plan's video times are relative to that stretch of the source), else (0, video_duration, 0.0)."""
+    vw = (plan or {}).get("video_window") or {}
+    try:
+        a = max(0.0, float(vw["start_s"]))
+        b = min(float(video_duration), float(vw["end_s"]))
+    except (KeyError, TypeError, ValueError):
+        return 0, float(video_duration), 0.0
+    if not (np.isfinite(a) and np.isfinite(b) and b > a):
+        return 0, float(video_duration), 0.0
+    return to_frames(a, fps), b - a, a
+
+
+def shift_timemap(tm: dict, ws_f: int, fd) -> dict:
+    """ramp_timemap result with every source value moved `ws_f` frames later (F2 video window)."""
+    if not ws_f:
+        return tm
+    from . import resolve_ramps as RR
+    pts = [dict(p, _v=p["_v"] + ws_f, value=tstr(p["_v"] + ws_f, fd)) for p in tm["pts"]]
+    return dict(tm, pts=pts, xml=RR.timemap_xml(pts), s0=tm["s0"] + ws_f)
+
+
 def out_duration_of(plan: dict, video_duration: float) -> float:
     rt = (plan or {}).get("retime")
     if rt and rt.get("warp"):
         return float(rt["warp"][-1][1])
-    return float(rt["out_duration"]) if rt and rt.get("out_duration") else float(video_duration)
+    if rt and rt.get("out_duration"):
+        return float(rt["out_duration"])
+    return float(window_frames(plan, video_duration, 30.0)[1])
 
 
 def audio_pieces(plan: dict, out_duration: float) -> list:
@@ -228,11 +253,15 @@ def build_fcpxml(video_path: Path, video_duration: float, fps, width: int, heigh
     fr = snap_fps(fps)
     fd = frame_dur(fr)
     plan, ramp_rt = ramp_plan(plan)
-    clips = video_clips(plan, video_duration, fr)
+    ws_f, eff_dur, ws = window_frames(plan, video_duration, fr)
+    if eff_dur < float(video_duration) - 1e-9:
+        from .score import clip_video        # CUT markers: the plan's warp maps clip-time cuts
+        video = clip_video(video or {"duration": video_duration}, ws, ws + eff_dur)
+    clips = [dict(c, src_f=c["src_f"] + ws_f) for c in video_clips(plan, eff_dur, fr)]
     tm = None
     if ramp_rt:
-        tm = ramp_timemap(ramp_rt, video_duration, fr, ramp_mode)
-        clips = [{"src_f": 0, "dst_f": 0, "dur_f": tm["n_out"], "speed": 1.0}]
+        tm = shift_timemap(ramp_timemap(ramp_rt, eff_dur, fr, ramp_mode), ws_f, fd)
+        clips = [{"src_f": ws_f, "dst_f": 0, "dur_f": tm["n_out"], "speed": 1.0}]
     nf = sum(c["dur_f"] for c in clips)
     out_dur = nf / float(fr)
     vf = to_frames(video_duration, fr)
@@ -590,11 +619,12 @@ def export_bundle(video_path: Path, song_path: Path, plan: dict, song: dict, vid
     else:
         aname, adur = prepare_audio(Path(song_path), ratio, folder / "audio")
     plan_r, ramp_rt = ramp_plan(plan)
+    eff_dur = window_frames(plan, float(video["duration"]), snap_fps(fps))[1]
     if ramp_rt:
-        out_dur = ramp_timemap(ramp_rt, float(video["duration"]), fps)["n_out"] / float(snap_fps(fps))
+        out_dur = ramp_timemap(ramp_rt, eff_dur, fps)["n_out"] / float(snap_fps(fps))
         clips = [None]
     else:
-        clips = video_clips(plan, float(video["duration"]), fps)
+        clips = video_clips(plan, eff_dur, fps)
         out_dur = sum(c["dur_f"] for c in clips) / float(snap_fps(fps))
     xml = build_fcpxml(video_path, float(video["duration"]), fps, width, height, plan, heard, video,
                        "audio/" + aname, adur)

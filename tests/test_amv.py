@@ -74,17 +74,29 @@ def test_api_scan_and_audio_guard(tmp_path, video_file):
     assert c.get("/api/audio", params={"path": "/etc/passwd"}).status_code == 403
 
 
-def test_song_shorter_than_video_is_ineligible(tmp_path, video_file):
+def test_song_shorter_than_video_uses_a_stretch(tmp_path, video_file):
+    # F2: a shorter song is no longer disqualified; it is scored on the best stretch of the video
     v = analyze_video(str(video_file))          # 10 s video
     p = tmp_path / "short.wav"
     make_click_track(p, 120, seconds=6)
     r = score(analyze_song(str(p), tmp_path / "x.json"), v)
-    assert r["eligible"] is False and r["total_pct"] == 0
+    assert r["eligible"] is True and r["total_pct"] > 0 and r["partial_video"] is True
     assert r["song_duration"] < r["video_duration"]
+    u = r["video_use"]
+    assert 0.0 <= u["start_s"] and u["end_s"] <= 10.0 + 1e-6
+    assert u["used_s"] == pytest.approx(r["song_duration"], abs=0.05)
+    assert u["label"] == "uses 0:06 of 0:10 video"
+    assert r["trim_start_s"] == 0.0
+    assert r == score(analyze_song(str(p), tmp_path / "x.json"), v)          # deterministic
+    tiny = tmp_path / "tiny.wav"
+    make_click_track(tiny, 120, seconds=3)                                  # below PARTIAL_MIN_S
+    r0 = score(analyze_song(str(tiny), tmp_path / "x.json"), v)
+    assert r0["eligible"] is False and r0["total_pct"] == 0
     ok = tmp_path / "long.wav"
-    make_click_track(ok, 120, seconds=30)
+    make_click_track(ok, 120, seconds=30)                                   # longer songs: unchanged path
     r2 = score(analyze_song(str(ok), tmp_path / "x.json"), v)
     assert r2["eligible"] and r2["trim_end_s"] - r2["trim_start_s"] == pytest.approx(10.0, abs=0.01)
+    assert "video_use" not in r2 and "partial_video" not in r2
 
 
 def test_arc_prefers_matching_energy_shape(tmp_path):
