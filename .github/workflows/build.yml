@@ -2,6 +2,11 @@ name: build
 on:
   push:
     branches: [main, master]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'THIRD-PARTY-NOTICES*'
+      - 'LICENSE*'
   pull_request:
   workflow_dispatch:
 concurrency:
