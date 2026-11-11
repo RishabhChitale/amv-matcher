@@ -121,6 +121,17 @@ jobs:
           foreach ($l in ($out | Where-Object { $_ -match '^scan_timing_substages ' })) { Write-Host "scan_timing_summary video substages (240 s 1080p60 clip): $l" }
           Write-Host "scan_timing exit code $code"
           if ($code -ne 0) { throw "scan_timing exit code $code" }
+      - name: Upload scan timing app logs (Windows, on failure)
+        if: runner.os == 'Windows' && failure()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-timing-logs-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/amv-scan-timing/**/app.log
+            ${{ runner.temp }}/amv-scan-timing/stdout-*.txt
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Dark-mode screenshots (Windows, CI-only check; synthetic media loaded via the native-drop hand-off)
         if: runner.os == 'Windows'
         continue-on-error: true
