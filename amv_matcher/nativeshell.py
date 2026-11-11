@@ -249,6 +249,45 @@ class CloseGuard:
             self.finished.set()
 
 
+def _win_pairs_toolhelp():
+    """[[pid, ppid], ...] via a Toolhelp32 snapshot (ctypes, no subprocess, milliseconds). None if unavailable."""
+    if not sys.platform.startswith("win"):
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class PE32(ctypes.Structure):
+            _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
+                        ("th32ProcessID", wintypes.DWORD), ("th32DefaultHeapID", ctypes.c_size_t),
+                        ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+                        ("th32ParentProcessID", wintypes.DWORD), ("pcPriClassBase", ctypes.c_long),
+                        ("dwFlags", wintypes.DWORD), ("szExeFile", ctypes.c_wchar * 260)]
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        k32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+        k32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PE32)]
+        k32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PE32)]
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        snap = k32.CreateToolhelp32Snapshot(0x2, 0)   # TH32CS_SNAPPROCESS
+        if not snap or snap == wintypes.HANDLE(-1).value:
+            return None
+        pairs = []
+        try:
+            pe = PE32()
+            pe.dwSize = ctypes.sizeof(PE32)
+            ok = k32.Process32FirstW(snap, ctypes.byref(pe))
+            while ok:
+                pairs.append([str(pe.th32ProcessID), str(pe.th32ParentProcessID)])
+                ok = k32.Process32NextW(snap, ctypes.byref(pe))
+        finally:
+            k32.CloseHandle(snap)
+        return pairs or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _parent_map() -> dict:
     """{parent pid: [child pids]} for every process (psutil if present, else ps / PowerShell CIM)."""
     kids: dict = {}
@@ -260,11 +299,20 @@ def _parent_map() -> dict:
     except ImportError:
         pass
     if sys.platform.startswith("win"):
-        out = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId) $($_.ParentProcessId)\" }"],
-            capture_output=True, text=True, timeout=20).stdout
-        pairs = [ln.split() for ln in out.splitlines()]
+        pairs = _win_pairs_toolhelp()
+        if pairs is None:   # ctypes snapshot unavailable -> PowerShell CIM (slow on busy runners: 60 s, one retry)
+            pairs = []
+            for attempt in (1, 2):
+                try:
+                    out = subprocess.run(
+                        ["powershell", "-NoProfile", "-Command",
+                         "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId) $($_.ParentProcessId)\" }"],
+                        capture_output=True, text=True, timeout=60).stdout
+                    pairs = [ln.split() for ln in out.splitlines()]
+                    break
+                except subprocess.TimeoutExpired:
+                    if attempt == 2:
+                        raise RuntimeError("process list (PowerShell CIM) timed out twice (60 s each)")
     else:
         out = subprocess.run(["ps", "-axo", "pid=,ppid="], capture_output=True, text=True, timeout=5).stdout
         pairs = [ln.split() for ln in out.splitlines()]
