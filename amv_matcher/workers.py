@@ -101,6 +101,8 @@ def _song_cached(path, cache_path=None, **_):
 
 def _song_analysis(path, cache_path=None, **_):
     from . import audio
+    if os.environ.get("AMV_TEST_CRASH_WORKER") == "1":    # test hook: die like a SIGSEGV (worker process only)
+        os._exit(139)
     report_progress(5)
     r = audio.analyze_song(path, cache_path=_songs_cache_path(cache_path))
     report_progress(100)

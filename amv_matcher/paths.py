@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -115,3 +116,39 @@ def exports_member(src):
     except (OSError, ValueError, RuntimeError):
         pass
     return None
+
+
+def _build_key() -> str:
+    """Stable per-build key: AMV_APP_VERSION / git describe when known, else the frozen exe's size+mtime."""
+    import re
+    try:
+        from .timelinelog import app_version
+        v = app_version()
+    except Exception:
+        v = "unknown"
+    if v == "unknown" and FROZEN:
+        try:
+            st = os.stat(sys.executable)
+            v = f"build-{st.st_size}-{int(st.st_mtime)}"
+        except OSError:
+            pass
+    return re.sub(r"[^A-Za-z0-9._-]", "_", v)[:80] or "unknown"
+
+
+def setup_numba_cache(keep: int = 2) -> Path:
+    """Point NUMBA_CACHE_DIR at <data>/numba-cache/<build key> (every platform, source mode too) so a new build
+    never reads an older build's on-disk cache; prune all but the `keep` most recent version dirs. Call BEFORE
+    numba/librosa are imported. Returns the directory in use."""
+    root = data_dir() / "numba-cache"
+    cur = root / _build_key()
+    try:
+        cur.mkdir(parents=True, exist_ok=True)
+        os.utime(cur)
+        others = sorted((d for d in root.iterdir() if d.is_dir() and d.name != cur.name),
+                        key=lambda d: d.stat().st_mtime, reverse=True)
+        for d in others[max(keep - 1, 0):]:
+            shutil.rmtree(d, ignore_errors=True)
+    except OSError:
+        pass
+    os.environ["NUMBA_CACHE_DIR"] = str(cur)
+    return cur

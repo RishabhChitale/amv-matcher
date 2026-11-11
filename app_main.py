@@ -34,8 +34,10 @@ if "--selftest" in sys.argv and not os.environ.get("AMV_DATA_DIR"):   # keep the
     import tempfile
     os.environ["AMV_DATA_DIR"] = tempfile.mkdtemp(prefix="amv-selftest-data-")
 
+from amv_matcher import paths
+paths.setup_numba_cache()   # per-version numba cache, BEFORE anything imports numba/librosa
 from amv_matcher import nativeshell as ns
-from amv_matcher import paths, winsafe
+from amv_matcher import winsafe
 from amv_matcher import server as srv
 
 TITLE = "AMV Matcher"

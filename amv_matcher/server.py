@@ -124,8 +124,14 @@ def _song(path):
         return analyze_song(path)
     try:
         res = _wait("song_analysis", path, 0)
-    except ValueError:
-        raise
+    except ValueError as e:
+        if not str(e).startswith("worker crashed"):
+            raise
+        # the pool already retried once in a fresh worker; last resort: same analysis in this process
+        try:
+            res = analyze_song(path)
+        except Exception as e2:
+            raise ValueError(f"worker crashed x2, in-process failed: {type(e2).__name__}: {e2}") from e2
     except Exception:
         return analyze_song(path)
     try:    # the worker wrote songs.json: drop this process's stale in-memory copy
