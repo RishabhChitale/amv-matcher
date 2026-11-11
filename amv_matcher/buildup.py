@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from ._memo import IdMemo, frozen
+
 HZ = 10.0
 SMOOTH_S = 1.0
 RAMP_MIN_S = 2.0
@@ -81,9 +83,33 @@ def _ramp_launches(curve, min_rise, min_gap_s):
     return out
 
 
+_VMEMO = IdMemo(32)
+
+
+def _vkey(video):
+    return (video, video.get("motion_curve"), video.get("energy_curve"), video.get("segments_struct"))
+
+
+def _speed(video) -> np.ndarray:
+    """speed_curve(video), memoised on the video's feature lists (read-only)."""
+    objs = _vkey(video) + ("speed",)
+    key, hit = _VMEMO.get(objs, (video.get("duration"),))
+    if hit is not None:
+        return hit
+    return _VMEMO.put(key, objs, frozen(speed_curve(video)))
+
+
+def _hits_cached(video) -> tuple:
+    objs = _vkey(video) + ("hits",)
+    key, hit = _VMEMO.get(objs, (video.get("duration"),))
+    if hit is not None:
+        return hit
+    return _VMEMO.put(key, objs, tuple(video_hits(video)))
+
+
 def video_launches(video: dict) -> list:
     """[{t, strength}] where a sustained speed ramp ends in a peak block (t = block start, video time)."""
-    c = speed_curve(video)
+    c = _speed(video)
     out = []
     for i, r in _ramp_launches(c, LAUNCH_MIN_RISE, RAMP_MIN_S):
         # the step is found on smoothed curves and lands early: the launch is where the speed first reaches
@@ -147,9 +173,33 @@ def song_buildups(song: dict, stems_feats: dict = None) -> list:
     return out
 
 
+_SMEMO = IdMemo(64)
+
+
+def _song_energy01(song) -> np.ndarray:
+    ec = song.get("energy_curve")
+    if not isinstance(ec, list) or not ec:
+        return _norm01(np.asarray(ec or [], dtype=float))
+    key, hit = _SMEMO.get((ec, "e01"))
+    if hit is not None:
+        return hit
+    return _SMEMO.put(key, (ec, "e01"), frozen(_norm01(np.asarray(ec, dtype=float))))
+
+
+def _buildups_cached(song, stems_feats=None) -> list:
+    """song_buildups(song) memoised on the song's feature lists (stems_feats bypasses the memo)."""
+    if stems_feats:
+        return song_buildups(song, stems_feats)
+    objs = (song, song.get("energy_curve"), song.get("drops"), song.get("sections"), "builds")
+    key, hit = _SMEMO.get(objs)
+    if hit is not None:
+        return hit
+    return _SMEMO.put(key, objs, tuple(song_buildups(song)))
+
+
 def _intensity_pct(song, video, off):
-    sp = speed_curve(video)
-    se = _norm01(np.asarray(song.get("energy_curve") or [], dtype=float))
+    sp = _speed(video)
+    se = _song_energy01(song)
     i0 = int(round(off * HZ))
     j0 = max(0, -i0)
     seg = se[max(i0, 0):max(i0, 0) + max(len(sp) - j0, 0)]
@@ -167,8 +217,8 @@ def build_stats(song: dict, video: dict, off: float, stems_feats: dict = None):
     """None when neither side has a build/launch. Otherwise build_pct = W_LAUNCH * launch match (strength
     weighted share of builds+launches that coincide within +-1 beat) + W_INTENSITY * speed~energy correlation."""
     vd = float(video.get("duration") or 0.0)
-    L = video_hits(video)
-    B = [b for b in song_buildups(song, stems_feats) if -1.0 <= b["drop"] - off <= vd + 1.0]
+    L = _hits_cached(video)
+    B = [b for b in _buildups_cached(song, stems_feats) if -1.0 <= b["drop"] - off <= vd + 1.0]
     if not B:
         return None                  # nothing to build into: build_pct does not apply
     bt = np.asarray(song.get("beat_times") or [], dtype=float)

@@ -5,6 +5,8 @@ import os
 
 import numpy as np
 
+from ._memo import farr
+
 # F15 (story gate cap, story/key-moment fields) is held out of releases. Off by default; AMV_F15=1 turns it on.
 F15_ENABLED = os.environ.get("AMV_F15", "") == "1"
 # Beat-following warp lock (half-beat phase flips in spliced audio, tempo drift). On by default since v0.9.5;
@@ -74,8 +76,8 @@ def _beats(song):
     """Constant-tempo grid when it fits the music well and agrees with the song's bpm,
     else the tracker's raw beats."""
     if _uses_grid(song):
-        return np.asarray(song["beat_grid"], dtype=float)
-    return np.asarray(song["beat_times"], dtype=float)
+        return farr(song["beat_grid"])
+    return farr(song["beat_times"])
 
 
 def _dist_to(t, ref):
@@ -344,8 +346,8 @@ def _events(video):
 def _arc_pct_at(song, video, off):
     """Pearson of video vs song energy (mapped to 0-100) plus drop/lull bonuses.
     Only the overlap counts, so a negative offset (song starts late) is not penalised."""
-    ve = np.asarray(video["energy_curve"], dtype=float)
-    se = np.asarray(song["energy_curve"], dtype=float)
+    ve = farr(video["energy_curve"])
+    se = farr(song["energy_curve"])
     i0 = int(round(off * ENERGY_HZ))
     j0 = max(0, -i0)
     seg = se[max(i0, 0):max(i0, 0) + max(len(ve) - j0, 0)]
@@ -357,7 +359,7 @@ def _arc_pct_at(song, video, off):
         r = float(np.corrcoef(v, seg[:m])[0, 1])
     pct = 50.0 * (r + 1.0)
     matches = 0
-    drops = np.asarray(song.get("drops", []), dtype=float) - off
+    drops = farr(song.get("drops", [])) - off
     for a, _b in video.get("peak_segments", []):
         if len(drops) and np.min(np.abs(drops - a)) <= DROP_MATCH_S:
             matches += 1
