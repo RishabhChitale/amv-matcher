@@ -1,6 +1,8 @@
 """Video analysis: cuts, motion curve, motion peaks, motion tempo."""
 from __future__ import annotations
 
+import os
+
 import cv2
 import numpy as np
 from scipy.signal import find_peaks
@@ -204,7 +206,8 @@ def _frames(path: str):
         if src_fps <= 0 or src_fps > 1000:
             src_fps = 30.0
         fps = MAX_FPS if src_fps > MAX_FPS else src_fps
-        stream = decode.open_frames(path, width=160, fps=MAX_FPS, hw="off", pix_fmt=_PIX)
+        stream = decode.open_frames(path, width=160, fps=MAX_FPS, hw="off", pix_fmt=_PIX,
+                                    reformat_threads=_reformat_threads())
 
         def gen():
             with stream:
@@ -214,6 +217,16 @@ def _frames(path: str):
     except Exception:
         return _frames_cv2(path)
 
+
+def _reformat_threads() -> int:
+    """Downscale threads for the video stage: 2 (env AMV_REFORMAT_THREADS, 1 = serial)."""
+    try:
+        return max(1, min(8, int(os.environ.get("AMV_REFORMAT_THREADS", "") or _REFORMAT_THREADS)))
+    except ValueError:
+        return _REFORMAT_THREADS
+
+
+_REFORMAT_THREADS = 2   # 1080p -> 160 px swscale is most of the video stage; it releases the GIL
 
 _PIX = "bgr24"    # "bgr24" + cv2.cvtColor gives exact parity with the old reader (~+10% cost)
 

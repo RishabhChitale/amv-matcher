@@ -195,16 +195,61 @@ def _target_size(w, h, width, height, even):
     return tw, th
 
 
+def _convert(rf, fr, tw, th, pix_fmt, interp):
+    if (fr.width, fr.height) != (tw, th) or fr.format.name != pix_fmt:
+        fr = rf.reformat(fr, width=tw, height=th, format=pix_fmt, interpolation=interp)
+    return fr.to_ndarray()
+
+
+def _converted(src, tw, th, pix_fmt, interp, threads: int):
+    """(t, ndarray) for each (t, frame) of `src`, in order. threads > 1 runs the swscale downscale
+    on that many worker threads (swscale releases the GIL), each with its own reformatter (one
+    cached swscale context per thread): the same pixels as the serial path, only faster."""
+    if threads <= 1:
+        rf = VideoReformatter()     # one cached swscale context per stream (bit-identical, no per-frame init)
+        for t, fr in src:
+            yield t, _convert(rf, fr, tw, th, pix_fmt, interp)
+        return
+    from collections import deque
+    from concurrent.futures import ThreadPoolExecutor
+    local = threading.local()
+
+    def work(fr):
+        rf = getattr(local, "rf", None)
+        if rf is None:
+            rf = local.rf = VideoReformatter()
+        return _convert(rf, fr, tw, th, pix_fmt, interp)
+
+    ahead = 2 * threads + 2           # frames in flight: bounds the extra memory to a few frames
+    pend = deque()
+    ex = ThreadPoolExecutor(max_workers=threads, thread_name_prefix="amv-reformat")
+    try:
+        for t, fr in src:
+            pend.append((t, ex.submit(work, fr)))
+            if len(pend) >= ahead:
+                t0, f = pend.popleft()
+                yield t0, f.result()
+        while pend:
+            t0, f = pend.popleft()
+            yield t0, f.result()
+    finally:
+        for _t, f in pend:
+            f.cancel()
+        ex.shutdown(wait=True)
+
+
 class FrameStream:
     """Iterator of (t, ndarray) with .info and close(). Not thread-safe."""
 
-    def __init__(self, path, width, height, fps, start, end, hw, pix_fmt, fast, interpolation):
+    def __init__(self, path, width, height, fps, start, end, hw, pix_fmt, fast, interpolation,
+                 reformat_threads=1):
         if pix_fmt not in _FMTS:
             raise ValueError(f"pix_fmt must be one of {sorted(_FMTS)}")
         self.info = DecodeInfo(requested=str(hw))
         self._holder = {"c": None}
         self._lock = threading.Lock()
         self._end = end
+        self._threads = max(1, int(reformat_threads or 1))
         self._gen = self._run(str(path), width, height, fps, start or 0.0, pix_fmt, fast, interpolation, hw)
         self._closed = False
 
@@ -221,15 +266,13 @@ class FrameStream:
             tw, th = _target_size(sw, sh, width, height, pix_fmt == "yuv420p")
             if interp is None:
                 interp = "AREA" if (tw < sw or th < sh) else "BILINEAR"
-            rf = VideoReformatter()     # one cached swscale context per stream (bit-identical, no per-frame init)
-            for t, fr in _pick_fps(raw, fps, src_rate):
-                if self._end is not None and t >= self._end - _EPS:
-                    return
-                if (fr.width, fr.height) != (tw, th) or fr.format.name != pix_fmt:
-                    f2 = rf.reformat(fr, width=tw, height=th, format=pix_fmt, interpolation=interp)
-                else:
-                    f2 = fr
-                img = f2.to_ndarray()
+            def picked():
+                for t, fr in _pick_fps(raw, fps, src_rate):
+                    if self._end is not None and t >= self._end - _EPS:
+                        return
+                    yield t, fr
+
+            for t, img in _converted(picked(), tw, th, pix_fmt, interp, self._threads):
                 self.info.frames_out += 1
                 yield t, img
         finally:
@@ -263,9 +306,12 @@ class FrameStream:
 
 
 def open_frames(path, width=None, fps=None, start=None, end=None, hw="auto",
-                pix_fmt="rgb24", height=None, fast=False, interpolation=None) -> FrameStream:
-    """See module docstring. Returns a FrameStream (iterator of (t, ndarray); has .info)."""
-    return FrameStream(path, width, height, fps, start, end, hw, pix_fmt, fast, interpolation)
+                pix_fmt="rgb24", height=None, fast=False, interpolation=None,
+                reformat_threads=1) -> FrameStream:
+    """See module docstring. Returns a FrameStream (iterator of (t, ndarray); has .info).
+    reformat_threads > 1 runs the downscale on that many threads (same output, faster)."""
+    return FrameStream(path, width, height, fps, start, end, hw, pix_fmt, fast, interpolation,
+                       reformat_threads)
 
 
 def decode_info(path, hw="auto") -> DecodeInfo:
