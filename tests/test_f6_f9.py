@@ -188,7 +188,13 @@ def test_boom_stats_hit_and_miss():
     assert nov["boom_pct"] == 0.0 and nov["boom"]["vis_t"] is None
 
 
-def test_blend_total_never_lowers():
+def test_blend_total_gated_off_by_default():
+    assert B.BOOM_IN_TOTAL is False
+    assert B.blend_total(80.0, {"boom_pct": 100.0}) == 80.0
+
+
+def test_blend_total_never_lowers(monkeypatch):
+    monkeypatch.setattr(B, "BOOM_IN_TOTAL", True)
     assert B.blend_total(80.0, None) == 80.0
     assert B.blend_total(80.0, {"boom_pct": 0.0}) == 80.0
     assert B.blend_total(80.0, {"boom_pct": 100.0}) == pytest.approx(82.0)

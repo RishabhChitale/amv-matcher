@@ -32,6 +32,12 @@ A song build-up is rising energy and onset density over 2-16 s that ends at a dr
 
 Decisions use the pre-bonus total: splice accepts or rejects a layout on `base` (the bonus is not comparable across layouts), and auto-sync ranks runs on `base`, then tightness, then median error.
 
+## Booms and camera motion (F6 / F9, `boom.py`, `flow.py`)
+- **Camera motion**: one optical-flow pass splits camera motion (pan/tilt/zoom/whip from a similarity fit) from subject motion. Camera speed feeds the video energy curve for arc with weight `CAM_ENERGY_W` 0.35.
+- **Camera events are off as sync events** (`CAM_EVENT_WEIGHT` and `CAM_WHIP_WEIGHT` are 0): adding them lowered the scores of real own pairs in the ground-truth check, so they are left out of sync.
+- **Booms**: song booms (`drop`, `initial_boom`, `encore`, `boom`) and visual booms (subject impacts, flashes, whips) give `boom_pct`, how well the song's main boom lands on a visual boom. It is reported separately and is **not** part of `total` (`BOOM_IN_TOTAL = False`) until recall on the user-reviewed booms is good. Measured 2026-11-11 against the user's review (strict +-50 ms audio, +-80 ms video): audio recall 0.33, video recall 0.71, so it stays out. With or without the bonus the ground-truth table is unchanged (own pairs 85-97, cross pairs at most 48).
+- Auto-sync still has a `boom` step that may move the offset to land the main boom, but only when the total does not drop.
+
 ## Tempo sweep (`tempo.py`)
 For the top 5 ranked songs only (lazy, `TEMPO_SWEEP_TOP`), the server tries song speeds 0.90x-1.10x: coarse steps of 0.02, then 0.01 around the best. Each ratio rescales the cached analysis (no re-analysis), and the offset is carried over and nudged by up to +-0.1 s. The result is `best_tempo_ratio`, `best_tempo_total_pct` and a label such as "fits best at +4% speed". The original soundtrack is skipped.
 

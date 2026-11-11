@@ -401,3 +401,64 @@ def parse_csv(text: str) -> dict:
                                              "note": r.get("note") or "",
                                              "timeline_t": _r(r.get("timeline_t"))})
     return parse(log)
+
+
+# ---------------------------------------------------------------- F6e: detected vs bookmarks
+AUDIO_TOL_S = 0.05       # backlog F6e tolerances
+VIDEO_TOL_S = 0.08
+AUDIO_GT_TYPES = ("drop", "initial_boom", "encore", "perfect_sync_moment")
+VIDEO_GT_TYPES = ("visual_boom", "perfect_sync_moment")
+
+
+def _match(gt, det, tol):
+    """Greedy one-to-one matching by distance. Returns [(gi, di, dt)]."""
+    pairs = sorted((abs(g - d), gi, di) for gi, g in enumerate(gt) for di, d in enumerate(det) if abs(g - d) <= tol)
+    ug, ud, out = set(), set(), []
+    for dt, gi, di in pairs:
+        if gi in ug or di in ud:
+            continue
+        ug.add(gi), ud.add(di)
+        out.append((gi, di, round(det[di] - gt[gi], 3)))
+    return sorted(out)
+
+
+def _pr(n_gt, n_det, n_hit):
+    return {"gt": n_gt, "detected": n_det, "hits": n_hit,
+            "recall": round(n_hit / n_gt, 3) if n_gt else None,
+            "precision": round(n_hit / n_det, 3) if (n_det and n_gt) else None}   # no gt: unreviewed
+
+
+def evaluate(log, audio_tol=AUDIO_TOL_S, video_tol=VIDEO_TOL_S) -> dict:
+    """Precision/recall of a log's detected booms against its bookmarks (the user's ground truth).
+
+    audio: bookmarks of AUDIO_GT_TYPES vs detected audio booms (song time); class accuracy over the
+    hits whose bookmark type is a class; main_hit = the detected main boom matches a `drop` bookmark.
+    video: bookmarks of VIDEO_GT_TYPES vs detected visual booms (video time).
+    Precision is a lower bound when the user did not bookmark every boom."""
+    lg = parse(log) if not isinstance(log, dict) or "format" in log else log
+    out = {}
+    au = (lg["audio"].get("detected") or {})
+    gb = [b for b in lg["audio"]["bookmarks"] if b.get("type") in AUDIO_GT_TYPES]
+    db = [b for b in au.get("booms") or [] if b.get("t") is not None]
+    m = _match([float(b["t"]) for b in gb], [float(b["t"]) for b in db], audio_tol)
+    a = _pr(len(gb), len(db), len(m))
+    cls = [(gb[gi]["type"], db[di].get("class")) for gi, di, _ in m if gb[gi]["type"] in AUDIO_CLASSES]
+    a["class_hits"] = sum(g == d for g, d in cls)
+    a["class_total"] = len(cls)
+    a["confusion"] = sorted(f"{g}->{d}" for g, d in cls if g != d)
+    a["missed"] = [gb[i]["t"] for i in range(len(gb)) if i not in {gi for gi, _, _ in m}]
+    a["offsets"] = [dt for _, _, dt in m]
+    mb = au.get("main_boom")
+    drops = [float(b["t"]) for b in gb if b["type"] == "drop"]
+    a["main_hit"] = None if mb is None or not drops else any(abs(float(mb) - t) <= audio_tol for t in drops)
+    out["audio"] = a
+    vd = (lg["video"].get("detected") or {})
+    gv = [b for b in lg["video"]["bookmarks"] if b.get("type") in VIDEO_GT_TYPES]
+    dv = [b for b in vd.get("visual_booms") or [] if b.get("t") is not None]
+    m = _match([float(b["t"]) for b in gv], [float(b["t"]) for b in dv], video_tol)
+    v = _pr(len(gv), len(dv), len(m))
+    v["missed"] = [gv[i]["t"] for i in range(len(gv)) if i not in {gi for gi, _, _ in m}]
+    v["offsets"] = [dt for _, _, dt in m]
+    out["video"] = v
+    out["tolerance_s"] = {"audio": audio_tol, "video": video_tol}
+    return out

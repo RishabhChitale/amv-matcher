@@ -30,6 +30,20 @@ AUDIO_SEP_S = 8.0       # booms are phrase events, not beats
 SNAP_S = 0.12           # snap to the strongest onset within this
 AUDIO_MAX = 8
 AUDIO_MIN_CONF = 0.25
+BOOM_VERSION = 2        # bump when audio booms change: cached song analyses recompute them
+
+# F6e classes (docs/TIMELINE-LOG-FORMAT.md booms[].class), from the user's 2026-11-11 review.
+# Levels are dB against the song's p90 low band (0.5 s smoothed); profiles are 24 log bands.
+CLS_DEEP_DB = -15.0     # low band over the 8 s before <= this: a breakdown before it -> "drop"
+CLS_BODY_DB = 6.0       # 4 s after-profile this far from the median boom profile -> odd one out, "boom"
+CLS_INIT_CONF = 0.8     # initial boom (groove / beat entry): first strong non-drop before the first drop
+CLS_INIT_JUMP = 20.0
+CLS_ENCORE_DIST = 3.5   # encore: after the main drop, sounds like it (profile distance) ...
+CLS_ENCORE_JUMP = 12.0   # ... jumps in hard ...
+CLS_ENCORE_BRK = -28.0  # ... and re-enters like a drop, even with no build-up (spliced audio)
+CLS_MAIN_FRAC = 0.75    # main drop = the FIRST drop ranking >= this x the best drop
+LEAD_BACK_S = 1.2       # lead-in snap: the hit can start up to this before the low-band peak ...
+LEAD_MIN_S = 0.12       # ... and at least this before it (else the onset snap already has it)
 
 VIS_HZ = 10.0
 VIS_BASE_S = 3.0        # running-median baseline half-window
@@ -128,11 +142,98 @@ def audio_booms(S, freqs, sr, hop, onset_env, low_S=None, source="mix", beat_gri
                     "kind": "drop", "_rank": float(score[i])})
     out.sort(key=lambda d: (-d["_rank"], d["t"]))   # rank by the unclipped score: conf saturates at 1
     out = out[:AUDIO_MAX]
-    main = out[0]["t"] if out else None
+    out.sort(key=lambda d: d["t"])
+    main = _classify(out, S[:, :m], freqs, fps, L, env, beats) if out else None
     for d in out:
         del d["_rank"]
-    out.sort(key=lambda d: d["t"])
     return {"booms": out, "main": main, "source": source}
+
+
+def _bands(S, freqs, n=24):
+    edges = np.geomspace(40.0, min(11000.0, float(freqs[-1])), n + 1)
+    return _db(np.stack([(S[(freqs >= a) & (freqs < b)] ** 2).sum(axis=0)
+                         for a, b in zip(edges[:-1], edges[1:])]))
+
+
+def _classify(out, S, freqs, fps, L, env, beats):
+    """F6e: give every boom a class (drop / initial_boom / encore / boom), snap it to the start of
+    the hit and return the main boom's time. Mutates `out` (sorted by t)."""
+    m = S.shape[1]
+    Bd = _bands(S, freqs)
+    # features at the detected (pre-snap) frame
+    raw = _db((L[freqs < LOW_HZ, :m] ** 2).sum(axis=0))
+    ref = float(np.percentile(raw, 90))
+    low = uniform_filter1d(raw, max(1, int(0.5 * fps)), mode="nearest")
+    seg = lambda x, a, b: x[max(0, a):max(max(0, a) + 1, min(len(x), b))]
+    prof = []
+    for d in out:
+        i = int(round(d["t"] * fps))
+        d["low_before"] = round(float(seg(raw, i - int(8 * fps), i - int(GAP_S * fps)).mean() - ref), 1)
+        d["low_after"] = round(float(seg(raw, i, i + int(4 * fps)).mean() - ref), 1)
+        d["break_db"] = round(float(seg(low, i - int(2.5 * fps), i - int(0.1 * fps)).min() - ref), 1)
+        prof.append(seg(Bd.T, i, i + int(4 * fps)).mean(axis=0))
+    P = np.stack(prof)
+    # lead-in snap: the frame where the whole spectrum jumps (flux) at a strong onset
+    D = np.r_[0.0, np.maximum(np.diff(Bd, axis=1), 0).mean(axis=0)]
+    Ds = uniform_filter1d(D, 3, mode="nearest")
+    p99, e95 = float(np.percentile(Ds, 99)), float(np.percentile(env, 95))
+    env_loc = maximum_filter1d(env, size=5, mode="nearest")
+    for d in out:
+        d["t0"] = d["t"]
+        if p99 <= 0:
+            continue
+        i = int(round(d["t"] * fps))
+        a, z = max(0, i - int(LEAD_BACK_S * fps)), max(0, i - int(LEAD_MIN_S * fps))
+        hit = np.nonzero((Ds[a:z] >= p99) & (env_loc[a:z] >= e95))[0]
+        if len(hit):
+            t = (a + int(hit[0])) / fps
+            if len(beats):
+                nb_i = int(np.argmin(np.abs(beats - t)))
+                if abs(beats[nb_i] - t) <= 0.08:
+                    t = float(beats[nb_i])
+            d["lead_in"] = round(float(d["t"] - t), 3)
+            d["t"] = round(float(t), 3)
+    med = np.median(P, axis=0)
+    body = np.abs(P - med).mean(axis=1) if len(out) >= 3 else np.zeros(len(out))
+    for d, b in zip(out, body):
+        odd = b > CLS_BODY_DB
+        i = int(round(d["t0"] * fps))
+        # a breakdown removes bass that was there: a bass-free intro before the first beat entry is no drop
+        had_bass = bool(i > int(8 * fps)) and float(low[:i - int(8 * fps)].max() - ref) > CLS_DEEP_DB
+        d["class"] = "boom" if odd else ("drop" if d["low_before"] <= CLS_DEEP_DB and had_bass else None)
+        d["build"] = None
+        d["_odd"] = bool(odd)
+    drops = [k for k, d in enumerate(out) if d["class"] == "drop"]
+    if drops:
+        best = max(out[k]["_rank"] for k in drops)
+        mk = next(k for k in drops if out[k]["_rank"] >= CLS_MAIN_FRAC * best)
+    else:
+        mk = max(range(len(out)), key=lambda k: (out[k]["_rank"], -out[k]["t"]))
+        if out[mk]["class"] is None and out[mk]["low_before"] <= CLS_DEEP_DB:
+            out[mk]["class"] = "drop"          # intro -> drop with nothing earlier: still the drop
+            drops = [mk]
+    first_drop = out[drops[0]]["t"] if drops else float("inf")
+    next_drop = next((k for k in drops if k > mk), len(out))
+    encore = False   # at most one: the first gapped repeat of the main drop before the next drop
+    # initial boom: the hardest strong unclassified hit before the first drop (groove / beat entry)
+    pre = [k for k, d in enumerate(out) if d["class"] is None and d["t"] < first_drop
+           and (d["conf"] >= CLS_INIT_CONF or d["jump_db"] >= CLS_INIT_JUMP)]
+    init = max(pre, key=lambda k: (out[k]["jump_db"], -out[k]["t"])) if pre else -1
+    for k, d in enumerate(out):
+        if d["class"] is not None:
+            continue
+        if k == init:
+            d["class"] = "initial_boom"
+        elif k > mk and drops and k < next_drop and not encore \
+                and d["jump_db"] >= CLS_ENCORE_JUMP and d["break_db"] <= CLS_ENCORE_BRK \
+                and float(np.abs(P[k] - P[mk]).mean()) <= CLS_ENCORE_DIST:
+            encore = True
+            d["class"] = "encore"       # heuristic: a drop again, may have no build-up
+        else:
+            d["class"] = "boom"
+    for d in out:
+        del d["_odd"], d["t0"]
+    return out[mk]["t"]
 
 
 def _merge(cands):
@@ -211,6 +312,8 @@ def visual_booms(subject, subject_hz, bright, fps, flow_series=None, camera_even
 
 # --- boom alignment sub-score (score._pack) -------------------------------------------------
 W_BOOM = 0.10           # bonus weight in the total (never punishes, like buildup.blend_total)
+BOOM_IN_TOTAL = False   # F6e gate: boom_pct is reported in the breakdown only, not folded into total_pct,
+                        # until recall vs the user's reviewed bookmarks is good (tools/boom_pr.py)
 BOOM_SIGMA_S = 0.08     # credit = conf_v * gaussian(err / BOOM_SIGMA_S); +-80 ms is a hit
 BOOM_MATCH_S = 0.08
 BOOM_MAIN_W = 2.0       # the main audio boom counts twice
@@ -258,8 +361,8 @@ def boom_stats(song, video, off, lead=0.0):
 
 
 def blend_total(total, stats):
-    """Fold boom_pct into the total as a bonus, never below the input."""
-    if stats is None or W_BOOM <= 0:
+    """Fold boom_pct into the total as a bonus, never below the input. Off unless BOOM_IN_TOTAL."""
+    if stats is None or W_BOOM <= 0 or not BOOM_IN_TOTAL:
         return total
     return max(total, (1.0 - W_BOOM) * total + W_BOOM * stats["boom_pct"])
 

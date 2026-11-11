@@ -185,12 +185,13 @@ def _compute(path: str):
     return result, waveform_peaks(y)
 
 
-BOOM_FIELDS = ("booms", "main_boom", "boom_source")
+BOOM_FIELDS = ("booms", "main_boom", "boom_source", "boom_version")
 
 
 def is_current(hit) -> bool:
     """A cached analysis has every field this version computes (older entries are upgraded on read)."""
-    return isinstance(hit, dict) and all(f in hit for f in BOOM_FIELDS)
+    from .boom import BOOM_VERSION
+    return isinstance(hit, dict) and all(f in hit for f in BOOM_FIELDS) and hit.get("boom_version") == BOOM_VERSION
 
 
 def _stem_low(path, n_frames):
@@ -220,7 +221,7 @@ def _booms(path, S, freqs, env, beat_grid):
                              source="stems" if low is not None else "mix", beat_grid=beat_grid)
     except Exception:
         r = {"booms": [], "main": None, "source": "mix"}
-    return {"booms": r["booms"], "main_boom": r["main"], "boom_source": r["source"]}
+    return {"booms": r["booms"], "main_boom": r["main"], "boom_source": r["source"], "boom_version": boom.BOOM_VERSION}
 
 
 def _boom_inputs(path: str):

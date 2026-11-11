@@ -103,6 +103,23 @@ audio class (`drop`, `initial_boom`, `encore`, `boom`; `kind=main` marks the mai
 Importing a CSV restores the bookmarks, the media identity and `perfect_sync_example`; detected rows
 are informational and ignored on import.
 
+## Precision / recall of detected booms (F6e)
+
+`tools/boom_pr.py LOG.json [LOG.csv ...] [--audio-tol 0.05] [--video-tol 0.08] [--detected D.json] [--json]`
+compares a log's bookmarks (ground truth) with its detected rows, using `timelinelog.evaluate`.
+CSV rows carry no detected list, so `--detected` names a JSON export of the same project whose
+`detected` sections are used for every CSV given. Matching is one-to-one, nearest
+first, within the tolerance (default +-50 ms audio, +-80 ms video).
+
+- Audio ground truth: bookmarks of type `drop`, `initial_boom`, `encore`, `perfect_sync_moment`.
+  Video ground truth: `visual_boom`, `perfect_sync_moment`.
+- Output per log (labelled by media hash prefix, never by name) and pooled: gt, detected, hits,
+  recall, precision, class hits (bookmark type vs detected class, for class-typed bookmarks),
+  the missed bookmark times, hit offsets, and whether the main boom was hit.
+- Precision is a lower bound: a review rarely bookmarks every real boom, so unbookmarked
+  detections count as false positives. Precision is `null` when there is no ground truth or no
+  detection.
+
 ## Endpoints
 
 All behind the origin guard; `project` is an `.amvproj` path on this machine.
