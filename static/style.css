@@ -260,7 +260,7 @@ body.dragging #fit,body.dragging .ovwrap{opacity:.5;transition:opacity var(--eas
 .v1-legend .lg{display:inline-flex;align-items:center;gap:4px;min-width:0;max-width:100%;padding:0 5px;height:14px;border-radius:3px;background:rgba(0,0,0,.5);pointer-events:auto}
 .v1-legend .lg i{width:8px;height:8px;flex:none}.v1-legend .lg b{font-weight:400;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .a1-mode{position:absolute;z-index:6;display:flex;gap:2px;padding:2px;font-size:11px;background:#14161c;border:1px solid var(--line);border-radius:10px;box-shadow:0 2px 8px rgba(0,0,0,.45)}
-.a1-mode button{width:auto;min-width:0;white-space:nowrap;padding:2px 10px;line-height:18px;height:22px;background:#1d2029;color:var(--txt)}
+.a1-mode button{width:auto;min-width:0;white-space:nowrap;padding:2px 10px;line-height:18px;height:22px;background:#1d2029;color:var(--txt);transition:none}
 .a1-mode button.on[data-m=orig]{background:var(--a1-orig);color:#04201a;border-color:transparent}
 .a1-mode button.on[data-m=synced]{background:var(--a1-synced);color:#fff;border-color:transparent}
 .a1-mode button:disabled{opacity:.45;cursor:not-allowed}
