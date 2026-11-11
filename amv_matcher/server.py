@@ -192,7 +192,22 @@ def _cached_for(video_path, song_path):
         return None
 
 
+SCAN_PREFETCH = int(os.environ.get("AMV_SCAN_PREFETCH", "8"))     # songs analysed ahead of scoring (0 = off)
 TEMPO_SWEEP_TOP = 5       # best-tempo sweep runs only for the top N ranked songs (keeps scans fast)
+
+
+def _prefetch_songs(songs: list):
+    """Queue song analyses on the worker pool ahead of the sequential scoring loop, so the pool's idle workers
+    analyze the next songs while this thread scores the current one. Analysis is per-file and deterministic, and
+    scoring still consumes the songs in scan order, so the ranking is unchanged. Best-effort (never raises)."""
+    wp = _wp()
+    if wp is None:
+        return
+    for p in songs:
+        try:
+            wp.submit("song_analysis", str(p), 1)     # same dedup key as _song(): its later call joins this job
+        except Exception:
+            return
 
 
 def _publish_partial(job: dict, r: dict):
@@ -222,8 +237,12 @@ def _score_songs(job: dict, video: dict, songs: list):
         except Exception as e:
             skipped.append({"path": orig["path"], "name": orig["name"], "source": "original",
                             "reason": f"{type(e).__name__}: {e}"})
+    ahead = SCAN_PREFETCH if SCAN_PREFETCH > 0 else 0
+    _prefetch_songs(songs[:ahead])
     for i, p in enumerate(songs, 1):
         job.update(done=i - 1, message=f"Analyzing song {i}/{len(songs)}: {p.name}")
+        if ahead and i - 1 + ahead < len(songs):
+            _prefetch_songs([songs[i - 1 + ahead]])     # keep `ahead` analyses queued past the current song
         try:
             song = _song(str(p))
             sc = score(song, video, allow_negative=True)

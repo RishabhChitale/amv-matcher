@@ -2,11 +2,50 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
+import time
 from pathlib import Path
 
 _REGISTRY: dict = {}
 _reg_lock = threading.Lock()
+
+
+class _FileLock:
+    """Advisory cross-process lock on a sidecar file (fcntl on POSIX, msvcrt on Windows); best effort: if locking is
+    unavailable the flush still proceeds (unique temp file + atomic rename keep the file valid)."""
+    def __init__(self, path):
+        self.path, self.fh = path, None
+
+    def __enter__(self):
+        try:
+            self.fh = open(self.path, "a+b")
+            if os.name == "nt":
+                import msvcrt
+                self.fh.seek(0)
+                for _ in range(200):
+                    try:
+                        msvcrt.locking(self.fh.fileno(), msvcrt.LK_NBLCK, 1)
+                        break
+                    except OSError:
+                        time.sleep(0.01)
+            else:
+                import fcntl
+                fcntl.flock(self.fh.fileno(), fcntl.LOCK_EX)
+        except Exception:
+            pass
+        return self
+
+    def __exit__(self, *exc):
+        if self.fh is not None:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    self.fh.seek(0)
+                    msvcrt.locking(self.fh.fileno(), msvcrt.LK_UNLCK, 1)
+                self.fh.close()      # closing releases the flock
+            except Exception:
+                pass
 
 
 class JsonCache:
@@ -15,6 +54,7 @@ class JsonCache:
         self.lock = threading.Lock()
         self.data = None
         self.dirty = False
+        self._pending: dict = {}      # keys set since the last flush (merged over the on-disk copy)
 
     def _load(self):
         if self.data is None:
@@ -32,6 +72,7 @@ class JsonCache:
         with self.lock:
             self._load()
             self.data[key] = value
+            self._pending[key] = value
             self.dirty = True
             if flush:
                 self._flush()
@@ -41,13 +82,36 @@ class JsonCache:
             self._flush()
 
     def _flush(self):
+        """Write to disk. Several worker processes share one cache file, so: (1) each writer uses its own temp
+        file (a shared one made one process's rename fail with FileNotFoundError and lost the other's entry) and
+        (2) our new keys are merged over what is on disk instead of overwriting the file with our older snapshot."""
         if not self.dirty:
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.data))
-        tmp.replace(self.path)
-        self.dirty = False
+        tmp = self.path.with_name(f"{self.path.stem}.{os.getpid()}.{threading.get_ident()}.tmp")
+        with _FileLock(self.path.with_name(self.path.stem + ".lock")):
+            try:
+                disk = json.loads(self.path.read_text())
+                merged = disk if isinstance(disk, dict) else dict(self.data)
+            except Exception:
+                merged = dict(self.data)
+            merged.update(self._pending)
+            try:
+                tmp.write_text(json.dumps(merged))
+                for attempt in range(5):     # Windows: the target can be briefly open in another process
+                    try:
+                        tmp.replace(self.path)
+                        break
+                    except PermissionError:
+                        if attempt == 4:
+                            raise
+                        time.sleep(0.02 * (attempt + 1))
+            finally:
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+        self.data, self._pending, self.dirty = merged, {}, False
 
 
 def get_cache(path) -> JsonCache:
