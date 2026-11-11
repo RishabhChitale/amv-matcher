@@ -1,3 +1,5 @@
+import pytest
+import time
 import json
 
 from amv_matcher import nativeshell as ns
@@ -65,12 +67,30 @@ def test_shutdown_guard_graceful_and_fallback():
     g = ns.ShutdownGuard(lambda: calls.append("close"), lambda: calls.append("kill"), exits.append, fallback=2)
     assert g.trigger() is True and g.trigger() is False          # idempotent
     g.cancel.set()
-    assert g.finished.wait(3) and calls == ["close"] and exits == []
+    assert g.finished.wait(3) and exits == []
+    for _ in range(50):
+        if calls == ["close"]:
+            break
+        time.sleep(0.05)
+    assert calls == ["close"]
     # fallback: window never closes -> children killed, exit(0)
     calls, exits = [], []
     g = ns.ShutdownGuard(lambda: calls.append("close"), lambda: calls.append("kill"), exits.append, fallback=0.2)
     g.trigger()
     assert g.finished.wait(3) and calls == ["close", "kill"] and exits == [0]
+    # request_close that blocks for ever (evaluate_js on a wedged main thread) must not stop the fallback
+    calls, exits = [], []
+    hang = threading.Event()
+    g = ns.ShutdownGuard(hang.wait, lambda: calls.append("kill"), exits.append, fallback=0.3)
+    t0 = time.time()
+    g.trigger()
+    assert g.finished.wait(3) and calls == ["kill"] and exits == [0] and time.time() - t0 < 2
+    hang.set()
+    # a second signal skips the grace period
+    calls, exits = [], []
+    g = ns.ShutdownGuard(threading.Event().wait, lambda: calls.append("kill"), exits.append, fallback=30)
+    g.trigger(); g.trigger()
+    assert g.finished.wait(3) and exits == [0]
     # request_close raising must not prevent the fallback
     exits = []
     def boom():
@@ -95,3 +115,25 @@ def test_kill_children_kills_descendants_only():
         time.sleep(0.1)
     assert all(k.poll() is not None for k in kids)
     assert os.getpid() > 0  # the test process survived
+
+
+def test_sigterm_kills_process_with_blocked_main_thread_and_hung_close():
+    """Real process: main thread parked in a blocking C call (stands in for the Cocoa loop, where Python-level
+    signal handlers never run) and a request_close that never returns -> SIGTERM still ends it within ~fallback."""
+    import os, signal, subprocess, sys, time
+    if sys.platform.startswith("win"):
+        pytest.skip("POSIX signal path")
+    code = ("import sys,threading,time,os;sys.path.insert(0,%r)\n"
+            "from amv_matcher import nativeshell as ns\n"
+            "g=ns.ShutdownGuard(threading.Event().wait, lambda: None, os._exit, fallback=1.0)\n"
+            "g.install();print('ready',flush=True)\n"
+            "threading.Event().wait()\n") % os.path.dirname(os.path.dirname(os.path.abspath(ns.__file__)))
+    p = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE)
+    try:
+        assert p.stdout.readline().strip() == b"ready"
+        t0 = time.time()
+        p.send_signal(signal.SIGTERM)
+        assert p.wait(timeout=15) == 0 and time.time() - t0 < 8
+    finally:
+        if p.poll() is None:
+            p.kill()

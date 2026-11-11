@@ -318,23 +318,34 @@ class ShutdownGuard:
         self.fired = False
         self.cancel = __import__("threading").Event()   # set when a normal shutdown completed
         self.finished = __import__("threading").Event()
+        self.cancel_wait = __import__("threading").Event()   # set by a repeated signal: stop waiting, exit now
 
     def trigger(self, *_):
+        """First call starts the guard; a second call (the user is impatient) skips the grace period."""
         import threading
         with self._lock:
             if self.fired:
+                self.cancel_wait.set()
                 return False
             self.fired = True
         threading.Thread(target=self._run, daemon=True, name="shutdown-guard").start()
         return True
 
     def _run(self):
+        # request_close runs in ITS OWN thread: it can block for ever (evaluate_js waits on a wedged Cocoa main
+        # thread), and the fallback clock must not depend on it returning.
+        import threading
         try:
-            try:
-                self.request_close()
-            except Exception:  # noqa: BLE001
-                log.exception("shutdown request_close")
-            if not self.cancel.wait(self.fallback):
+            def ask():
+                try:
+                    self.request_close()
+                except Exception:  # noqa: BLE001
+                    log.exception("shutdown request_close")
+            threading.Thread(target=ask, daemon=True, name="shutdown-close").start()
+            deadline = time.time() + self.fallback
+            while not self.cancel.is_set() and not self.cancel_wait.is_set() and time.time() < deadline:
+                self.cancel.wait(0.05)
+            if not self.cancel.is_set():
                 log.warning("graceful shutdown timed out; killing workers")
                 try:
                     self.kill_kids()
