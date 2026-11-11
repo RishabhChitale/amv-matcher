@@ -300,3 +300,35 @@ def test_result_carries_stem_targets(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_autosync_cache_file", tmp_path / "as3.json")
     jid = c.post("/api/auto-sync", json=_body(v, s, lead_s=0.05)).json()["job_id"]
     assert _wait(c, jid)["result"]["stem_targets"] == []
+
+
+def test_capped_result_is_never_cached(tmp_path, monkeypatch):
+    v, s = _setup(tmp_path, monkeypatch)
+    calls = []
+
+    def run(det):
+        def fake_auto(song, video, **kw):
+            calls.append(det)
+            return {"final": {"total_pct": 50, "fit_after_effort": 40.0, "deterministic": det},
+                    "limits_hit": [] if det else ["budget: time cap hit"], "plan": {"segments": []}}
+        monkeypatch.setattr(server._autosync, "auto_sync", fake_auto)
+        c = TestClient(server.app)
+        jid = c.post("/api/auto-sync", json=_body(v, s)).json()["job_id"]
+        for _ in range(300):
+            j = c.get(f"/api/auto-sync/{jid}").json()
+            if j["status"] != "running":
+                break
+            time.sleep(0.1)
+        assert j["status"] == "done", j
+        return j
+
+    j = run(False)
+    assert j["result"]["final"]["deterministic"] is False        # still reported to the caller
+    assert server._autosync_cached(v.resolve(), s.resolve()) is None
+    run(True)                                                     # same request recomputes, now cacheable
+    assert calls == [False, True]
+    assert server._autosync_cached(v.resolve(), s.resolve())["deterministic"] is True
+    # an older capped entry already on disk is not served either
+    server._as_cache().set(server._pair_key(v.resolve(), s.resolve()),
+                           {"final": {"fit_after_effort": 1, "deterministic": False}, "options": {}})
+    assert server._autosync_cached(v.resolve(), s.resolve()) is None

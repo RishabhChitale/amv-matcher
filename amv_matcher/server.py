@@ -1062,7 +1062,10 @@ def _autosync_cached(vp: Path, sp: Path):
     if not (vp.is_file() and sp.is_file()):
         return None
     hit = _as_cache().get(_pair_key(vp, sp))
-    return hit.get("final") if hit else None
+    fin = hit.get("final") if hit else None
+    if isinstance(fin, dict) and fin.get("deterministic") is False:
+        return None       # a wall-clock-capped (not reproducible) result is never served as the cached answer
+    return fin
 
 
 class AutoSyncGuardrails(BaseModel):
@@ -1159,13 +1162,16 @@ def _run_autosync(job_id: str, vp: Path, sp: Path, opts: dict, pair):
             keep = res if isinstance(res, dict) and res.get("final") and job.get("status") != "cancelled" else None
             job.update(status="cancelled", result=keep, message="Cancelled", current_step="")
             return
+        fin = res.get("final") if isinstance(res, dict) else None
         try:
+            if isinstance(fin, dict) and fin.get("deterministic") is False:
+                raise _NotCacheable      # emergency time cap hit: report it, but never cache it
             c = _as_cache()
             entry = {"final": res.get("final"), "options": opts}
             c.set(_opts_key(vp, sp, opts), entry, flush=False)
             c.set(_pair_key(vp, sp), entry)
         except Exception:
-            pass      # the cache is a convenience; never fail the job over it
+            pass      # the cache is a convenience (or _NotCacheable); never fail the job over it
         job.update(status="done", result=res, message="Done", current_step="")
     except _Cancelled:
         job.update(status="cancelled", result=None, message="Cancelled", current_step="")
@@ -1179,6 +1185,10 @@ def _run_autosync(job_id: str, vp: Path, sp: Path, opts: dict, pair):
 
 
 class _Cancelled(Exception):
+    pass
+
+
+class _NotCacheable(Exception):
     pass
 
 
