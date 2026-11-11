@@ -76,6 +76,8 @@ def test_build_has_no_names_and_shape(media):
     assert det["beats"]["count"] == 60 and det["beats"]["median_interval"] == pytest.approx(60 / 128, abs=1e-3)
     assert log["video"]["detected"]["camera_peaks"][0]["t"] == 4.5
     assert TL.validate(log) == []
+    real = TL.detected_audio({**SONG, "main_boom": 16.0})     # audio.py stores main_boom as a float
+    assert real["main_boom"] == 16.0 and [b["main"] for b in real["booms"]] == [True, False]
 
 
 def test_undetected_tracks_are_null():

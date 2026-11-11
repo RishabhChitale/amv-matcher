@@ -188,12 +188,14 @@ def detected_audio(song: dict | None) -> dict | None:
         return None
     bt = [float(t) for t in song.get("beat_times") or []]
     iv = sorted(b - a for a, b in zip(bt, bt[1:]))
-    main = song.get("main_boom") or {}
+    main = song.get("main_boom")              # song time (float); older/test data may hold {"t": ...}
+    main = main.get("t") if isinstance(main, dict) else main
+    main = _r(main) if main is not None else None
     return {
         "booms": [{"t": _r(b.get("t")), "class": _audio_class(b), "conf": _r(b.get("conf")),
-                   "build": b.get("build"), "main": bool(main) and _r(b.get("t")) == _r(main.get("t"))}
+                   "build": b.get("build"), "main": main is not None and _r(b.get("t")) == main}
                   for b in song.get("booms") or []],
-        "main_boom": _r(main.get("t")) if main else None,
+        "main_boom": main,
         "energy_drops": [_r(t) for t in song.get("drops") or []],
         "beats": {"bpm": _r(song.get("bpm"), 2), "count": len(bt), "first": _r(bt[0]) if bt else None,
                   "last": _r(bt[-1]) if bt else None,
