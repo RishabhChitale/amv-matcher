@@ -1,0 +1,11 @@
+/* F8: per-song preview slider in the scan list */
+.mr-row .pvs{grid-column:3/-1;display:flex;align-items:center;gap:8px;font-size:12px;color:var(--mut);min-width:0}
+.mr-row.pending .pvs,.mr-row.short .pvs{display:none}
+.pvs-btn{width:26px;height:22px;padding:0;font-size:11px;line-height:1;flex:none}
+.pvs-cur,.pvs-dur{font-variant-numeric:tabular-nums;min-width:32px}
+.pvs-dur{text-align:right}
+.pvs-trk{position:relative;flex:1;min-width:0;height:18px;display:flex;align-items:center}
+.pvs-rng{width:100%;margin:0;position:relative;z-index:1;accent-color:var(--v,#8b5cf6);background:none}
+.pvs-ticks{position:absolute;left:7px;right:7px;top:0;bottom:0;pointer-events:none;z-index:2}
+.pvs-tick{position:absolute;top:2px;bottom:2px;width:2px;margin-left:-1px;border-radius:1px;background:#22d3ee}
+.pvs-tick.drop{background:#f59e0b}

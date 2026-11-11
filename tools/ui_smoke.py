@@ -725,6 +725,29 @@ def main():
             nq = c.ev("document.querySelectorAll('#mr-list .mr-row').length")
             check("search filters rows", 1 <= nq < c.ev("MATCH.M.rows.size"), str(nq))
             c.ev("(()=>{const q=document.getElementById('mr-q');q.value='';q.dispatchEvent(new Event('input'))})()"); c.pump(0.3)
+            # F8: per-song preview slider (lazy audio, one at a time, tick hooks); real pointer events at visible coordinates
+            VIS = """(sel,root)=>{const e=(root||document).querySelector(sel);if(!e)return null;e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect(),cs=getComputedStyle(e);
+              if(!(r.width>0&&r.height>0)||cs.visibility==='hidden'||cs.display==='none'||+cs.opacity===0)return {vis:false};
+              const x=r.left+r.width/2,y=r.top+r.height/2,t=document.elementFromPoint(x,y);return {vis:!!t&&(t===e||e.contains(t)),x:x,y:y,l:r.left,w:r.width,t:r.top,h:r.height}}"""
+            def vis(sel, root="#mr-list .mr-row.done"):
+                return c.ev("(%s)(%s,%s)" % (VIS, json.dumps(sel), "document.querySelector(%s)" % json.dumps(root)))
+            def tap(sel, root="#mr-list .mr-row.done"):
+                v = vis(sel, root); c.pump(0.1); v = vis(sel, root)
+                if not v or not v.get("vis"): return False
+                c.mouse("mouseMoved", v["x"], v["y"]); c.mouse("mousePressed", v["x"], v["y"]); c.mouse("mouseReleased", v["x"], v["y"]); c.pump(0.4); return True
+            v_btn, v_rng = vis(".pvs-btn"), vis(".pvs-rng")
+            check("F8 done rows show a visible play button and seek slider", bool(v_btn and v_btn.get("vis") and v_rng and v_rng.get("vis") and v_rng["w"] > 60), json.dumps([v_btn, v_rng]))
+            check("F8 no audio created before play", c.ev("PVS.active()===''") is True)
+            check("F8 pointer click on play starts one preview and marks the row", tap(".pvs-btn") and c.ev("PVS.active()!=='' && document.querySelectorAll('#mr-list .mr-row.playing').length===1") is True,
+                  c.ev("JSON.stringify({act:PVS.active(),pl:document.querySelectorAll('#mr-list .mr-row.playing').length})"))
+            v = vis(".pvs-rng", "#mr-list .mr-row.playing")
+            if v and v.get("vis"):
+                x = v["l"] + v["w"] * 0.3; c.mouse("mousePressed", x, v["y"]); c.mouse("mouseReleased", x, v["y"]); c.pump(0.4)
+            check("F8 pointer seek on the slider moves the time label", c.ev("document.querySelector('#mr-list .mr-row.playing .pvs-cur').textContent") not in ("0:00", None))
+            c.ev("PVS.setMarkers(PVS.active(),{boom:[5],drop:[9]})")
+            tk = c.ev("[...document.querySelectorAll('#mr-list .mr-row.playing .pvs-tick')].map(e=>{const r=e.getBoundingClientRect();return [r.width,r.height]})")
+            check("F8 marker ticks render from the hook and are visible", isinstance(tk, list) and len(tk) == 2 and all(w > 0 and h > 0 for w, h in tk), str(tk) + c.ev("JSON.stringify({a:PVS.active(),pl:document.querySelectorAll('#mr-list .mr-row.playing').length,max:(document.querySelector('#mr-list .mr-row.playing .pvs-rng')||{}).max,ti:(document.querySelector('#mr-list .mr-row.playing .pvs-ticks')||{}).innerHTML})"))
+            check("F8 pointer click on pause stops it", tap(".pvs-btn", "#mr-list .mr-row.playing") and c.ev("PVS.active()===''") is True)
             c.ev("document.getElementById('mr-list').focus()")
             for k in ("ArrowDown", "ArrowDown", "ArrowUp"):
                 c.ev("window.dispatchEvent(new KeyboardEvent('keydown',{key:%s,bubbles:true}))" % json.dumps(k))

@@ -127,8 +127,8 @@
     const p = x.state === 'short' ? 0 : r.total_pct, af = after(r);
     const rg = x.state === 'short' ? '<div class="mr-rg dim">–</div>' : `<div class="mr-rg">${ring(p)}</div>`;
     const sub = x.state === 'short' ? `<span class="muted">Too short: ${fmtMS(r.song_duration)} vs video ${fmtMS(r.video_duration)}</span>` : `<span class="mr-chip">${chip(r)}</span>${af != null ? `<span class="mr-chip aft">after auto-sync ${Math.round(af)}%</span>` : ''}`;
-    const act = x.state === 'short' ? '' : `<button class="mr-pv" title="Preview from the best start (Space)">▶</button><button class="mr-use" title="Use this audio (Enter)">Use this audio</button><button class="mr-as" title="Auto-sync this song">${x.syncing ? 'Syncing…' : 'Auto-sync'}</button>`;
-    return `<div class="mr-rk">${x.state === 'short' ? '' : rank}</div>${rg}<div class="mr-n"><b title="${esc(x.name)}">${esc(x.name)}</b>${sub}</div><div class="mr-bpm">${r.bpm ? Math.round(r.bpm) + ' BPM' : ''}</div><div class="mr-dur">${fmtMS(r.song_duration)}</div><div class="mr-act">${act}</div>`;
+    const act = x.state === 'short' ? '' : `<button class="mr-use" title="Use this audio (Enter)">Use this audio</button><button class="mr-as" title="Auto-sync this song">${x.syncing ? 'Syncing…' : 'Auto-sync'}</button>`;
+    return `<div class="mr-rk">${x.state === 'short' ? '' : rank}</div>${rg}<div class="mr-n"><b title="${esc(x.name)}">${esc(x.name)}</b>${sub}</div><div class="mr-bpm">${r.bpm ? Math.round(r.bpm) + ' BPM' : ''}</div><div class="mr-dur">${fmtMS(r.song_duration)}</div><div class="mr-act">${act}</div>${x.state === 'done' && window.PVS ? PVS.html(x) : ''}`;
   }
   const els = new Map();
   let rrQ = 0;   // U3b: coalesce bursts of per-song updates into one render per frame
@@ -155,7 +155,8 @@
       if (e.dataset.sig !== sig) {
         e.dataset.sig = sig; e.className = 'mr-row ' + x.state; e.innerHTML = rowHTML(x, w[1]); e.dataset.path = x.path;
         const b = s => e.querySelector(s);
-        if (b('.mr-use')) { b('.mr-use').onclick = ev => { ev.stopPropagation(); useRow(x); }; b('.mr-pv').onclick = ev => { ev.stopPropagation(); preview(x); }; b('.mr-as').onclick = ev => { ev.stopPropagation(); autoSyncRow(x); }; }
+        if (b('.mr-use')) { b('.mr-use').onclick = ev => { ev.stopPropagation(); useRow(x); }; b('.mr-as').onclick = ev => { ev.stopPropagation(); autoSyncRow(x); }; }
+        if (window.PVS && x.state === 'done') PVS.bind(e, x);
         requestAnimationFrame(() => e.querySelectorAll('.fg').forEach(c => { c.style.strokeDashoffset = C * (1 - c.dataset.p / 100); }));
       }
       seen.add(x.path); frag.push(e);
@@ -174,14 +175,8 @@
   }
 
   // ---------- row actions ----------
-  function stopPrev() { if (M.prev) { try { M.prev.pause(); } catch (e) {} M.prev = null; } M.prevPath = ''; els.forEach(e => e.classList.remove('playing')); }
-  function preview(x) {
-    const was = M.prevPath === x.path; stopPrev(); if (was || !x.r) return;
-    pause(); const a = new Audio('/api/audio?path=' + encodeURIComponent(x.path)); M.prev = a; M.prevPath = x.path;
-    const go = () => { try { a.currentTime = x.r.trim_start_s || 0; } catch (e) {} a.play().catch(() => {}); };
-    a.readyState >= 1 ? go() : a.addEventListener('loadedmetadata', go, {once: true});
-    a.onended = stopPrev; const e = els.get(x.path); if (e) e.classList.add('playing');
-  }
+  function stopPrev() { if (window.PVS) PVS.stop(); M.prevPath = ''; }
+  function preview(x) { if (window.PVS) PVS.toggle(x); }   // F8: play/pause through the row's preview slider (static/js/preview-slider.js)
   async function useRow(x) {
     if (x.state !== 'done') return;
     stopPrev(); closeRes(); syncSide();
