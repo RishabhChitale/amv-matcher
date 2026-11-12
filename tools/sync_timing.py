@@ -17,7 +17,13 @@ Output lines (stable, grep-able):
     sync_timing_step   ref=<ref> round=.. song=.. run=.. step=<tool> status=end start_s=.. dur_s=.. score_before=.. score_after=.. kept=..
     sync_timing        ref=<ref> round=.. song=.. run=.. total_s=.. analyze_s=.. autosync_s=.. engine_s=.. steps=.. final_total=.. plan_hash=.. deterministic=..
     sync_timing_sum    ref=<ref> runs=.. median_total_s=.. median_analyze_s=.. median_autosync_s=.. plan_hash=<hash over all plans> det_hash=..
+    sync_timing_batch  ref=<ref> round=.. mode=serial|parallel songs=.. wall_s=.. peak_own_rss_mb=.. peak_tree_rss_mb=.. plan_hashes=a,b,.. ok=..
+    sync_timing_batch_sum ref=<ref> serial_wall_s=.. parallel_wall_s=.. speedup=.. peak_tree_rss_mb_serial=.. peak_tree_rss_mb_parallel=.. plans_equal=..
 Exit code: 0 ok, 1 a scan/auto-sync failed or timed out.
+
+--batch: F16 check for running several songs' auto-sync at once (what "Auto-sync all" would do with 2 in flight). Per round,
+two fresh processes with the same fixtures: one runs the songs one after another, one submits them all at the same moment.
+Both sample the process tree RSS; the per-song plan hashes of the two modes must be equal.
 """
 import argparse
 import hashlib
@@ -25,6 +31,7 @@ import json
 import statistics
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -72,6 +79,111 @@ def autosync(port, video, song, budget_s, timeout=900):
             "events": ends, "result": res}
 
 
+def _plan_hash(res):
+    fin = res.get("final") or {}
+    return _hash({"final": fin, "plan": res.get("plan"), "path": res.get("path"), "steps": [
+        [s.get("step"), s.get("kept"), s.get("score_before"), s.get("score_after")] for s in (res.get("steps") or []) if isinstance(s, dict)]})
+
+
+def _scan(port, video, songs):
+    jid = st.http(port, "/api/scan", {"video_path": str(video), "music_dir": str(songs)})["job_id"]
+    t0 = time.perf_counter()
+    while True:
+        j = st.http(port, "/api/scan/" + jid)
+        if j["status"] != "running":
+            break
+        if time.perf_counter() - t0 > 900:
+            raise RuntimeError("scan timed out")
+        time.sleep(0.1)
+    if j["status"] != "done":
+        raise RuntimeError("scan %s: %s" % (j["status"], j.get("message") or j.get("error")))
+
+
+def batch_round(exe, work, ref, rnd, mode, video, songs, song_files, budget):
+    """One fresh process; auto-sync every song either one after another or all at once."""
+    import shutil
+    tag = "%s%d" % (mode[:3], rnd)
+    data, tmp = work / ("bdata-%s" % tag), work / ("btmp-%s" % tag)
+    for d in (data, tmp):
+        shutil.rmtree(d, ignore_errors=True)
+        d.mkdir(parents=True)
+    proc, port, _startup = st.launch(exe, work, "batch" + tag, None, data, tmp)
+    peak = {"own": 0.0, "tree": 0.0}
+    stop = threading.Event()
+
+    def sampler():
+        while not stop.is_set():
+            o, t = st.sample_rss(proc.pid)
+            peak["own"], peak["tree"] = max(peak["own"], o), max(peak["tree"], t)
+            stop.wait(0.5)
+
+    out = {"mode": mode, "ok": True, "hashes": [], "wall": None, "own": 0, "tree": 0}
+    th = threading.Thread(target=sampler, daemon=True)
+    try:
+        _scan(port, video, songs)
+        th.start()
+        results = [None] * len(song_files)
+        t0 = time.perf_counter()
+        if mode == "serial":
+            for i, sp in enumerate(song_files):
+                results[i] = autosync(port, video, sp, budget)
+        else:
+            def one(i, sp):
+                results[i] = autosync(port, video, sp, budget)
+            ts = [threading.Thread(target=one, args=(i, sp)) for i, sp in enumerate(song_files)]
+            for t in ts:
+                t.start()
+            for t in ts:
+                t.join()
+        out["wall"] = time.perf_counter() - t0
+        for r in results:
+            if not r or r["status"] != "done":
+                out["ok"] = False
+                out["hashes"].append("FAIL:%s" % (r and (r.get("error") or r["status"])))
+            else:
+                out["hashes"].append(_plan_hash(r["result"]))
+    except Exception as e:
+        out["ok"] = False
+        out["hashes"].append("FAIL:%s: %s" % (type(e).__name__, e))
+    finally:
+        stop.set()
+        o, t = st.sample_rss(proc.pid)
+        peak["own"], peak["tree"] = max(peak["own"], o), max(peak["tree"], t)
+        out["own"], out["tree"] = peak["own"], peak["tree"]
+        st.kill_tree(proc)
+    return out
+
+
+def batch_main(a):
+    work = Path(a.work or tempfile.mkdtemp(prefix="amv-sync-batch-")).resolve()
+    work.mkdir(parents=True, exist_ok=True)
+    video, songs = st.build_fixtures(work, a.n, a.seconds)
+    song_files = sorted(songs.glob("song_*.wav"))
+    exe = Path(a.exe).resolve() if a.exe else None
+    bad = 0
+    walls = {"serial": [], "parallel": []}
+    trees = {"serial": [], "parallel": []}
+    hashes = {"serial": [], "parallel": []}
+    for rnd in range(1, a.rounds + 1):
+        for mode in (("serial", "parallel") if rnd % 2 else ("parallel", "serial")):     # alternate order
+            r = batch_round(exe, work, a.ref, rnd, mode, video, songs, song_files, a.budget)
+            print("sync_timing_batch ref=%s round=%d mode=%s songs=%d wall_s=%s peak_own_rss_mb=%.0f peak_tree_rss_mb=%.0f plan_hashes=%s ok=%s"
+                  % (a.ref, rnd, mode, len(song_files), None if r["wall"] is None else "%.2f" % r["wall"], r["own"], r["tree"],
+                     ",".join(r["hashes"]), r["ok"]), flush=True)
+            if not r["ok"]:
+                bad += 1
+                continue
+            walls[mode].append(r["wall"]); trees[mode].append(r["tree"]); hashes[mode].append(tuple(r["hashes"]))
+    if walls["serial"] and walls["parallel"]:
+        ms, mp = statistics.median(walls["serial"]), statistics.median(walls["parallel"])
+        equal = len(set(hashes["serial"]) | set(hashes["parallel"])) == 1
+        print("sync_timing_batch_sum ref=%s serial_wall_s=%.2f parallel_wall_s=%.2f speedup=%.2f peak_tree_rss_mb_serial=%.0f peak_tree_rss_mb_parallel=%.0f plans_equal=%s"
+              % (a.ref, ms, mp, ms / mp if mp else float("nan"), max(trees["serial"]), max(trees["parallel"]), equal), flush=True)
+        if not equal:
+            bad += 1
+    return 1 if bad else 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--exe")
@@ -81,7 +193,10 @@ def main():
     ap.add_argument("--rounds", type=int, default=2)
     ap.add_argument("--budget", type=float, default=60.0)
     ap.add_argument("--ref", default="local")
+    ap.add_argument("--batch", action="store_true", help="F16: auto-sync all songs serially vs all at once (wall, RSS, plan hashes)")
     a = ap.parse_args()
+    if a.batch:
+        return batch_main(a)
     work = Path(a.work or tempfile.mkdtemp(prefix="amv-sync-timing-")).resolve()
     work.mkdir(parents=True, exist_ok=True)
     video, songs = st.build_fixtures(work, a.n, a.seconds)
