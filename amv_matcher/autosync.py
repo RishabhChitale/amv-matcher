@@ -14,7 +14,7 @@ from . import score as S
 from . import stemsync
 from .retime import Cancelled, apply_warp, plan_retime
 from .arrange import plan_arrangement
-from .splice import _assemble, lead_silence, plan_splice
+from .splice import _assemble, lead_silence, nonneg_segments, plan_splice
 
 
 from .tempo import apply_tempo, plan_tempo
@@ -635,7 +635,7 @@ def _run(song, video, order, target, work, max_speed_dev, max_tempo_dev, min_sec
         limits.append("speed_jump_over_0.15")
     out_dur = float(cur_video["duration"])
     return {"steps": steps, "cur": cur, "limits": limits, "out_duration": out_dur,
-            "plan": {"offset": round(offset, 3), "lead_s": lead_s, "tempo_ratio": tempo_ratio, "segments": segs,
+            "plan": {"offset": round(offset, 3), "lead_s": lead_s, "tempo_ratio": tempo_ratio, "segments": nonneg_segments(segs),
                      "retime": retime, "nudges": nudges,
                      "lead_silence_s": lead_silence(segs) if segs else round(max(0.0, -offset), 6),
                      "original_locked": bool(lock_original)}}
@@ -897,6 +897,7 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
     final["effort"] = {k: v for k, v in ef.items() if k != "effort_pct"}
     final["effort_pct"] = ef["effort_pct"]
     final["fit_after_effort"] = round(max(0.0, final["total_pct"] - EFFORT_K * ef["effort_pct"]), 1)
+    final["starts_on"] = plan_starts_on(song, best["plan"])
     if loop_info:
         best["plan"]["looped"], best["plan"]["loop"] = True, loop_info
     else:
@@ -905,7 +906,7 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
     if cm_info is not None:
         best["plan"]["content_match"] = cm_info
         best["plan"]["content_matched"] = bool(cm_info["kept"])
-        alternatives.append(_alternative(cm_alt, cm_info, video))
+        alternatives.append(_alternative(cm_alt, cm_info, song, video))
     return {"alternatives": alternatives, "steps": best["steps"], "final": final, "eligible": True, "plan": best["plan"], "path": best["path"],
             "limits_hit": sorted(set(limits)), "pruned": pruned, "why_not_100": _why(final, target, limits),
             "deterministic": not work.cap_hit,
@@ -916,7 +917,15 @@ CM_LABEL = "Match the video's own edit"
 AUTO_LABEL = "Best-score plan"
 
 
-def _alternative(run, cm_info, video):
+def plan_starts_on(song, plan):
+    """F17 'Starts on' label of the song position the plan's audio opens with: the first segment's source start
+    for a splice/content-match plan, else the offset (a lead silence opens on the file start). None = no gate."""
+    segs = (plan or {}).get("segments")
+    src = min(segs, key=lambda g: float(g["dst_start"]))["src_start"] if segs else (plan or {}).get("offset", 0.0)
+    return motif.starts_on(song, max(0.0, float(src)))
+
+
+def _alternative(run, cm_info, song, video):
     """F18b second option: the plan auto-sync did not choose between the video's own edit (content match) and the
     best-score plan, with its own score so the UI can offer it next to the chosen one (render/export take its
     plan like the main one). No ramps/smooth on an alternative."""
@@ -927,7 +936,7 @@ def _alternative(run, cm_info, video):
     fin = {k: round(float(cur[k]), 1) for k in ("tempo_pct", "sync_pct", "arc_pct")}
     fin.update(total_pct=int(round(_tot(cur))), total=round(_tot(cur), 2), tight_pct=t.get("tight_pct"),
                median_err_ms=t.get("median_err_ms"), out_duration_s=round(float(run["out_duration"]), 3),
-               video_duration_s=round(float(video["duration"]), 3))
+               video_duration_s=round(float(video["duration"]), 3), starts_on=plan_starts_on(song, plan))
     return {"id": "content_match" if is_cm else "best_score", "label": CM_LABEL if is_cm else AUTO_LABEL,
             "path": run["path"], "chosen": False, "plan": plan, "final": fin}
 
@@ -1065,7 +1074,8 @@ def _unreadable(song, video, lead_s):
              "tightness": None, "tight_pct": None, "median_err_ms": None, "out_duration_s": round(vd, 3),
              "video_duration_s": round(vd, 3), "sync_headline": 0, "lead_s": lead_s, "tightness_start": None,
              "effort": effort_of(None, vd), "effort_pct": 0.0, "fit_after_effort": 0.0, "natural_total_pct": 0,
-             "reason": "unreadable", "song_duration_s": round(sd, 3), "deterministic": True}
+             "reason": "unreadable", "song_duration_s": round(sd, 3), "deterministic": True,
+             "starts_on": None}
     final["effort"].pop("effort_pct")
     return {"alternatives": [], "steps": [], "final": final, "eligible": False, "reason": "unreadable",
             "plan": None, "path": None, "limits_hit": ["unreadable"], "pruned": False, "deterministic": True,

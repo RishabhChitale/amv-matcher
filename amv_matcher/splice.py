@@ -94,6 +94,28 @@ def lead_silence(segments):
     return round(max(0.0, -float(first["src_start"])) if first["dst_start"] <= 1e-9 else 0.0, 6)
 
 
+def nonneg_segments(segments):
+    """Same mapping with every src_start >= 0: a segment reading before the song start (src_start < 0, the
+    lead-silence convention) starts later instead (dst_start += -src_start, src_start = 0); a segment wholly
+    before the song start is dropped. What is heard, and every score, is unchanged; renderers and the server
+    (src_start >= 0) take the result as is, with dst_start > 0 on the first segment as the lead silence."""
+    if not segments:
+        return segments
+    out = []
+    for g in segments:
+        a = float(g["src_start"])
+        if a >= 0:
+            out.append(g)
+            continue
+        if float(g["src_end"]) <= 0:
+            continue
+        h = dict(g)
+        h["src_start"] = 0.0
+        h["dst_start"] = round(float(g["dst_start"]) - a, 6)
+        out.append(h)
+    return out
+
+
 def _assemble(song, segments, vd):
     """Build a song dict as heard after splicing (output time 0..vd), carrying EVERY analysis key
     score.py reads, remapped through the segments (repeats and seams included):

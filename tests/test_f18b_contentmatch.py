@@ -138,8 +138,75 @@ def test_plan_not_chosen_is_offered(tol, monkeypatch):
         assert len(segs) == 2 and abs(segs[0]["src_start"] - 20.0) < 0.1 and abs(segs[1]["src_start"] - 95.0) < 0.1
         assert alt["final"]["total"] == r["plan"]["content_match"]["total"]
     assert _strip(autosync.auto_sync(song, vid)["alternatives"]) == _strip(r["alternatives"])   # deterministic
+    for fin, plan in ((r["final"], r["plan"]), (alt["final"], alt["plan"])):     # 'Starts on' for both options
+        assert "starts_on" in fin and fin["starts_on"] == autosync.plan_starts_on(song, plan)
 
 
 def test_no_alternative_without_match():
     r = autosync.auto_sync(make_song(), _video(80.0))
     assert r["alternatives"] == []
+
+
+def test_plan_starts_on_reads_the_first_heard_position(monkeypatch):
+    seen = []
+    monkeypatch.setattr(autosync.motif, "starts_on", lambda song, o: seen.append(o) or "x")
+    assert autosync.plan_starts_on({}, {"offset": 12.5, "segments": None}) == "x"
+    autosync.plan_starts_on({}, {"offset": 0.0, "segments": [{"src_start": 95.0, "dst_start": 40.0},
+                                                             {"src_start": 20.0, "dst_start": 0.0}]})
+    autosync.plan_starts_on({}, {"offset": -0.6, "segments": None})          # lead silence opens on the file start
+    assert seen == [12.5, 20.0, 0.0]
+
+
+def lead_ref(song, lead_s, pieces):
+    """A reference that opens on `lead_s` of silence before the song's own start, then `pieces`."""
+    r = splice_ref(song, pieces)
+    n = int(lead_s * HZ)
+    r["energy_curve"] = [0.0] * n + r["energy_curve"]
+    r["onset_env"] = [0.0] * n + r["onset_env"]
+    r["duration"] = len(r["energy_curve"]) / HZ
+    return r
+
+
+def assert_valid_plan(plan, song_dur, video_dur):
+    """What POST /api/render-audio accepts (server RenderRequest): every segment 0 <= src_start < src_end <=
+    song length (+0.05) and dst_start inside the video."""
+    for g in plan.get("segments") or []:
+        assert 0 <= g["src_start"] < g["src_end"] <= song_dur + 0.05, g
+        assert 0 <= g["dst_start"] < video_dur, g
+    assert plan.get("lead_silence_s", 0) >= 0
+
+
+@pytest.mark.parametrize("tol", [1000, -1000])
+@pytest.mark.parametrize("lead", [0.0, 0.63, 2.0])
+def test_every_plan_is_renderable(lead, tol, monkeypatch):
+    """Main plan and every alternative: no negative src_start (a lead silence becomes a later dst_start)."""
+    song = make_song()
+    ref = lead_ref(song, lead, [(0.0, 60.0), (80.0, 110.0)])
+    vid = _video(ref["duration"])
+    vid["original_audio"] = {"analysis": ref}
+    monkeypatch.setattr(autosync, "CM_TOTAL_TOL", tol)
+    r = autosync.auto_sync(song, vid)
+    plans = [r["plan"]] + [a["plan"] for a in r["alternatives"]]
+    assert len(plans) == 2
+    for p in plans:
+        assert_valid_plan(p, song["duration"], vid["duration"])
+    cm = next(p for p in plans if p.get("content_matched"))
+    first = min(cm["segments"], key=lambda g: g["dst_start"])
+    assert abs(first["src_start"]) < 1e-9 and abs(first["dst_start"] - lead) < 0.1      # still in sync
+    assert abs(cm["lead_silence_s"] - first["dst_start"]) < 1e-6 if lead > 0 else cm["lead_silence_s"] == 0
+
+
+def test_nonneg_segments_keeps_the_mapping():
+    from amv_matcher import render
+    from amv_matcher.splice import nonneg_segments
+    segs = [{"src_start": -0.63, "src_end": 37.35, "dst_start": 0.0},
+            {"src_start": 131.15, "src_end": 137.24, "dst_start": 37.98},
+            {"src_start": -5.0, "src_end": -1.0, "dst_start": 50.0}]
+    out = nonneg_segments(segs)
+    assert out[0] == {"src_start": 0.0, "src_end": 37.35, "dst_start": 0.63} and out[1] is segs[1] and len(out) == 2
+    assert segs[0]["src_start"] == -0.63                                    # input untouched
+    song = {"beat_times": list(np.arange(0, 140, 0.5)), "drops": [10.0, 132.0]}
+    a = render.output_song_events(song, {"segments": segs[:2]}, 45.0)
+    b = render.output_song_events(song, {"segments": out}, 45.0)
+    assert np.allclose(a["beat_times"], b["beat_times"]) and np.allclose(a["drops"], b["drops"])
+    assert nonneg_segments(None) is None and nonneg_segments([]) == []

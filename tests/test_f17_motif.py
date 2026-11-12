@@ -146,3 +146,10 @@ def test_splice_and_arrange_first_segment_is_a_valid_start():
     ar = plan_arrangement(song, video)
     if ar.get("segments"):
         assert g.ok(ar["segments"][0]["src_start"]), ar["segments"][0]
+
+
+def test_autosync_final_carries_starts_on():
+    song, video = make_song(), make_video(peaks=((10.0, 18.0),))
+    r = autosync.auto_sync(song, video)
+    assert r["final"]["starts_on"] == autosync.plan_starts_on(song, r["plan"])
+    assert r["final"]["starts_on"] is not None and r["final"]["starts_on"] != "mid-phrase"
