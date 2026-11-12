@@ -1058,6 +1058,34 @@ def main():
                     check("hit-test: %s topmost and unclipped at %dx%d" % (hs, fw, fh), not r.get("bad"), str(r.get("bad")))
                     if hs.startswith("#g-") and r.get("bad"):
                         print("      detail:", c.ev("(()=>{const e=document.querySelector(%s);const r=e.getBoundingClientRect();const t=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);return JSON.stringify({r:[r.left,r.top,r.width,r.height],t:t&&t.outerHTML.slice(0,120),p:t&&t.parentElement&&t.parentElement.outerHTML.slice(0,80),vh:innerHeight})})()" % json.dumps(hs)))
+            # v0.9.7: alternative plans card. Test data only: add an alternative to the stored run, then REAL-click the switch.
+            if c.ev("(()=>{const r=AS.curRun&&AS.curRun();return !!(r&&r.result&&r.result.eligible!==false&&r.result.plan)})()") is True:
+                c.ev("(()=>{const r=AS.curRun();delete r.alt;const f=Object.assign({},r.result.final);"
+                     "r.result.alternatives=[{id:r.result.path==='content_match'?'best_score':'content_match',label:r.result.path==='content_match'?'Best-score plan':\"Match the video's own edit\","
+                     "path:'x',chosen:false,plan:Object.assign({},r.result.plan,{marker_alt:1}),final:Object.assign(f,{total_pct:(f.total_pct||50)-7})}];"
+                     "AS.mode='synced';ui()})()")
+                ALT_SELS = ["#as-alts", "#as-alts .alt", "#as-alts .alt-use"]
+                for (fw, fh) in ((1280, 720), (1440, 900), (1920, 1080)):
+                    c.call("Emulation.setDeviceMetricsOverride", width=fw, height=fh, deviceScaleFactor=1, mobile=False)
+                    c.ev("window.dispatchEvent(new Event('resize'))"); c.pump(0.6)
+                    for hs in ALT_SELS:
+                        r = c.ev("(%s)(%s)" % (HIT, json.dumps(hs))) or {}
+                        check("alt-plans: %s visible and topmost at %dx%d" % (hs, fw, fh), not r.get("missing") and not r.get("bad"), str(r))
+                    ov = c.ev("(()=>{const R=s=>{const e=document.querySelector(s);if(!e||e.classList.contains('hidden'))return null;const r=e.getBoundingClientRect();return r.width>0?r:null};"
+                              "const a=R('#as-alts'),out=[];for(const s of ['#v1-legend','#tl-wrap']){const b=R(s);if(a&&b&&a.left<b.right&&b.left<a.right&&a.top<b.bottom&&b.top<a.bottom)out.push(s)}"
+                              "const rows=[...document.querySelectorAll('#as-alts .alt')].map(e=>e.getBoundingClientRect());"
+                              "for(let i=0;i<rows.length;i++)for(let j=i+1;j<rows.length;j++){const x=rows[i],y=rows[j];if(x.left<y.right&&y.left<x.right&&x.top<y.bottom&&y.top<x.bottom)out.push('row'+i+'x'+j)}"
+                              "const sw=[...document.querySelectorAll('#as-alts .alt')].filter(e=>e.scrollWidth>e.clientWidth+1).length;if(sw)out.push('overflow');return out})()")
+                    check("alt-plans: no overlap with legend/timeline/rows at %dx%d" % (fw, fh), ov == [], str(ov))
+                c.call("Emulation.setDeviceMetricsOverride", width=1440, height=900, deviceScaleFactor=1, mobile=False); c.pump(0.5)
+                p0 = c.ev("JSON.stringify(AS.curRun().result.final)")
+                okc = real_click("#as-alts .alt-use"); c.pump(1.5)
+                p1 = c.ev("(()=>{const r=AS.curRun();return {m:!!r.result.plan.marker_alt,mode:AS.mode,tot:r.result.final.total_pct,pn:planNow()&&!!planNow().marker_alt,on:(document.querySelector('#as-alts .alt.on .alt-name')||{}).textContent}})()")
+                check("alt-plans: real click switches the plan; player/export plan follow it", okc and p1 and p1["m"] and p1["pn"] and p1["mode"] == "synced", str(p1))
+                okb = real_click("#as-alts .alt-use"); c.pump(1.2)
+                check("alt-plans: switch back restores the chosen plan", okb and c.ev("JSON.stringify(AS.curRun().result.final)") == p0 and c.ev("!AS.curRun().result.plan.marker_alt") is True)
+                c.ev("(()=>{const r=AS.curRun();delete r.alt;r.result.alternatives=[];ui()})()")
+                check("alt-plans: card hidden when there are no alternatives", c.ev("document.getElementById('as-alts').classList.contains('hidden')") is True)
             c.ev("window.scrollTo(0,0)")
             c.call("Emulation.setDeviceMetricsOverride", width=1440, height=900, deviceScaleFactor=1, mobile=False)
             c.ev("window.dispatchEvent(new Event('resize'))"); c.pump(0.5)

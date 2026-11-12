@@ -283,3 +283,8 @@ body.dragging #fit,body.dragging .ovwrap{opacity:.5;transition:opacity var(--eas
 .mk-tip{position:fixed;z-index:60;max-width:220px;padding:4px 8px;border-radius:5px;background:rgba(14,16,26,.96);border:1px solid var(--line);font-size:11px;pointer-events:none}
 .mk-tip.hidden{display:none}.mk-tip b{font-weight:600}.mk-tip span{color:var(--mut)}
 .bd-row.bd-boom{margin-top:3px;padding-top:3px;border-top:1px dashed rgba(255,255,255,.18);opacity:.85}.bd-note{color:var(--mut);font-size:10px;margin:-1px 0 0 68px}
+.as-alts{display:flex;flex-direction:column;gap:6px;margin:8px 0}.as-alts.hidden{display:none}
+.as-alts .alt{display:grid;grid-template-columns:1fr auto;gap:2px 10px;align-items:center;padding:8px 10px;border:1px solid var(--line,#444);border-radius:8px;min-width:0}
+.as-alts .alt.on{border-color:var(--c)}.as-alts .alt-top{display:flex;gap:10px;justify-content:space-between;grid-column:1}.as-alts .alt-sub{grid-column:1;font-size:12px;opacity:.8;overflow-wrap:anywhere}
+.as-alts .alt-name{overflow-wrap:anywhere}.as-alts .alt-total{font-weight:700;color:var(--c);white-space:nowrap}
+.as-alts .alt-use,.as-alts .alt-badge{grid-column:2;grid-row:1 / span 2;white-space:nowrap;font-size:12px}
