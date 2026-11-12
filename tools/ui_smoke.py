@@ -1081,6 +1081,9 @@ def main():
                               "for(let i=0;i<rows.length;i++)for(let j=i+1;j<rows.length;j++){const x=rows[i],y=rows[j];if(x.left<y.right&&y.left<x.right&&x.top<y.bottom&&y.top<x.bottom)out.push('row'+i+'x'+j)}"
                               "const sw=[...document.querySelectorAll('#as-alts .alt')].filter(e=>e.scrollWidth>e.clientWidth+1).length;if(sw)out.push('overflow');return out})()")
                     check("alt-plans: no overlap with legend/timeline/rows at %dx%d" % (fw, fh), ov == [], str(ov))
+                    dw = c.ev("(()=>{const b=document.getElementById('as-alts'),d=document.documentElement,w=()=>d.scrollWidth-d.clientWidth;"
+                              "const withCard=w();b.style.display='none';const without=w();b.style.display='';return {withCard,without}})()") or {}
+                    check("alt-plans: card adds no horizontal page overflow at %dx%d" % (fw, fh), dw.get("withCard", 99) <= dw.get("without", 0), str(dw))
                 c.call("Emulation.setDeviceMetricsOverride", width=1440, height=900, deviceScaleFactor=1, mobile=False); c.pump(0.5)
                 p0 = c.ev("JSON.stringify(AS.curRun().result.final)")
                 okc = real_click("#as-alts .alt-use"); c.pump(1.5)

@@ -22,6 +22,7 @@
     const f = e.final || {};
     return `<div class="alt${on ? ' on' : ''}" data-id="${e.id}"><div class="alt-top"><b class="alt-name">${e.label}</b><span class="alt-total">Total ${pct(f.total_pct)}</span></div>`
       + `<div class="alt-sub">Sync ${pct(f.sync_pct)} · Tight ${pct(f.tight_pct)} · Energy ${pct(f.arc_pct)} · Tempo ${pct(f.tempo_pct)}${f.median_err_ms != null ? ' · median error ' + Math.round(f.median_err_ms) + ' ms' : ''}${f.starts_on ? ' · starts on ' + f.starts_on : ''}</div>`
+      + (on && e.err ? '<div class="alt-err">Preview audio unavailable for this plan; export is unaffected.</div>' : '')
       + (on ? '<span class="alt-badge">In use</span>' : '<button class="alt-use" data-id="' + e.id + '">Use this plan</button>') + '</div>';
   }
   const startsTxt = f => f && f.starts_on ? 'Starts on: ' + f.starts_on : '';
@@ -40,9 +41,10 @@
     const was = !aud.paused; pause();
     const cur = st.entries.find(x => x.id === st.id); cur.audioUrl = run.audioUrl;   // keep the rendered audio per plan
     run.result = Object.assign({}, run.result, {plan: e.plan, final: e.final, path: e.path, why_not_100: e === st.entries[0] ? st.why : ''});
+    e.err = false;
     if (!e.audioUrl) {
       const segs = (AS.previewSegs(e.plan) || []).map(g => g.src_start < 0 ? Object.assign({}, g, {src_start: 0, dst_start: (g.dst_start || 0) - g.src_start}) : g), tempo = (e.plan && e.plan.tempo_ratio) || 1;
-      try { e.audioUrl = segs && segs.length ? (await renderAudio(S.sel.path, segs, tempo)).url : ''; } catch (x) { e.audioUrl = ''; console.warn('alt-plans: preview audio render failed', x); if (typeof note === 'function') note('Preview audio for this plan could not be rendered; the export is unaffected.', true); }
+      try { e.audioUrl = segs && segs.length ? (await renderAudio(S.sel.path, segs, tempo)).url : ''; } catch (x) { e.audioUrl = ''; e.err = true; console.warn('alt-plans: preview audio render failed', x); if (typeof note === 'function') note('Preview audio for this plan could not be rendered; the export is unaffected.', true); }
     }
     run.audioUrl = e.audioUrl; st.id = id;
     try { if (S.inUse && S.inUse.path === S.sel.path) S.inUse.auto_sync_cached = e.final; } catch (x) {}

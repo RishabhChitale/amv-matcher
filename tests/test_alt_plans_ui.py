@@ -31,3 +31,8 @@ def test_choose_clamps_negative_src_start_and_surfaces_errors():
     js = (ROOT / "static" / "js" / "alt-plans.js").read_text()
     assert "src_start < 0" in js and "src_start: 0" in js
     assert "preview audio render failed" in js
+
+
+def test_render_error_shown_in_card():
+    js = (ROOT / "static" / "js" / "alt-plans.js").read_text()
+    assert "e.err = true" in js and "Preview audio unavailable for this plan" in js

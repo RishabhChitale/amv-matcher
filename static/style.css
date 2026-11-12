@@ -288,3 +288,5 @@ body.dragging #fit,body.dragging .ovwrap{opacity:.5;transition:opacity var(--eas
 .as-alts .alt.on{border-color:var(--c)}.as-alts .alt-top{display:flex;gap:10px;justify-content:space-between;grid-column:1}.as-alts .alt-sub{grid-column:1;font-size:12px;opacity:.8;overflow-wrap:anywhere}
 .as-alts .alt-name{overflow-wrap:anywhere}.as-alts .alt-total{font-weight:700;color:var(--c);white-space:nowrap}
 .as-alts .alt-use,.as-alts .alt-badge{grid-column:2;grid-row:1 / span 2;white-space:nowrap;font-size:12px}
+
+.as-alts .alt-err{grid-column:1 / span 2;font-size:12px;color:#e8a33d;overflow-wrap:anywhere}
