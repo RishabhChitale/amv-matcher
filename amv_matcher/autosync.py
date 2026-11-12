@@ -808,8 +808,10 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
             best = run
         if _done(best["cur"], target):
             break
-    cm_info = None
-    if CONTENT_MATCH and not original and loop_segs is None and _force_order is None and not cancelled():
+    cm_info, cm_alt = None, None
+    if (CONTENT_MATCH and not original and loop_segs is None and _force_order is None and not cancelled()
+            and not video.get("video_window")):     # a windowed clip's own audio is the whole video's: no match
+
         cm = _content_match(song, video)
         if cm is not None:
             cwork = _Work(budget_units, max(TIME_CAP_MIN_S, max(1.0, float(budget_s)) * TIME_CAP_MULT))
@@ -827,12 +829,13 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
                        "total": round(_tot(run["cur"]), 2), "total_other": round(_tot(best["cur"]), 2),
                        "path_other": best["path"]}
             runs.append(run)
+            cm_alt = best if kept_cm else run       # the plan NOT chosen: offered as a second option (F18b)
             if kept_cm:
                 best = run
     cur, limits = best["cur"], list(best["limits"])
     if cm_info is not None:
         limits.append("content match: %s" % ("rebuilt the video's own edit of this song" if cm_info["kept"]
-                                             else "not kept (scores lower)"))
+                                             else "not chosen (scores lower), offered as a second option"))
     if pruned:
         limits.append("budget: time cap hit" if work.cap_hit else "budget")
         seen_tools = {s["tool"] for r_ in runs for s in r_["steps"]}
@@ -898,13 +901,35 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
         best["plan"]["looped"], best["plan"]["loop"] = True, loop_info
     else:
         best["plan"]["looped"] = False
+    alternatives = []
     if cm_info is not None:
         best["plan"]["content_match"] = cm_info
         best["plan"]["content_matched"] = bool(cm_info["kept"])
-    return {"steps": best["steps"], "final": final, "eligible": True, "plan": best["plan"], "path": best["path"],
+        alternatives.append(_alternative(cm_alt, cm_info, video))
+    return {"alternatives": alternatives, "steps": best["steps"], "final": final, "eligible": True, "plan": best["plan"], "path": best["path"],
             "limits_hit": sorted(set(limits)), "pruned": pruned, "why_not_100": _why(final, target, limits),
             "deterministic": not work.cap_hit,
             "elapsed_s": round(time.perf_counter() - t0, 2)}
+
+
+CM_LABEL = "Match the video's own edit"
+AUTO_LABEL = "Best-score plan"
+
+
+def _alternative(run, cm_info, video):
+    """F18b second option: the plan auto-sync did not choose between the video's own edit (content match) and the
+    best-score plan, with its own score so the UI can offer it next to the chosen one (render/export take its
+    plan like the main one). No ramps/smooth on an alternative."""
+    is_cm = run["path"] == "content_match"
+    plan = dict(run["plan"], looped=False, content_match=cm_info, content_matched=is_cm)
+    cur = run["cur"]
+    t = _tight(cur)
+    fin = {k: round(float(cur[k]), 1) for k in ("tempo_pct", "sync_pct", "arc_pct")}
+    fin.update(total_pct=int(round(_tot(cur))), total=round(_tot(cur), 2), tight_pct=t.get("tight_pct"),
+               median_err_ms=t.get("median_err_ms"), out_duration_s=round(float(run["out_duration"]), 3),
+               video_duration_s=round(float(video["duration"]), 3))
+    return {"id": "content_match" if is_cm else "best_score", "label": CM_LABEL if is_cm else AUTO_LABEL,
+            "path": run["path"], "chosen": False, "plan": plan, "final": fin}
 
 
 def _plan_stats(cur, warp, st=None):
@@ -1042,7 +1067,7 @@ def _unreadable(song, video, lead_s):
              "effort": effort_of(None, vd), "effort_pct": 0.0, "fit_after_effort": 0.0, "natural_total_pct": 0,
              "reason": "unreadable", "song_duration_s": round(sd, 3), "deterministic": True}
     final["effort"].pop("effort_pct")
-    return {"steps": [], "final": final, "eligible": False, "reason": "unreadable",
+    return {"alternatives": [], "steps": [], "final": final, "eligible": False, "reason": "unreadable",
             "plan": None, "path": None, "limits_hit": ["unreadable"], "pruned": False, "deterministic": True,
             "why_not_100": "The song has no decodable audio.",
             "elapsed_s": 0.0}

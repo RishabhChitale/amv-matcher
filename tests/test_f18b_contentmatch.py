@@ -117,3 +117,29 @@ def test_no_change_when_it_does_not_apply(case, monkeypatch):
         x.pop("elapsed_s", None)
         x.get("final", {}).pop("elapsed_s", None)
     assert a == b
+
+
+@pytest.mark.parametrize("tol", [1000, -1000])
+def test_plan_not_chosen_is_offered(tol, monkeypatch):
+    song = make_song()
+    ref = splice_ref(song, [(20.0, 80.0), (95.0, 115.0)])
+    vid = _video(ref["duration"])
+    vid["original_audio"] = {"analysis": ref}
+    monkeypatch.setattr(autosync, "CM_TOTAL_TOL", tol)
+    r = autosync.auto_sync(song, vid)
+    assert len(r["alternatives"]) == 1
+    alt = r["alternatives"][0]
+    kept = r["plan"]["content_match"]["kept"]
+    assert alt["id"] == ("best_score" if kept else "content_match") and alt["chosen"] is False
+    assert alt["label"] == (autosync.AUTO_LABEL if kept else autosync.CM_LABEL)
+    assert alt["plan"]["content_matched"] is (not kept) and "offset" in alt["plan"]
+    if not kept:                                   # the hand edit is still there to pick
+        segs = alt["plan"]["segments"]
+        assert len(segs) == 2 and abs(segs[0]["src_start"] - 20.0) < 0.1 and abs(segs[1]["src_start"] - 95.0) < 0.1
+        assert alt["final"]["total"] == r["plan"]["content_match"]["total"]
+    assert _strip(autosync.auto_sync(song, vid)["alternatives"]) == _strip(r["alternatives"])   # deterministic
+
+
+def test_no_alternative_without_match():
+    r = autosync.auto_sync(make_song(), _video(80.0))
+    assert r["alternatives"] == []
