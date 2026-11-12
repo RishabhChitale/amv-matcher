@@ -1060,10 +1060,14 @@ def main():
                         print("      detail:", c.ev("(()=>{const e=document.querySelector(%s);const r=e.getBoundingClientRect();const t=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);return JSON.stringify({r:[r.left,r.top,r.width,r.height],t:t&&t.outerHTML.slice(0,120),p:t&&t.parentElement&&t.parentElement.outerHTML.slice(0,80),vh:innerHeight})})()" % json.dumps(hs)))
             # v0.9.7: alternative plans card. Test data only: add an alternative to the stored run, then REAL-click the switch.
             if c.ev("(()=>{const r=AS.curRun&&AS.curRun();return !!(r&&r.result&&r.result.eligible!==false&&r.result.plan)})()") is True:
-                c.ev("(()=>{const r=AS.curRun();delete r.alt;const f=Object.assign({},r.result.final);"
+                real_alts = c.ev("(AS.curRun().result.alternatives||[]).length") or 0
+                print("INFO  alt-plans: real auto-sync result has %d alternative(s)%s" % (real_alts, "" if real_alts else " (injecting test data)"))
+                check("alt-plans: no console errors/exceptions at this point", not c.errors, "; ".join(c.errors[:3]))
+                if not real_alts: c.ev("(()=>{const r=AS.curRun();delete r.alt;const f=Object.assign({},r.result.final);"
                      "r.result.alternatives=[{id:r.result.path==='content_match'?'best_score':'content_match',label:r.result.path==='content_match'?'Best-score plan':\"Match the video's own edit\","
                      "path:'x',chosen:false,plan:Object.assign({},r.result.plan,{marker_alt:1}),final:Object.assign(f,{total_pct:(f.total_pct||50)-7})}];"
-                     "AS.mode='synced';ui()})()")
+                     "AS.mode='synced';window.asUi()})()")
+                check("alt-plans: script loaded (asUi hook + chooseAlt defined, card renders rows)", c.ev("typeof window.asUi==='function'&&typeof AS.chooseAlt==='function'&&document.querySelectorAll('#as-alts .alt').length===2") is True)
                 ALT_SELS = ["#as-alts", "#as-alts .alt", "#as-alts .alt-use"]
                 for (fw, fh) in ((1280, 720), (1440, 900), (1920, 1080)):
                     c.call("Emulation.setDeviceMetricsOverride", width=fw, height=fh, deviceScaleFactor=1, mobile=False)
@@ -1084,7 +1088,7 @@ def main():
                 check("alt-plans: real click switches the plan; player/export plan follow it", okc and p1 and p1["m"] and p1["pn"] and p1["mode"] == "synced", str(p1))
                 okb = real_click("#as-alts .alt-use"); c.pump(1.2)
                 check("alt-plans: switch back restores the chosen plan", okb and c.ev("JSON.stringify(AS.curRun().result.final)") == p0 and c.ev("!AS.curRun().result.plan.marker_alt") is True)
-                c.ev("(()=>{const r=AS.curRun();delete r.alt;r.result.alternatives=[];ui()})()")
+                c.ev("(()=>{const r=AS.curRun();delete r.alt;r.result.alternatives=[];window.asUi()})()")
                 check("alt-plans: card hidden when there are no alternatives", c.ev("document.getElementById('as-alts').classList.contains('hidden')") is True)
             c.ev("window.scrollTo(0,0)")
             c.call("Emulation.setDeviceMetricsOverride", width=1440, height=900, deviceScaleFactor=1, mobile=False)

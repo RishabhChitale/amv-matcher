@@ -256,7 +256,9 @@ function ui() {
     el('as-pvnote').textContent = AS.mode === 'synced' && sections().length ? 'Preview: video follows the exact retime curve, export renders exact frames' : '';
   }
   rdUI();
+  if (window.asAfterUi) window.asAfterUi();   // hook for alt-plans.js (ui() is IIFE-private)
 }
+window.asUi = ui;
 const _uf = window.updateFit; window.updateFit = function () { _uf.apply(this, arguments); ui(); };
 
 // ---------- results ranking ----------

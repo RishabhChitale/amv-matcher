@@ -19,3 +19,9 @@ def test_switch_swaps_plan_final_path_in_place():
 def test_hidden_without_alternatives_and_labels():
     assert "!(res.alternatives && res.alternatives.length)" in JS
     assert "Match the video's own edit" in JS and "Best-score plan" in JS
+
+
+def test_ui_hook_exported_from_autosync_iife():
+    a = (ROOT / "static" / "autosync.js").read_text(encoding="utf-8")
+    assert "window.asUi = ui" in a and "window.asAfterUi" in a
+    assert "window.asAfterUi = render" in JS and "\n  const _ui = ui" not in JS
