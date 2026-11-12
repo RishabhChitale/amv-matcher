@@ -641,6 +641,39 @@ def _run(song, video, order, target, work, max_speed_dev, max_tempo_dev, min_sec
                      "original_locked": bool(lock_original)}}
 
 
+CONTENT_MATCH = True      # F18b: rebuild the video's own hand edit of the song (contentmatch.match) and offer it
+CM_TOTAL_TOL = 0          # the rebuilt edit wins when its displayed total is >= the best other path's minus this
+
+
+def _content_match(song, video):
+    """contentmatch.match(song, video's own audio) or None. The reference analysis is
+    video['original_audio']['analysis'] when given, else audio.analyze_song(path) (cached). Never raises."""
+    orig = video.get("original_audio") or {}
+    try:
+        ref = orig.get("analysis")
+        if ref is None:
+            p = orig.get("path")
+            if not p:
+                return None
+            from pathlib import Path
+            if not Path(p).is_file():
+                return None
+            from .audio import analyze_song
+            ref = analyze_song(str(p))
+        from . import contentmatch
+        cm = contentmatch.match(song, ref)
+    except Exception:
+        return None
+    if not cm or not cm.get("segments"):
+        return None
+    segs = cm["segments"]
+    if len(segs) == 1 and abs(float(segs[0]["src_start"])) < 0.05:
+        return None                       # the song IS the video's audio from 0: nothing to rebuild
+    if any(float(g["src_start"]) < 0 for g in segs[1:]):
+        return None                       # only the first segment may carry lead silence (_assemble)
+    return cm
+
+
 def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20.0,
               max_speed_dev: float = 0.25, max_tempo_dev: float = 0.10, min_section_s: float = 0.75,
               max_cuts: int = 3, min_gain: float = 0.5, max_passes: int = 2, allow_splice: bool = True, lead_s: float | None = None,
@@ -775,7 +808,31 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
             best = run
         if _done(best["cur"], target):
             break
+    cm_info = None
+    if CONTENT_MATCH and not original and loop_segs is None and _force_order is None and not cancelled():
+        cm = _content_match(song, video)
+        if cm is not None:
+            cwork = _Work(budget_units, max(TIME_CAP_MIN_S, max(1.0, float(budget_s)) * TIME_CAP_MULT))
+            cm_song = _assemble(song, cm["segments"], float(video["duration"]))
+            run = _run(cm_song, video, ORDERS["retime_only"], target, cwork, max_speed_dev,
+                       max_tempo_dev, min_section_s, max_cuts, min_gain, max_passes, False, lead_s,
+                       loop_segs=cm["segments"], memo=memo, lock_original=False,
+                       progress_cb=progress_cb, should_cancel=cancelled, t_start=t0, stem_targets=stem_targets,
+                       prefer_energy=prefer_energy)
+            run["path"] = "content_match"
+            work.used += cwork.used
+            work.cap_hit = work.cap_hit or cwork.cap_hit
+            kept_cm = _rank(run["cur"])[0] >= _rank(best["cur"])[0] - CM_TOTAL_TOL
+            cm_info = {"kept": bool(kept_cm), "mean_r": cm["mean_r"], "spans": cm["spans"],
+                       "total": round(_tot(run["cur"]), 2), "total_other": round(_tot(best["cur"]), 2),
+                       "path_other": best["path"]}
+            runs.append(run)
+            if kept_cm:
+                best = run
     cur, limits = best["cur"], list(best["limits"])
+    if cm_info is not None:
+        limits.append("content match: %s" % ("rebuilt the video's own edit of this song" if cm_info["kept"]
+                                             else "not kept (scores lower)"))
     if pruned:
         limits.append("budget: time cap hit" if work.cap_hit else "budget")
         seen_tools = {s["tool"] for r_ in runs for s in r_["steps"]}
@@ -841,6 +898,9 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
         best["plan"]["looped"], best["plan"]["loop"] = True, loop_info
     else:
         best["plan"]["looped"] = False
+    if cm_info is not None:
+        best["plan"]["content_match"] = cm_info
+        best["plan"]["content_matched"] = bool(cm_info["kept"])
     return {"steps": best["steps"], "final": final, "eligible": True, "plan": best["plan"], "path": best["path"],
             "limits_hit": sorted(set(limits)), "pruned": pruned, "why_not_100": _why(final, target, limits),
             "deterministic": not work.cap_hit,
