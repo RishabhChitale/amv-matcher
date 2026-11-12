@@ -41,8 +41,8 @@
     const cur = st.entries.find(x => x.id === st.id); cur.audioUrl = run.audioUrl;   // keep the rendered audio per plan
     run.result = Object.assign({}, run.result, {plan: e.plan, final: e.final, path: e.path, why_not_100: e === st.entries[0] ? st.why : ''});
     if (!e.audioUrl) {
-      const segs = AS.previewSegs(e.plan), tempo = (e.plan && e.plan.tempo_ratio) || 1;
-      try { e.audioUrl = segs && segs.length ? (await renderAudio(S.sel.path, segs, tempo)).url : ''; } catch (x) { e.audioUrl = ''; }
+      const segs = (AS.previewSegs(e.plan) || []).map(g => g.src_start < 0 ? Object.assign({}, g, {src_start: 0, dst_start: (g.dst_start || 0) - g.src_start}) : g), tempo = (e.plan && e.plan.tempo_ratio) || 1;
+      try { e.audioUrl = segs && segs.length ? (await renderAudio(S.sel.path, segs, tempo)).url : ''; } catch (x) { e.audioUrl = ''; console.warn('alt-plans: preview audio render failed', x); if (typeof note === 'function') note('Preview audio for this plan could not be rendered; the export is unaffected.', true); }
     }
     run.audioUrl = e.audioUrl; st.id = id;
     try { if (S.inUse && S.inUse.path === S.sel.path) S.inUse.auto_sync_cached = e.final; } catch (x) {}

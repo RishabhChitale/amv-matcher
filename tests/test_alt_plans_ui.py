@@ -25,3 +25,9 @@ def test_ui_hook_exported_from_autosync_iife():
     a = (ROOT / "static" / "autosync.js").read_text(encoding="utf-8")
     assert "window.asUi = ui" in a and "window.asAfterUi" in a
     assert "window.asAfterUi = render" in JS and "\n  const _ui = ui" not in JS
+
+
+def test_choose_clamps_negative_src_start_and_surfaces_errors():
+    js = (ROOT / "static" / "js" / "alt-plans.js").read_text()
+    assert "src_start < 0" in js and "src_start: 0" in js
+    assert "preview audio render failed" in js
