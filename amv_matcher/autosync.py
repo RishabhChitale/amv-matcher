@@ -13,6 +13,7 @@ from . import boom
 from . import motif
 from . import score as S
 from . import stemsync
+from . import trajectory
 from .retime import Cancelled, apply_warp, plan_retime
 from .arrange import plan_arrangement
 from .splice import _assemble, lead_silence, nonneg_segments, plan_splice
@@ -699,7 +700,7 @@ def _run(song, video, order, target, work, max_speed_dev, max_tempo_dev, min_sec
             "lead_silence_s": lead_silence(segs) if segs else round(max(0.0, -offset), 6),
             "original_locked": bool(lock_original)}
     return {"steps": steps, "cur": cur, "limits": limits, "out_duration": out_dur, "plan": plan,
-            "out_visual_booms": cur_video.get("visual_booms") or []}
+            "out_visual_booms": cur_video.get("visual_booms") or [], "song_used": cur_song}
 
 
 CONTENT_MATCH = True      # F18b: rebuild the video's own hand edit of the song (contentmatch.match) and offer it
@@ -961,6 +962,7 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
     final["fit_after_effort"] = round(max(0.0, final["total_pct"] - EFFORT_K * ef["effort_pct"]), 1)
     final["starts_on"] = plan_starts_on(song, best["plan"])
     final.update(_drops(song0, best, lead_s))         # F21: drop_matches / drops_matched / drops_total
+    final["trajectory"] = trajectory.result_block(best.get("song_used") or song, video, best["plan"])  # F22: UI data only
     if loop_info:
         best["plan"]["looped"], best["plan"]["loop"] = True, loop_info
     else:
@@ -1007,6 +1009,7 @@ def _alternative(run, cm_info, song, video, song0=None):
     fin.update(total_pct=int(round(_tot(cur))), total=round(_tot(cur), 2), tight_pct=t.get("tight_pct"),
                median_err_ms=t.get("median_err_ms"), out_duration_s=round(float(run["out_duration"]), 3),
                video_duration_s=round(float(video["duration"]), 3), starts_on=plan_starts_on(song, plan), **_drops(song0 or song, run, plan.get("lead_s")))
+    fin["trajectory"] = trajectory.result_block(run.get("song_used") or song, video, plan)    # F22: UI data only
     return {"id": "content_match" if is_cm else "best_score", "label": CM_LABEL if is_cm else AUTO_LABEL,
             "path": run["path"], "chosen": False, "plan": plan, "final": fin}
 
