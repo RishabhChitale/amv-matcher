@@ -44,3 +44,11 @@ def test_f21_drop_matches_ui_strings():
     alt = (ROOT / "static" / "js" / "alt-plans.js").read_text()
     assert "Drops matched" in alt and "drops_total" in alt
     assert 'id="as-drops"' in (ROOT / "static" / "index.html").read_text()
+
+
+def test_f22_trajectory_ui_strings():
+    leg = (ROOT / "static" / "js" / "legend.js").read_text()
+    assert "video_curve" in leg and "song_curve" in leg and "boom_t" in leg and "amv-traj-off" in leg
+    alt = (ROOT / "static" / "js" / "alt-plans.js").read_text()
+    assert "Intensity:" in alt and "follow r" in alt and "dyn_video" in alt
+    assert 'id="as-traj-on"' in (ROOT / "static" / "index.html").read_text()

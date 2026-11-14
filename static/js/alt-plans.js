@@ -26,11 +26,19 @@
       + (on ? '<span class="alt-badge">In use</span>' : '<button class="alt-use" data-id="' + e.id + '">Use this plan</button>') + '</div>';
   }
   const dropsTxt = f => f && f.drops_total != null ? 'Drops matched ' + (f.drops_matched || 0) + '/' + f.drops_total : '';
+  const f2 = (v, d) => typeof v === 'number' && isFinite(v) ? v.toFixed(d == null ? 2 : d) : null;
+  function trajTxt(f) {   // F22: information only, never a score
+    const t = f && f.trajectory; if (!t) return '';
+    const p = [f2(t.follow) != null ? 'follow r ' + f2(t.follow) : null, f2(t.dyn_video) != null ? 'video range ' + f2(t.dyn_video) : null, f2(t.dyn_song) != null ? 'song range ' + f2(t.dyn_song) : null,
+      f2(t.lag_s, 1) != null ? 'lag ' + f2(t.lag_s, 1) + ' s' : null, (t.ramps || []).length ? 'builds into booms ' + t.ramps.filter(r => r.match).length + '/' + t.ramps.length : null].filter(Boolean);
+    return p.length ? 'Intensity: ' + p.join(' · ') : '';
+  }
   const startsTxt = f => f && f.starts_on ? 'Starts on: ' + f.starts_on : '';
   function render() {
     const run = AS.curRun && AS.curRun(), st = state(run);
     const so = $('as-starts'), sf = run && run.result && run.result.eligible !== false && !AS.running ? run.result.final : null;
     const dr = $('as-drops'), dt = dropsTxt(sf); if (dr) { dr.textContent = dt; dr.classList.toggle('hidden', !dt || !(sf.drops_total > 0)); }
+    const tj = $('as-traj'), tt = trajTxt(sf); if (tj) { $('as-traj-txt').textContent = tt; tj.classList.toggle('hidden', !tt); const cb = $('as-traj-on'); if (cb && !cb._f22) { cb._f22 = 1; cb.checked = !(window.MKLegend && !window.MKLegend.trajOn()); cb.onchange = () => { try { localStorage.setItem('amv-traj-off', cb.checked ? '' : '1'); } catch (e) {} if (typeof draw === 'function') draw(); }; } }
     if (so) { so.textContent = startsTxt(sf); so.classList.toggle('hidden', !startsTxt(sf)); }
     box.classList.toggle('hidden', !st || !!AS.running);
     if (!st) { box.innerHTML = ''; return; }

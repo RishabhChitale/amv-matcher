@@ -26,6 +26,9 @@
     ['Match', 'm-green', 'drop matched', 'Audio drop lands within 80 ms of a visual boom (line from A1 up to V1).', '#22c55e', 'bar'],
     ['Match', 'm-amber', 'drop close', 'Audio drop within 250 ms of a visual boom.', '#f59e0b', 'bar'],
     ['Match', 'm-red', 'drop missed', 'No visual boom near this audio drop (dashed line).', '#ef4444', 'bar'],
+    ['Info', 'tj-v', 'video intensity', 'Faint violet curve on V1: how intense the video story is over the output (information, not a score).', 'rgba(167,139,250,.8)', 'box'],
+    ['Info', 'tj-s', 'song intensity', 'Faint green curve on A1: how intense the song is over the output. A gap means the song has no audio there.', 'rgba(52,211,153,.8)', 'box'],
+    ['Info', 'tj-r', 'build-up into a boom', 'Bracket along the top of V1: the 6 s before a strong visual boom. Green = video and song both build up.', '#22c55e', 'bar'],
     ['Song', 'encore', 'encore', 'A drop again, may have no build-up.', 'var(--mk-encore)', 'tick'],
     ['Video', 'visual', 'visual boom', 'A visual impact: motion burst, flash, zoom punch or whip pan.', 'var(--mk-visual)', 'tick'],
     ['Video', 'camera', 'camera whip', 'A fast camera whip (span from start to end).', 'var(--mk-camera)', 'bar'],
@@ -113,8 +116,19 @@
     const A = window.AS, run = A && A.curRun && A.curRun(), f = run && run.result && run.result.eligible !== false && A.mode === 'synced' && !A.running ? run.result.final : null;
     return f && Array.isArray(f.drop_matches) && f.drop_matches.length ? f.drop_matches : null;
   }
+  // F22: intensity trajectory (information only): result.final.trajectory {hz, video_curve, song_curve (null = no audio), ramps[], follow, ...}
+  const trajOn = () => { try { return localStorage.getItem('amv-traj-off') !== '1'; } catch (e) { return true; } };
+  function trajectory() {
+    const A = window.AS, run = A && A.curRun && A.curRun(), f = run && run.result && run.result.eligible !== false && A.mode === 'synced' && !A.running ? run.result.final : null;
+    const t = f && f.trajectory; return t && t.hz > 0 && (Array.isArray(t.video_curve) || Array.isArray(t.song_curve)) ? t : null;
+  }
+  function drawCurve(ctx, cur, hz, t2x_, W, y0, h, col) {
+    ctx.save(); ctx.beginPath(); ctx.rect(0, y0 - 1, W, h + 2); ctx.clip(); ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.beginPath(); let pen = false;
+    cur.forEach((v, i) => { if (v == null) { pen = false; return; } const x = t2x_(i / hz), y = y0 + h - Math.max(0, Math.min(1, v)) * h; if (x < -4 || x > W + 4) { pen = false; return; } D.tj.pts++; if (pen) ctx.lineTo(x, y); else { ctx.moveTo(x, y); pen = true; } });
+    ctx.stroke(); ctx.restore();
+  }
   const mcol = m => m.kind === 'initial_boom' ? '--mk-initial' : m.kind === 'encore' ? '--mk-encore' : '--mk-drop';
-  D.drawn = [];
+  D.drawn = []; D.tj = {pts: 0, ramps: 0};
   const isMain = b => b.main || (D.main != null && Math.abs(b.t - D.main) < 0.01);
   const bcol = b => b.class === 'initial_boom' ? '--mk-initial' : b.class === 'encore' ? '--mk-encore' : '--mk-drop';
   // F2: a song shorter than the video uses only a stretch of it; dim the rest on V1 and label it.
@@ -136,9 +150,17 @@
     ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(lx - 3, v0 + 4, tw + 6, 16); ctx.fillStyle = '#fff'; ctx.fillText(w.label, lx, v0 + 16); ctx.restore();
   }
   window.mkDraw = function (ctx, RULER_, V1H_, A1H_, t2x_, W) {
-    const S_ = window.S; if (!S_ || !S_.dur) return; lullsPeaks(); D.drawn = [];
+    const S_ = window.S; if (!S_ || !S_.dur) return; lullsPeaks(); D.drawn = []; D.tj = {pts: 0, ramps: 0};
     const toT = mapA(), a0 = RULER_ + V1H_ + 4, a1 = a0 + A1H_ - 8, v0 = RULER_;
     drawUnused(ctx, v0, V1H_, t2x_, W);
+    const TJ = trajOn() ? trajectory() : null;   // F22: faint curves drawn first so every marker, line and control sits on top
+    if (TJ) {
+      if (Array.isArray(TJ.video_curve)) drawCurve(ctx, TJ.video_curve, TJ.hz, t2x_, W, v0 + 16, V1H_ - 32, 'rgba(167,139,250,.45)');
+      if (Array.isArray(TJ.song_curve)) drawCurve(ctx, TJ.song_curve, TJ.hz, t2x_, W, a0 + 14, A1H_ - 36, 'rgba(52,211,153,.5)');
+      ctx.save(); (TJ.ramps || []).forEach(r => { const x1 = t2x_(r.boom_t), x0 = t2x_(r.boom_t - 6); if (x1 < 0 || x0 > W) return; D.tj.ramps++;
+        ctx.globalAlpha = Math.max(.25, Math.min(.8, .25 + (r.strength || 0) * .1)); ctx.strokeStyle = r.match ? '#22c55e' : '#9ca3af'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(x0, v0 + 9); ctx.lineTo(x0, v0 + 5); ctx.lineTo(x1, v0 + 5); ctx.lineTo(x1, v0 + 9); ctx.stroke(); }); ctx.restore();
+    }
     ctx.save();
     if (S_.wf) {
       ctx.fillStyle = css('--mk-lull') || 'rgba(139,92,246,.12)';
@@ -194,6 +216,6 @@
     const place = () => { root.style.left = (cv.offsetLeft + cv.clientWidth - 6) + 'px'; root.style.top = (cv.offsetTop + 3) + 'px'; };
     place(); addEventListener('resize', () => { place(); fit(); }); setInterval(() => { place(); refresh(); }, 800);
   }
-  window.MKLegend = {register, addTip, rows: () => rows.slice(), detected: D, matches};
+  window.MKLegend = {register, addTip, rows: () => rows.slice(), detected: D, matches, trajectory, trajOn};
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 })();
