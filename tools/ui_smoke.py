@@ -251,6 +251,23 @@ def main():
         tc = c.ev("document.getElementById('tc').textContent")
         check("timecode HH:MM:SS:FF format", bool(__import__('re').match(r"^\d\d:\d\d:\d\d:\d\d$", tc or "")), tc)
 
+        # ---- F23: pump/shake default off + one-time migration of old saved fx
+        fresh = c.ev("({b:FX.boom,s:FX.shake,d:FX.drops,v2:localStorage.getItem('amv-fx-v2'),body:JSON.stringify(fxBody())})")
+        check("F23: fresh profile Boom 0, shake off, drops-only off, export has no pump/shake",
+              fresh and fresh["b"] == 0 and not fresh["s"] and not fresh["d"] and fresh["body"] == "{}", str(fresh))
+        c.ev("""(async()=>{const ls=localStorage,keep=[ls.getItem('amv-fx'),ls.getItem('amv-fx-v2')];window.__fx23=keep;
+          ls.removeItem('amv-fx-v2');ls.setItem('amv-fx',JSON.stringify({boom:40,decay:180,drops:false,shake:true}));
+          const f=document.createElement('iframe');f.id='fx23';f.style.cssText='position:fixed;left:-2000px;width:800px;height:600px';f.src=location.href;document.body.appendChild(f);})()""")
+        c.pump(3.0)
+        mig = c.ev("(()=>{const w=document.getElementById('fx23').contentWindow;return {b:w.FX.boom,s:w.FX.shake,v2:localStorage.getItem('amv-fx-v2')}})()")
+        check("F23: old saved boom 40 / shake reset once", mig and mig["b"] == 0 and not mig["s"] and mig["v2"] == "1", str(mig))
+        c.ev("(()=>{const w=document.getElementById('fx23').contentWindow;const b=w.document.getElementById('fx-boom');b.value=25;b.dispatchEvent(new w.Event('input',{bubbles:true}));w.location.reload()})()")
+        c.pump(3.0)
+        kept = c.ev("document.getElementById('fx23').contentWindow.FX.boom")
+        check("F23: user change to 25 persists across reload", kept == 25, str(kept))
+        c.ev("""(()=>{const k=window.__fx23,ls=localStorage;document.getElementById('fx23').remove();
+          k[0]===null?ls.removeItem('amv-fx'):ls.setItem('amv-fx',k[0]);k[1]===null?ls.removeItem('amv-fx-v2'):ls.setItem('amv-fx-v2',k[1])})()""")
+
         # ---- pulse (Boom 80)
         c.ev("(()=>{const b=document.getElementById('fx-boom');b.value=80;b.dispatchEvent(new Event('input',{bubbles:true}));b.dispatchEvent(new Event('change',{bubbles:true}))})()")
         c.pump(0.2)

@@ -311,9 +311,16 @@ $('ex-mp4').onclick = () => doExport('mp4');
 // ---------- effects (pump) ----------
 let reduce = false; try { reduce = matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) {}
 const fxBody = () => FX.boom > 0 ? {boom: FX.boom, decay: FX.decay, drops_only: FX.drops, shake: FX.shake} : {};   // baked into exports only when Boom is on
-const FX = {boom: reduce ? 0 : 40, decay: 180, drops: false, shake: false};
+const FX = {boom: 0, decay: 180, drops: false, shake: false};   // pump/shake are opt-in
 window.FX = FX;
-try { const s = JSON.parse(localStorage.getItem('amv-fx') || 'null'); if (s) Object.assign(FX, s); } catch (e) {}
+try {
+  const s = JSON.parse(localStorage.getItem('amv-fx') || 'null');
+  if (s) Object.assign(FX, s);
+  if (localStorage.getItem('amv-fx-v2') !== '1') {   // one-time reset of old saved pump/shake defaults
+    FX.boom = 0; FX.shake = false; FX.drops = false;
+    localStorage.setItem('amv-fx-v2', '1'); localStorage.setItem('amv-fx', JSON.stringify(FX));
+  }
+} catch (e) {}
 function saveFx() { try { localStorage.setItem('amv-fx', JSON.stringify(FX)); } catch (e) {} }
 function fxUI() {
   $('fx-boom').value = FX.boom; $('fx-decay').value = FX.decay; $('fx-drops').checked = FX.drops; $('fx-shake').checked = FX.shake;
