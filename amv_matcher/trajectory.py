@@ -16,12 +16,13 @@ Coupling profile (profile_of):
   lag_s     the lag that gives it (song later than video > 0)
   dyn_video / dyn_song   p90 - p10 of each trajectory over the overlap; ratio = dyn_song / dyn_video
   peak      share of the video's top-quartile time where the song sits in its own upper half
-            (0.5 = chance, 1 = every visual peak lands on a loud stretch)
+  loc_r / agree / rise   local coupling (local_features): window r, slope agreement, build-up rise
 
-sub_score() is 100 * closeness of a profile to REFERENCE: the profile of the user's gold-standard
-pair (an edit with its own audio, measured on real media). Generic constants only: nothing here
-knows a timestamp or a file. The reference reaches 100 exactly. Weights: follow W_FOLLOW, ratio
-W_RATIO, peak W_PEAK.
+sub_score() is 100 * mean closeness of the LOCAL features to REFERENCE: the common region of the
+user's gold pairs (edits with their own audio, measured on real media; lower bound = the weakest
+gold value, so every gold pair scores ~100). Generic constants only: nothing here knows a timestamp
+or a file. follow, ratio and peak are reported, not scored (the gold pairs spread too widely on
+them: GOLD_SPREAD).
 
 Two consumers:
   * score._pack: only when AMV_F22=1, total = (1 - W_TRAJ) * total + W_TRAJ * sub_score
@@ -46,12 +47,19 @@ LAG_S = 2.0             # lag tolerance for the shape correlation
 LAG_STEP_S = 0.5
 MIN_OVERLAP_S = 8.0
 
-# Reference coupling profile (gold-standard pair, measured) and how closeness is scored.
-REFERENCE = {"follow": 0.76, "ratio": 1.18, "peak": 1.0}
-RATIO_DEAD_OCT = 0.15   # within +-0.15 octave of the reference ratio counts as a full match
-RATIO_SPAN_OCT = 1.5    # closeness reaches 0 this many octaves beyond the dead zone
-PEAK_CHANCE = 0.5
-W_FOLLOW, W_RATIO, W_PEAK = 0.5, 0.25, 0.25
+# Reference = the common region of the user's gold pairs (four edits, each with its own audio),
+# measured on LOCAL coupling features (local_features). Each bound is the lowest gold value (a
+# one-sided band: more coupling than the weakest gold pair is never punished); closeness falls
+# linearly from the bound to 0 at FLOOR. GOLD_SPREAD is the measured min / median / max per feature
+# over the four gold pairs (info for reports and the UI; ratio and peak are info only).
+REFERENCE = {"loc_r": 0.475, "agree": 0.535, "rise": 0.515}
+FLOOR = {"loc_r": 0.0, "agree": 0.30, "rise": 0.25}
+GOLD_SPREAD = {"loc_r": (0.475, 0.792, 0.883), "agree": (0.535, 0.619, 0.692), "rise": (0.515, 0.545, 0.631),
+               "follow": (0.055, 0.653, 0.766), "ratio": (0.54, 1.044, 1.556), "peak": (0.541, 0.823, 1.0)}
+LOC_WIN_S, LOC_HOP_S = 30.0, 10.0   # local Pearson windows (one window when the overlap is shorter)
+LOC_Q = 75                          # loc_r = this percentile of the window r's
+SLOPE_S = 4.0                       # slope span for agree / rise
+RISE_TOP = 80                       # rise looks at the video's strongest build-ups (top 20 % slope)
 W_TRAJ = 0.15           # share of the total the sub-score takes when the flag is on
 
 UI_HZ = 4.0             # resolution of the curves handed to the UI
@@ -155,28 +163,53 @@ def peak_share(v, s) -> float:
     return float((s[top] >= np.percentile(s, 50)).mean()) if top.any() else 0.0
 
 
+def local_features(v, s) -> dict:
+    """Local coupling: how the song moves WITH the video stretch by stretch (not only globally).
+
+    loc_r  LOC_Q-th percentile of Pearson r over LOC_WIN_S windows (hop LOC_HOP_S)
+    agree  over SLOPE_S slopes, the |video slope|-weighted share of the bigger half of the video's
+           moves where the song moves the same way
+    rise   share of the video's strongest build-ups (top 20 % slope) where the song rises too
+    """
+    v, s = np.asarray(v, float), np.asarray(s, float)
+    m = min(len(v), len(s))
+    v, s = v[:m], s[:m]
+    W, H, L = int(LOC_WIN_S * HZ), int(LOC_HOP_S * HZ), int(SLOPE_S * HZ)
+    if m <= L + 4:
+        return {"loc_r": 0.0, "agree": 0.0, "rise": 0.0}
+    lr = [_pearson(v[i:i + W], s[i:i + W]) for i in range(0, m - W + 1, H)] if m >= W else [_pearson(v, s)]
+    dv, ds = v[L:] - v[:-L], s[L:] - s[:-L]
+    w = np.abs(dv)
+    big = w > np.percentile(w, 50)
+    agree = float(np.sum(w[big] * (np.sign(dv[big]) == np.sign(ds[big]))) / max(float(w[big].sum()), 1e-9))
+    up = dv > np.percentile(dv, RISE_TOP)
+    rise = float(np.mean(ds[up] > 0)) if up.any() else 0.0
+    return {"loc_r": round(float(np.percentile(lr, LOC_Q)), 3), "agree": round(agree, 3), "rise": round(rise, 3)}
+
+
 def profile_of(v, s) -> dict:
     dv, ds = dyn_range(v), dyn_range(s)
     fr, lag = follow_lag(v, s)
-    return {"follow": round(fr, 3), "lag_s": round(lag, 2), "dyn_video": round(dv, 3),
-            "dyn_song": round(ds, 3), "ratio": round(ds / dv if dv > 1e-9 else 1.0, 3),
-            "peak": round(peak_share(v, s), 3)}
+    p = {"follow": round(fr, 3), "lag_s": round(lag, 2), "dyn_video": round(dv, 3),
+         "dyn_song": round(ds, 3), "ratio": round(ds / dv if dv > 1e-9 else 1.0, 3),
+         "peak": round(peak_share(v, s), 3)}
+    p.update(local_features(v, s))
+    return p
 
 
 def closeness(p) -> dict:
-    """Per-component closeness (0..1) of profile p to REFERENCE."""
-    ref = REFERENCE
-    c_f = float(np.clip(p["follow"] / ref["follow"], 0.0, 1.0))
-    oct_ = abs(np.log2(max(p["ratio"], 1e-3) / ref["ratio"]))
-    c_r = float(np.clip(1.0 - max(0.0, oct_ - RATIO_DEAD_OCT) / RATIO_SPAN_OCT, 0.0, 1.0))
-    c_p = float(np.clip((p["peak"] - PEAK_CHANCE) / (ref["peak"] - PEAK_CHANCE), 0.0, 1.0))
-    return {"follow": c_f, "ratio": c_r, "peak": c_p}
+    """Per-feature closeness (0..1) of profile p to the gold common region (REFERENCE lower bounds)."""
+    out = {}
+    for k, ref in REFERENCE.items():
+        lo = FLOOR[k]
+        out[k] = float(np.clip((float(p[k]) - lo) / (ref - lo), 0.0, 1.0))
+    return out
 
 
 def sub_score(p) -> float:
-    """0..100 closeness of a coupling profile to the reference (reference = 100)."""
+    """0..100: mean closeness of the local features to the gold region (inside the region = 100)."""
     c = closeness(p)
-    return round(100.0 * (W_FOLLOW * c["follow"] + W_RATIO * c["ratio"] + W_PEAK * c["peak"]), 1)
+    return round(100.0 * sum(c.values()) / len(c), 1)
 
 
 def _overlap(song, video, off):
@@ -271,9 +304,12 @@ def result_block(song, video, plan) -> dict | None:
             return [None if np.isnan(y) else round(float(y), 3) for y in x[iu]]
 
         out = {"hz": UI_HZ, "video_curve": ui(v4), "song_curve": ui(s4), "ramps": ramps,
-               "reference": dict(REFERENCE), "flag": F22_ENABLED}
+               "reference": {"bounds": dict(REFERENCE), "floor": dict(FLOOR),
+                             "gold_spread": {k: list(v) for k, v in GOLD_SPREAD.items()}},
+               "flag": F22_ENABLED}
         out.update(prof or {"follow": None, "lag_s": None, "dyn_video": None, "dyn_song": None,
-                            "ratio": None, "peak": None, "sub_score": None})
+                            "ratio": None, "peak": None, "loc_r": None, "agree": None,
+                            "rise": None, "sub_score": None})
         return out
     except Exception:
         return None

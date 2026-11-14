@@ -21,23 +21,37 @@ def _pair(seconds=90.0, phase=0.0):
     return song, video
 
 
-def test_reference_profile_scores_100():
+def test_reference_region_scores_100():
     assert T.sub_score(dict(T.REFERENCE)) == 100.0
-    better = {"follow": 0.95, "ratio": T.REFERENCE["ratio"], "peak": 1.0}
-    assert T.sub_score(better) == 100.0                     # follow above the reference is not punished
+    better = {"loc_r": 0.95, "agree": 0.9, "rise": 0.9}
+    assert T.sub_score(better) == 100.0                     # more coupling than the weakest gold pair is not punished
+    for k, (lo, med, hi) in T.GOLD_SPREAD.items():
+        assert lo <= med <= hi
+        if k in T.REFERENCE:
+            assert T.REFERENCE[k] == lo and T.FLOOR[k] < lo
 
 
 def test_flat_or_unrelated_song_scores_low():
-    flat = {"follow": 0.0, "ratio": 0.3, "peak": 0.5}
-    assert T.sub_score(flat) < 10.0
-    c = T.closeness({"follow": 0.38, "ratio": T.REFERENCE["ratio"] * 2, "peak": 0.75})
-    assert abs(c["follow"] - 0.5) < 0.01 and 0.0 < c["ratio"] < 1.0 and abs(c["peak"] - 0.5) < 1e-9
+    assert T.sub_score(dict(T.FLOOR)) == 0.0
+    assert T.sub_score({"loc_r": -0.3, "agree": 0.2, "rise": 0.1}) == 0.0
+    mid = {k: (T.REFERENCE[k] + T.FLOOR[k]) / 2 for k in T.REFERENCE}
+    assert abs(T.sub_score(mid) - 50.0) < 0.1
+
+
+def test_local_features_short_and_opposed():
+    n = 200                                                  # 20 s: under one local window -> whole-overlap r
+    v = np.array(_arc(n, 10.0))
+    f = T.local_features(v, v)
+    assert f["loc_r"] > 0.99 and f["agree"] > 0.99 and f["rise"] == 1.0
+    g = T.local_features(v, 1.0 - v)
+    assert g["loc_r"] < -0.99 and g["agree"] < 0.01 and g["rise"] == 0.0
+    assert T.local_features(v[:20], v[:20]) == {"loc_r": 0.0, "agree": 0.0, "rise": 0.0}
 
 
 def test_traj_stats_following_vs_opposed():
     song, video = _pair()
     good = T.traj_stats(song, video, 0.0)
-    assert good["follow"] > 0.95 and good["lag_s"] == 0.0 and good["peak"] > 0.95
+    assert good["follow"] > 0.95 and good["lag_s"] == 0.0 and good["peak"] > 0.95 and good["sub_score"] == 100.0
     song2, video2 = _pair(phase=np.pi)
     bad = T.traj_stats(song2, video2, 0.0)
     assert bad["follow"] < 0.2 and bad["sub_score"] < good["sub_score"] - 40
@@ -72,7 +86,7 @@ def test_result_block_output_time_through_warp():
     vt = T.video_trajectory(video)
     assert abs(r["video_curve"][int(15 * T.UI_HZ)] - round(float(vt[300]), 3)) < 1e-6
     assert [round(x["boom_t"], 2) for x in r["ramps"]] == [22.5]   # visual boom at 37.5 s -> output 15 + 7.5 = 22.5 s
-    for k in ("follow", "lag_s", "dyn_video", "dyn_song", "ratio", "peak", "sub_score", "reference"):
+    for k in ("follow", "lag_s", "dyn_video", "dyn_song", "ratio", "peak", "loc_r", "agree", "rise", "sub_score", "reference"):
         assert k in r
 
 
