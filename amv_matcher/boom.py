@@ -30,7 +30,7 @@ AUDIO_SEP_S = 8.0       # booms are phrase events, not beats
 SNAP_S = 0.12           # snap to the strongest onset within this
 AUDIO_MAX = 8
 AUDIO_MIN_CONF = 0.25
-BOOM_VERSION = 2        # bump when audio booms change: cached song analyses recompute them
+BOOM_VERSION = 3        # bump when audio booms change: cached song analyses recompute them
 
 # F6e classes (docs/TIMELINE-LOG-FORMAT.md booms[].class), from the user's 2026-11-11 review.
 # Levels are dB against the song's p90 low band (0.5 s smoothed); profiles are 24 log bands.
@@ -44,6 +44,7 @@ CLS_ENCORE_BRK = -28.0  # ... and re-enters like a drop, even with no build-up (
 CLS_MAIN_FRAC = 0.75    # main drop = the FIRST drop ranking >= this x the best drop
 LEAD_BACK_S = 1.2       # lead-in snap: the hit can start up to this before the low-band peak ...
 LEAD_MIN_S = 0.12       # ... and at least this before it (else the onset snap already has it)
+LEAD_PEAK_S = 0.1       # F21: the lead-in hit sits on the onset peak within this after the flux frame
 
 VIS_HZ = 10.0
 VIS_BASE_S = 3.0        # running-median baseline half-window
@@ -186,7 +187,9 @@ def _classify(out, S, freqs, fps, L, env, beats):
         a, z = max(0, i - int(LEAD_BACK_S * fps)), max(0, i - int(LEAD_MIN_S * fps))
         hit = np.nonzero((Ds[a:z] >= p99) & (env_loc[a:z] >= e95))[0]
         if len(hit):
-            t = (a + int(hit[0])) / fps
+            f = a + int(hit[0])
+            f += int(np.argmax(env[f:min(len(env), f + max(1, int(LEAD_PEAK_S * fps)) + 1)]))   # F21: the onset peak
+            t = f / fps
             if len(beats):
                 nb_i = int(np.argmin(np.abs(beats - t)))
                 if abs(beats[nb_i] - t) <= 0.08:
@@ -462,3 +465,74 @@ def splice_song_booms(song, segments):
                     main = nt
     out.sort(key=lambda d: d["t"])
     return {"booms": out, "main_boom": main}
+
+
+# --- F21: audio drops as timeline markers, mapped through a plan and matched to visual booms ---------------
+DROP_KINDS = ("main_drop", "drop", "encore", "initial_boom")   # what "drops matched x/y" counts (class 'boom' = other hits)
+DROP_GREEN_S = 0.08        # |delta| <= this: the drop lands on the boom (same as BOOM_MATCH_S)
+DROP_AMBER_S = 0.25        # |delta| <= this: close; beyond: missed
+DROP_VIS_MIN_CONF = 0.4    # "strong" visual boom; falls back to every visual boom when none is this strong
+
+
+def drop_kind(b, main):
+    """F21 kind of one analysed audio boom: main_drop (the main boom) / drop / encore / initial_boom / boom."""
+    if main is not None and abs(float(b["t"]) - float(main)) < 1e-6:
+        return "main_drop"
+    c = b.get("class")
+    return c if c in ("drop", "encore", "initial_boom") else "boom"
+
+
+def song_drops(song):
+    """[{t (song s), kind, conf}] of the song's audio booms, sorted by t; [] when none."""
+    main = song.get("main_boom")
+    return [{"t": round(float(b["t"]), 3), "kind": drop_kind(b, main), "conf": round(float(b.get("conf", 1.0)), 3)}
+            for b in sorted(song.get("booms") or [], key=lambda x: float(x["t"]))]
+
+
+def plan_drops(song, plan, out_duration):
+    """song_drops in OUTPUT time, mapped exactly as the audio is built (render.output_song_events): tempo ratio,
+    then the plan's segments (a drop cut out is dropped, a repeated one appears twice) or the plain offset.
+    Each item gains t_out; only drops inside [0, out_duration] are kept."""
+    r = float(plan.get("tempo_ratio") or 1.0) or 1.0
+    segs = plan.get("segments")
+    if not segs:
+        off = float(plan.get("offset") or 0.0)
+        lead = max(0.0, -off)
+        segs = [{"src_start": max(0.0, off), "src_end": max(0.0, off) + out_duration - lead, "dst_start": lead}]
+    out = []
+    for g in segs:
+        a, b, d0 = float(g["src_start"]), float(g["src_end"]), float(g["dst_start"])
+        for d in song_drops(song):
+            t = d["t"] / r
+            if a <= t < b:
+                to = t - a + d0
+                if 0.0 <= to <= out_duration + 1e-9:
+                    out.append({"t_song": d["t"], "t_out": round(to, 3), "kind": d["kind"], "conf": d["conf"]})
+    out.sort(key=lambda d: (d["t_out"], d["t_song"]))
+    return out
+
+
+def drop_matches(song, plan, video, out_duration, lead=0.0, kinds=DROP_KINDS):
+    """F21 match lines: every audio drop of `kinds` in output time paired with the nearest strong visual boom of
+    `video` (the OUTPUT video: retimed when the plan retimes). delta_ms = vis_t - (t_out - lead), the same
+    comparison as boom_stats (an event at video t meets the beat at t + lead). status green |d| <= DROP_GREEN_S,
+    amber <= DROP_AMBER_S, red beyond or with no visual boom at all (vis_* None).
+    Returns {drop_matches, drops_matched (green), drops_total}."""
+    vb = [v for v in (video.get("visual_booms") or []) if 0.0 <= float(v["t"]) <= out_duration + 1e-9]
+    strong = [v for v in vb if float(v.get("conf", 1.0)) >= DROP_VIS_MIN_CONF] or vb
+    vt = np.asarray([float(v["t"]) for v in strong])
+    rows = []
+    for d in plan_drops(song, plan, out_duration):
+        if d["kind"] not in kinds:
+            continue
+        row = {"t_song": d["t_song"], "t_out": d["t_out"], "kind": d["kind"], "conf": d["conf"],
+               "vis_t": None, "vis_conf": None, "delta_ms": None, "status": "red"}
+        if len(vt):
+            target = d["t_out"] - lead
+            j = int(np.argmin(np.abs(vt - target)))
+            err = float(vt[j] - target)
+            row.update(vis_t=round(float(vt[j]), 3), vis_conf=round(float(strong[j].get("conf", 1.0)), 3),
+                       delta_ms=round(1000.0 * err, 1),
+                       status="green" if abs(err) <= DROP_GREEN_S + 1e-9 else ("amber" if abs(err) <= DROP_AMBER_S + 1e-9 else "red"))
+        rows.append(row)
+    return {"drop_matches": rows, "drops_matched": sum(r["status"] == "green" for r in rows), "drops_total": len(rows)}

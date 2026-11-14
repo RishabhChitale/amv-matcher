@@ -9,6 +9,7 @@ import time
 
 import numpy as np
 
+from . import boom
 from . import motif
 from . import score as S
 from . import stemsync
@@ -242,6 +243,56 @@ def _boom_offsets(song, video, offset, lead_s=None):
     return out
 
 
+# F21 hard drop target: every strong audio drop (main drop / drop / encore / initial boom) is a landing candidate,
+# and a move that lands MORE drops on visual booms (|delta| <= 80 ms) wins with looser guards than the boom bonus:
+# the total may give up DROP_GUARD_TOTAL, sync / tightness DROP_GUARD_SYNC / DROP_GUARD_TIGHT points.
+DROP_HARD = True
+DROP_GUARD_TOTAL = 1.0
+DROP_GUARD_SYNC = 1.0
+DROP_GUARD_TIGHT = 1.0
+DROP_MAX_DROPS = 4           # strongest drops tried as anchors (x BOOM_MAX_CANDIDATES visual booms, x2 beat snap)
+DROP_MIN_CONF = 0.5
+
+
+def _drop_offsets(song, video, offset, lead_s=None):
+    """Candidate plain-trim offsets landing one of the song's strongest drops on one of the strongest visual booms
+    (exact and whole-beat-snapped), deterministic order, motif-gated like _boom_offsets."""
+    ds = [d for d in boom.song_drops(song) if d["kind"] in boom.DROP_KINDS and d["conf"] >= DROP_MIN_CONF]
+    vb = video.get("visual_booms") or []
+    if not ds or not vb:
+        return []
+    ds = sorted(ds, key=lambda d: (d["kind"] != "main_drop", -d["conf"], d["t"]))[:DROP_MAX_DROPS]
+    vd, sd = float(video["duration"]), float(song["duration"])
+    lo, hi = S.MIN_OFFSET_S, max(0.0, sd - vd)
+    lead = S._lead(lead_s)
+    bpm = float(song.get("bpm") or 0.0)
+    per = 60.0 / bpm if bpm > 0 else None
+    top = sorted(vb, key=lambda v: (-float(v.get("conf", 1.0)), float(v["t"])))[:BOOM_MAX_CANDIDATES]
+    g = motif.gate(song)
+    out = []
+    for d in ds:
+        for v in top:
+            raw = float(d["t"]) - lead - float(v["t"])
+            for o in ([raw, offset + round((raw - offset) / per) * per] if per else [raw]):
+                o = round(float(o), 3) + 0.0
+                if (lo - 1e-9 <= o <= hi + 1e-9 and abs(o - offset) > 1e-6 and all(abs(o - x) > 1e-6 for x in out)
+                        and (g is None or g.ok(o))):
+                    out.append(o)
+    return out
+
+
+def _drops_at(song, video, offset, lead_s=None):
+    """drops_matched on a plain trim at `offset` (song already carries any tempo change)."""
+    return boom.drop_matches(song, {"offset": offset}, video, float(video["duration"]), S._lead(lead_s))["drops_matched"]
+
+
+def _drop_ok(new, old, n_new, n_old):
+    """Guard of the hard drop target (see DROP_GUARD_*)."""
+    return (n_new > n_old and _tot(new) >= _tot(old) - DROP_GUARD_TOTAL - 1e-9
+            and float(new["sync_pct"]) >= float(old["sync_pct"]) - DROP_GUARD_SYNC - 1e-9
+            and (not _has_tight(old) or _tp(new) >= _tp(old) - DROP_GUARD_TIGHT - 1e-9))
+
+
 def _boom_pct(r):
     b = r.get("boom_pct") if isinstance(r, dict) else None
     return float(b) if b is not None else 0.0
@@ -412,20 +463,29 @@ def _run(song, video, order, target, work, max_speed_dev, max_tempo_dev, min_sec
         if lock_original or loop_segs is not None or cancel() or not work.can(WORK_COST["boom"]):
             return o_, r_
         cands = _boom_offsets(s_, v_, o_, lead_s)
-        if not cands:
+        dcands = [o for o in _drop_offsets(s_, v_, o_, lead_s) if o not in cands] if DROP_HARD else []
+        if not cands and not dcands:
             return o_, r_
         begin("boom", _tot(r_))
         work.spend(WORK_COST["boom"])
-        best = None
-        for o2 in cands:
+        n0 = _drops_at(s_, v_, o_, lead_s) if DROP_HARD else 0
+        best, hard = None, None
+        for o2 in cands + dcands:
             r2 = sa(s_, v_, o2)
-            if _boom_ok(r2, r_) and (best is None or (_rank(r2), _boom_pct(r2)) > (_rank(best[1]), _boom_pct(best[1]))):
+            if DROP_HARD:
+                n2 = _drops_at(s_, v_, o2, lead_s)
+                if _drop_ok(r2, r_, n2, n0) and (hard is None or (n2, _rank(r2)) > (hard[2], _rank(hard[1]))):
+                    hard = (o2, r2, n2)
+            if o2 in cands and _boom_ok(r2, r_) and (best is None or (_rank(r2), _boom_pct(r2)) > (_rank(best[1]), _boom_pct(best[1]))):
                 best = (o2, r2)
+        if hard is not None and (best is None or hard[2] > _drops_at(s_, v_, best[0], lead_s)):
+            best = hard[:2]                     # F21: more drops on visual booms beats the boom bonus
         kept = best is not None
         ra = best[1] if kept else r_
-        rec("boom", {"main_boom": s_.get("main_boom"), "candidates": len(cands),
+        rec("boom", {"main_boom": s_.get("main_boom"), "candidates": len(cands) + len(dcands),
                      "offset": round(best[0], 3) if kept else round(o_, 3),
-                     "boom_before": r_.get("boom_pct"), "boom_after": ra.get("boom_pct")},
+                     "boom_before": r_.get("boom_pct"), "boom_after": ra.get("boom_pct"),
+                     "drops_before": n0, "drops_after": _drops_at(s_, v_, best[0], lead_s) if kept and DROP_HARD else n0},
             _tot(r_), _tot(ra), kept, r_, ra)
         return (best[0], best[1]) if kept else (o_, r_)
 
@@ -634,11 +694,12 @@ def _run(song, video, order, target, work, max_speed_dev, max_tempo_dev, min_sec
     if retime and not retime.get("speed_jump_ok", True):
         limits.append("speed_jump_over_0.15")
     out_dur = float(cur_video["duration"])
-    return {"steps": steps, "cur": cur, "limits": limits, "out_duration": out_dur,
-            "plan": {"offset": round(offset, 3), "lead_s": lead_s, "tempo_ratio": tempo_ratio, "segments": nonneg_segments(segs),
-                     "retime": retime, "nudges": nudges,
-                     "lead_silence_s": lead_silence(segs) if segs else round(max(0.0, -offset), 6),
-                     "original_locked": bool(lock_original)}}
+    plan = {"offset": round(offset, 3), "lead_s": lead_s, "tempo_ratio": tempo_ratio, "segments": nonneg_segments(segs),
+            "retime": retime, "nudges": nudges,
+            "lead_silence_s": lead_silence(segs) if segs else round(max(0.0, -offset), 6),
+            "original_locked": bool(lock_original)}
+    return {"steps": steps, "cur": cur, "limits": limits, "out_duration": out_dur, "plan": plan,
+            "out_visual_booms": cur_video.get("visual_booms") or []}
 
 
 CONTENT_MATCH = True      # F18b: rebuild the video's own hand edit of the song (contentmatch.match) and offer it
@@ -736,6 +797,7 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
     {applied, smooth: {total, sync, tight, arc, max_jump, max_accel}, best: {same}}, where `best` is the plan
     plain auto-sync (smooth off) would have chosen and `smooth` the plan applied. Not applicable (looped,
     original-locked, no retime) -> the plain result is returned with smooth.applied False and a reason."""
+    song0 = song                         # F21: drops are mapped from the song as given (before any loop)
     if not allow_loop and float(song["duration"]) < float(video["duration"]) - LENGTH_SLACK_S:
         return _auto_sync_window(song, video, dict(
             target=target, budget_s=budget_s, max_speed_dev=max_speed_dev, max_tempo_dev=max_tempo_dev,
@@ -898,6 +960,7 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
     final["effort_pct"] = ef["effort_pct"]
     final["fit_after_effort"] = round(max(0.0, final["total_pct"] - EFFORT_K * ef["effort_pct"]), 1)
     final["starts_on"] = plan_starts_on(song, best["plan"])
+    final.update(_drops(song0, best, lead_s))         # F21: drop_matches / drops_matched / drops_total
     if loop_info:
         best["plan"]["looped"], best["plan"]["loop"] = True, loop_info
     else:
@@ -906,8 +969,8 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
     if cm_info is not None:
         best["plan"]["content_match"] = cm_info
         best["plan"]["content_matched"] = bool(cm_info["kept"])
-        alternatives.append(_alternative(cm_alt, cm_info, song, video))
-    return {"alternatives": alternatives, "steps": best["steps"], "final": final, "eligible": True, "plan": best["plan"], "path": best["path"],
+        alternatives.append(_alternative(cm_alt, cm_info, song, video, song0))
+    return {"alternatives": alternatives, "song_drops": boom.song_drops(song0), "steps": best["steps"], "final": final, "eligible": True, "plan": best["plan"], "path": best["path"],
             "limits_hit": sorted(set(limits)), "pruned": pruned, "why_not_100": _why(final, target, limits),
             "deterministic": not work.cap_hit,
             "elapsed_s": round(time.perf_counter() - t0, 2)}
@@ -925,7 +988,14 @@ def plan_starts_on(song, plan):
     return motif.starts_on(song, max(0.0, float(src)))
 
 
-def _alternative(run, cm_info, song, video):
+def _drops(song0, run, lead_s):
+    """F21 drop_matches / drops_matched / drops_total of a run's plan: the ORIGINAL song's drops mapped through the
+    plan (tempo, segments or offset) against the run's output (retimed) video's visual booms."""
+    return boom.drop_matches(song0, run["plan"], {"visual_booms": run.get("out_visual_booms") or []},
+                             float(run["out_duration"]), S._lead(lead_s))
+
+
+def _alternative(run, cm_info, song, video, song0=None):
     """F18b second option: the plan auto-sync did not choose between the video's own edit (content match) and the
     best-score plan, with its own score so the UI can offer it next to the chosen one (render/export take its
     plan like the main one). No ramps/smooth on an alternative."""
@@ -936,7 +1006,7 @@ def _alternative(run, cm_info, song, video):
     fin = {k: round(float(cur[k]), 1) for k in ("tempo_pct", "sync_pct", "arc_pct")}
     fin.update(total_pct=int(round(_tot(cur))), total=round(_tot(cur), 2), tight_pct=t.get("tight_pct"),
                median_err_ms=t.get("median_err_ms"), out_duration_s=round(float(run["out_duration"]), 3),
-               video_duration_s=round(float(video["duration"]), 3), starts_on=plan_starts_on(song, plan))
+               video_duration_s=round(float(video["duration"]), 3), starts_on=plan_starts_on(song, plan), **_drops(song0 or song, run, plan.get("lead_s")))
     return {"id": "content_match" if is_cm else "best_score", "label": CM_LABEL if is_cm else AUTO_LABEL,
             "path": run["path"], "chosen": False, "plan": plan, "final": fin}
 
