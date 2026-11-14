@@ -50,5 +50,5 @@ def test_f22_trajectory_ui_strings():
     leg = (ROOT / "static" / "js" / "legend.js").read_text()
     assert "video_curve" in leg and "song_curve" in leg and "boom_t" in leg and "amv-traj-off" in leg
     alt = (ROOT / "static" / "js" / "alt-plans.js").read_text()
-    assert "Intensity:" in alt and "follow r" in alt and "dyn_video" in alt
+    assert "Intensity:" in alt and "follow r" in alt and "local r" in alt and "dyn_video" in alt
     assert 'id="as-traj-on"' in (ROOT / "static" / "index.html").read_text()

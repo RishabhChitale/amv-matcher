@@ -29,7 +29,7 @@
   const f2 = (v, d) => typeof v === 'number' && isFinite(v) ? v.toFixed(d == null ? 2 : d) : null;
   function trajTxt(f) {   // F22: information only, never a score
     const t = f && f.trajectory; if (!t) return '';
-    const p = [f2(t.follow) != null ? 'follow r ' + f2(t.follow) : null, f2(t.dyn_video) != null ? 'video range ' + f2(t.dyn_video) : null, f2(t.dyn_song) != null ? 'song range ' + f2(t.dyn_song) : null,
+    const p = [f2(t.follow) != null ? 'follow r ' + f2(t.follow) : null, f2(t.loc_r) != null ? 'local r ' + f2(t.loc_r) : null, f2(t.dyn_video) != null ? 'video range ' + f2(t.dyn_video) : null, f2(t.dyn_song) != null ? 'song range ' + f2(t.dyn_song) : null,
       f2(t.lag_s, 1) != null ? 'lag ' + f2(t.lag_s, 1) + ' s' : null, (t.ramps || []).length ? 'builds into booms ' + t.ramps.filter(r => r.match).length + '/' + t.ramps.length : null].filter(Boolean);
     return p.length ? 'Intensity: ' + p.join(' · ') : '';
   }
