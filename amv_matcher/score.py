@@ -555,6 +555,14 @@ def _pack(song, video, off, tempo_pct, rate, sync_pct, arc_pct, lead_s=None, qui
     bs = buildup.build_stats(song, video, off) if buildup.W_BUILD > 0 else None
     bm = boom.boom_stats(song, video, off, _lead(lead_s)) if boom.W_BOOM > 0 else None
     total = boom.blend_total(buildup.blend_total(_combine(tempo_pct, sync_pct, arc_pct), bs), bm)
+    from . import trajectory
+    tj = None
+    if trajectory.F22_ENABLED:       # F22 (flagged): closeness to the reference coupling profile, W_TRAJ of the total
+        try:
+            tj = trajectory.traj_stats(song, video, off)
+            total = trajectory.weighted_total(total, tj)
+        except Exception:
+            tj = None
     f15 = F15_ENABLED
     st = story_stats(song, video, off) if f15 and total > STORY_CAP_LO else {"story_z": None, "story_r": None, "n_null": 0}
     cap = story_cap(st["story_z"])
@@ -571,6 +579,8 @@ def _pack(song, video, off, tempo_pct, rate, sync_pct, arc_pct, lead_s=None, qui
         "tightness": tightness(song, video, off, lead_s),
         "starts_on": motif.starts_on(song, off),     # F17: 'intro' / 'hook' / 'phrase N' (None = no gate)
     }
+    if trajectory.F22_ENABLED:
+        out["trajectory"] = tj
     if f15:
         out.update(story_z=st["story_z"], story_capped=bool(total > cap),
                    key_moments=boom.video_key_moments(video))   # key moments: reported only, not in the total
