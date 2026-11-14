@@ -21,14 +21,16 @@
   function row(e, on) {
     const f = e.final || {};
     return `<div class="alt${on ? ' on' : ''}" data-id="${e.id}"><div class="alt-top"><b class="alt-name">${e.label}</b><span class="alt-total">Total ${pct(f.total_pct)}</span></div>`
-      + `<div class="alt-sub">Sync ${pct(f.sync_pct)} · Tight ${pct(f.tight_pct)} · Energy ${pct(f.arc_pct)} · Tempo ${pct(f.tempo_pct)}${f.median_err_ms != null ? ' · median error ' + Math.round(f.median_err_ms) + ' ms' : ''}${f.starts_on ? ' · starts on ' + f.starts_on : ''}</div>`
+      + `<div class="alt-sub">Sync ${pct(f.sync_pct)} · Tight ${pct(f.tight_pct)} · Energy ${pct(f.arc_pct)} · Tempo ${pct(f.tempo_pct)}${f.median_err_ms != null ? ' · median error ' + Math.round(f.median_err_ms) + ' ms' : ''}${f.starts_on ? ' · starts on ' + f.starts_on : ''}${f.drops_total > 0 ? ' · drops matched ' + (f.drops_matched || 0) + '/' + f.drops_total : ''}</div>`
       + (on && e.err ? '<div class="alt-err">Preview audio unavailable for this plan; export is unaffected.</div>' : '')
       + (on ? '<span class="alt-badge">In use</span>' : '<button class="alt-use" data-id="' + e.id + '">Use this plan</button>') + '</div>';
   }
+  const dropsTxt = f => f && f.drops_total != null ? 'Drops matched ' + (f.drops_matched || 0) + '/' + f.drops_total : '';
   const startsTxt = f => f && f.starts_on ? 'Starts on: ' + f.starts_on : '';
   function render() {
     const run = AS.curRun && AS.curRun(), st = state(run);
     const so = $('as-starts'), sf = run && run.result && run.result.eligible !== false && !AS.running ? run.result.final : null;
+    const dr = $('as-drops'), dt = dropsTxt(sf); if (dr) { dr.textContent = dt; dr.classList.toggle('hidden', !dt || !(sf.drops_total > 0)); }
     if (so) { so.textContent = startsTxt(sf); so.classList.toggle('hidden', !startsTxt(sf)); }
     box.classList.toggle('hidden', !st || !!AS.running);
     if (!st) { box.innerHTML = ''; return; }
@@ -48,7 +50,7 @@
     }
     run.audioUrl = e.audioUrl; st.id = id;
     try { if (S.inUse && S.inUse.path === S.sel.path) S.inUse.auto_sync_cached = e.final; } catch (x) {}
-    AS.mode = 'synced'; applyAfterSplice(); window.asUi(); if (window.asAfterResults) window.asAfterResults(); if (was) play();
+    AS.mode = 'synced'; applyAfterSplice(); if (typeof draw === 'function') draw(); window.asUi(); if (window.asAfterResults) window.asAfterResults(); if (was) play();
   }
   box.addEventListener('click', ev => { const b = ev.target.closest('button.alt-use'); if (b) choose(b.dataset.id); });
   window.asAfterUi = render; AS.chooseAlt = choose; render();

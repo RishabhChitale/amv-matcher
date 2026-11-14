@@ -36,3 +36,11 @@ def test_choose_clamps_negative_src_start_and_surfaces_errors():
 def test_render_error_shown_in_card():
     js = (ROOT / "static" / "js" / "alt-plans.js").read_text()
     assert "e.err = true" in js and "Preview audio unavailable for this plan" in js
+
+
+def test_f21_drop_matches_ui_strings():
+    leg = (ROOT / "static" / "js" / "legend.js").read_text()
+    assert "drop_matches" in leg and "MC = {green" in leg and "matches," in leg or "detected: D, matches" in leg
+    alt = (ROOT / "static" / "js" / "alt-plans.js").read_text()
+    assert "Drops matched" in alt and "drops_total" in alt
+    assert 'id="as-drops"' in (ROOT / "static" / "index.html").read_text()

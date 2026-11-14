@@ -23,6 +23,9 @@
     ['Song', 'mdrop', 'main drop', 'The song\'s main drop: taller tick labelled MAIN.', 'var(--mk-drop)', 'bar'],
     ['Song', 'drop', 'drop', 'A detected drop.', 'var(--mk-drop)', 'tick'],
     ['Song', 'initial', 'initial boom', 'Where the groove / beat first enters.', 'var(--mk-initial)', 'tick'],
+    ['Match', 'm-green', 'drop matched', 'Audio drop lands within 80 ms of a visual boom (line from A1 up to V1).', '#22c55e', 'bar'],
+    ['Match', 'm-amber', 'drop close', 'Audio drop within 250 ms of a visual boom.', '#f59e0b', 'bar'],
+    ['Match', 'm-red', 'drop missed', 'No visual boom near this audio drop (dashed line).', '#ef4444', 'bar'],
     ['Song', 'encore', 'encore', 'A drop again, may have no build-up.', 'var(--mk-encore)', 'tick'],
     ['Video', 'visual', 'visual boom', 'A visual impact: motion burst, flash, zoom punch or whip pan.', 'var(--mk-visual)', 'tick'],
     ['Video', 'camera', 'camera whip', 'A fast camera whip (span from start to end).', 'var(--mk-camera)', 'bar'],
@@ -103,6 +106,15 @@
     D.busy = false; if (typeof draw === 'function') draw();
   }
   function lullsPeaks() { const S_ = window.S, V = S_.video, W_ = S_.wf; D.lulls = ((W_ && W_.lulls) || []); D.peaks = ((V && V.peak_segments) || []); }
+  // F21: per-plan audio drops mapped to OUTPUT time + their visual-boom matches (result.final.drop_matches); only in Auto-synced mode
+  const MC = {green: '#22c55e', amber: '#f59e0b', red: '#ef4444'};
+  const KINDNAME = {main_drop: 'Main drop', drop: 'Drop', initial_boom: 'Initial boom', encore: 'Encore'};
+  function matches() {
+    const A = window.AS, run = A && A.curRun && A.curRun(), f = run && run.result && run.result.eligible !== false && A.mode === 'synced' && !A.running ? run.result.final : null;
+    return f && Array.isArray(f.drop_matches) && f.drop_matches.length ? f.drop_matches : null;
+  }
+  const mcol = m => m.kind === 'initial_boom' ? '--mk-initial' : m.kind === 'encore' ? '--mk-encore' : '--mk-drop';
+  D.drawn = [];
   const isMain = b => b.main || (D.main != null && Math.abs(b.t - D.main) < 0.01);
   const bcol = b => b.class === 'initial_boom' ? '--mk-initial' : b.class === 'encore' ? '--mk-encore' : '--mk-drop';
   // F2: a song shorter than the video uses only a stretch of it; dim the rest on V1 and label it.
@@ -124,27 +136,36 @@
     ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(lx - 3, v0 + 4, tw + 6, 16); ctx.fillStyle = '#fff'; ctx.fillText(w.label, lx, v0 + 16); ctx.restore();
   }
   window.mkDraw = function (ctx, RULER_, V1H_, A1H_, t2x_, W) {
-    const S_ = window.S; if (!S_ || !S_.dur) return; lullsPeaks();
+    const S_ = window.S; if (!S_ || !S_.dur) return; lullsPeaks(); D.drawn = [];
     const toT = mapA(), a0 = RULER_ + V1H_ + 4, a1 = a0 + A1H_ - 8, v0 = RULER_;
     drawUnused(ctx, v0, V1H_, t2x_, W);
     ctx.save();
     if (S_.wf) {
       ctx.fillStyle = css('--mk-lull') || 'rgba(139,92,246,.12)';
       D.lulls.forEach(l => { const s = Array.isArray(l) ? l[0] : l.start, e = Array.isArray(l) ? l[1] : l.end; const x0 = t2x_(toT(s)), x1 = t2x_(toT(e)); if (x1 > 0 && x0 < W) ctx.fillRect(x0, a0, x1 - x0, A1H_ - 8); });
-      D.booms.forEach(b => { const x = t2x_(toT(b.t)); if (x < 0 || x > W) return; const m = isMain(b);
+      const M = matches();
+      if (M) M.forEach(m => { const x = t2x_(m.t_out); if (x < 0 || x > W) return; const mn = m.kind === 'main_drop';
+        ctx.strokeStyle = css(mcol(m)); ctx.lineWidth = mn ? 2 : 1; ctx.beginPath(); ctx.moveTo(x, mn ? a0 : a0 + 4); ctx.lineTo(x, a1); ctx.stroke();
+        if (mn) { ctx.fillStyle = css('--mk-drop'); ctx.font = '9px sans-serif'; ctx.fillText('MAIN', x + 3, a0 + 9); } });
+      else D.booms.forEach(b => { const x = t2x_(toT(b.t)); if (x < 0 || x > W) return; const m = isMain(b);
         ctx.strokeStyle = css(bcol(b)); ctx.lineWidth = m ? 2 : 1; ctx.beginPath(); ctx.moveTo(x, m ? a0 : a0 + 4); ctx.lineTo(x, a1); ctx.stroke();
         if (m) { ctx.fillStyle = css('--mk-drop'); ctx.font = '9px sans-serif'; ctx.fillText('MAIN', x + 3, a0 + 9); } });
     }
     ctx.fillStyle = css('--mk-peak') || 'rgba(34,211,238,.12)';
     D.peaks.forEach(p => { const s = Array.isArray(p) ? p[0] : p.start, e = Array.isArray(p) ? p[1] : p.end; const x0 = t2x_(s), x1 = t2x_(e); if (x1 > 0 && x0 < W) ctx.fillRect(x0, v0, x1 - x0, V1H_); });
     ctx.strokeStyle = css('--mk-visual'); ctx.lineWidth = 1; D.vbooms.forEach(b => { const x = t2x_(b.t); if (x >= 0 && x <= W) { ctx.beginPath(); ctx.moveTo(x, v0 + V1H_ - 14); ctx.lineTo(x, v0 + V1H_); ctx.stroke(); } });
+    const M2 = matches();   // match lines last so they sit on top of the markers; they only span the V1 bottom edge to the A1 top edge
+    if (M2) { ctx.lineWidth = 2; M2.forEach(m => { const xa = t2x_(m.t_out); if (xa < 0 || xa > W) return; const xv = m.vis_t != null ? t2x_(m.vis_t) : xa;
+      ctx.strokeStyle = MC[m.status] || MC.red; ctx.setLineDash(m.vis_t == null ? [3, 3] : []); ctx.beginPath(); ctx.moveTo(xv, v0 + V1H_ - 14); ctx.lineTo(xa, a0 + 6); ctx.stroke();
+      D.drawn.push({status: m.status, kind: m.kind, xa, xv, y0: v0 + V1H_ - 14, y1: a0 + 6}); }); ctx.setLineDash([]); }
     ctx.strokeStyle = css('--mk-camera'); ctx.lineWidth = 3; D.cams.forEach(c => { const x0 = t2x_(c.start), x1 = Math.max(x0 + 3, t2x_(c.end)); ctx.beginPath(); ctx.moveTo(x0, v0 + V1H_ - 3); ctx.lineTo(x1, v0 + V1H_ - 3); ctx.stroke(); });
     ctx.restore();
   };
   addTip(c => {
     const out = [], S_ = window.S, tol = 5, near = t => Math.abs(t2x(t) - c.x) <= tol;
     const inV1 = c.y >= RULER && c.y <= RULER + V1H, inA1 = c.y > RULER + V1H && c.y <= RULER + V1H + A1H;
-    if (inA1) { const toT = mapA(); D.booms.forEach(b => { const t = toT(b.t); if (!near(t)) return; const nm = isMain(b) ? 'Main drop' : b.class === 'initial_boom' ? 'Initial boom' : b.class === 'encore' ? 'Encore' : 'Drop'; out.push({text: nm + ' · ' + mmss(t) + ' · ' + pct(b.conf)}); });
+    if (inA1 && matches()) matches().forEach(m => { if (!near(m.t_out)) return; out.push({text: (KINDNAME[m.kind] || 'Drop') + ' · ' + mmss(m.t_out) + ' · ' + pct(m.conf) + ' · ' + (m.vis_t == null ? 'no visual boom to match (red)' : 'visual boom ' + (m.delta_ms >= 0 ? '+' : '') + Math.round(m.delta_ms) + ' ms (' + m.status + ')')}); });
+    if (inA1) { const toT = mapA(); if (!matches()) D.booms.forEach(b => { const t = toT(b.t); if (!near(t)) return; const nm = isMain(b) ? 'Main drop' : b.class === 'initial_boom' ? 'Initial boom' : b.class === 'encore' ? 'Encore' : 'Drop'; out.push({text: nm + ' · ' + mmss(t) + ' · ' + pct(b.conf)}); });
       D.lulls.forEach(l => { const s = toT(Array.isArray(l) ? l[0] : l.start), e = toT(Array.isArray(l) ? l[1] : l.end); if (c.t >= s && c.t <= e && !out.length) out.push({text: 'Quiet stretch · ' + span(s, e)}); }); }
     if (inV1 && D.vw && (c.t < D.vw.a || c.t > D.vw.b)) out.push({text: 'Unused video · ' + D.vw.label + ' · the song is shorter than the video, so this part is not used'});
     if (inV1) { D.vbooms.forEach(b => { if (near(b.t)) out.push({text: 'Visual boom · ' + mmss(b.t) + ' · ' + kindText(b.kind) + ' · ' + pct(b.conf)}); });
@@ -173,6 +194,6 @@
     const place = () => { root.style.left = (cv.offsetLeft + cv.clientWidth - 6) + 'px'; root.style.top = (cv.offsetTop + 3) + 'px'; };
     place(); addEventListener('resize', () => { place(); fit(); }); setInterval(() => { place(); refresh(); }, 800);
   }
-  window.MKLegend = {register, addTip, rows: () => rows.slice(), detected: D};
+  window.MKLegend = {register, addTip, rows: () => rows.slice(), detected: D, matches};
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 })();

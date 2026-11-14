@@ -1091,6 +1091,37 @@ def main():
                 check("alt-plans: real click switches the plan; player/export plan follow it", okc and p1 and p1["m"] and p1["pn"] and p1["mode"] == "synced", str(p1))
                 okb = real_click("#as-alts .alt-use"); c.pump(1.2)
                 check("alt-plans: switch back restores the chosen plan", okb and c.ev("JSON.stringify(AS.curRun().result.final)") == p0 and c.ev("!AS.curRun().result.plan.marker_alt") is True)
+                # ---- F21: audio-drop markers on A1, match lines A1<->V1, 'drops matched x/y' (real data when the API has it, else synthetic) ----
+                real_dm = c.ev("((AS.curRun().result.final||{}).drop_matches||[]).length") or 0
+                print("INFO  F21: real auto-sync result has %d drop match(es)%s" % (real_dm, "" if real_dm else " (injecting test data)"))
+                if not real_dm:
+                    c.ev("(()=>{const r=AS.curRun(),mk=(st)=>[{t_song:10,t_out:3,kind:'initial_boom',conf:.8,vis_t:3.05,vis_conf:.6,delta_ms:50,status:'green'},{t_song:30,t_out:9,kind:'main_drop',conf:.9,vis_t:9.2,vis_conf:.6,delta_ms:200,status:'amber'},{t_song:40,t_out:12,kind:'drop',conf:.6,vis_t:null,vis_conf:null,delta_ms:null,status:'red'}].slice(0,st);"
+                         "const f=r.result.final;f.drop_matches=mk(3);f.drops_matched=1;f.drops_total=3;"
+                         "(r.result.alternatives||[]).forEach(a=>{a.final.drop_matches=mk(2);a.final.drops_matched=1;a.final.drops_total=2});AS.mode='synced';window.asUi();draw()})()")
+                for (fw, fh) in ((1280, 720), (1440, 900), (1920, 1080)):
+                    c.call("Emulation.setDeviceMetricsOverride", width=fw, height=fh, deviceScaleFactor=1, mobile=False)
+                    c.ev("window.dispatchEvent(new Event('resize'));draw()"); c.pump(0.6)
+                    st = c.ev("(()=>{const f=AS.curRun().result.final,M=MKLegend.matches(),d=MKLegend.detected.drawn,t=(document.getElementById('as-drops')||{}).textContent||'';"
+                              "const cv=document.getElementById('tl').getBoundingClientRect(),bad=[];"
+                              "const boxes=['#mk-lg-btn','#v1-legend','#as-alts','#as-drops'].map(s=>document.querySelector(s)).filter(e=>e&&!e.classList.contains('hidden')).map(e=>[e.id,e.getBoundingClientRect()]);"
+                              "d.forEach(l=>{const r={left:cv.left+Math.min(l.xa,l.xv)-2,right:cv.left+Math.max(l.xa,l.xv)+2,top:cv.top+l.y0,bottom:cv.top+l.y1};"
+                              "boxes.forEach(([id,b])=>{if(id!=='as-alts'&&id!=='as-drops'&&r.left<b.right&&b.left<r.right&&r.top<b.bottom&&b.top<r.bottom)bad.push(id)})});"
+                              "return {n:M?M.length:0,drawn:d.length,want:(f.drop_matches||[]).length,text:t,exp:'Drops matched '+f.drops_matched+'/'+f.drops_total,bad}})()") or {}
+                    check("F21: match lines drawn for every visible drop at %dx%d" % (fw, fh), st.get("n") == st.get("want") and st.get("drawn", 0) >= 1 and st.get("drawn") <= st.get("want"), str(st))
+                    check("F21: 'drops matched x/y' shown on the card at %dx%d" % (fw, fh), st.get("text") == st.get("exp"), str(st))
+                    check("F21: match lines do not cover the legend at %dx%d" % (fw, fh), not st.get("bad"), str(st))
+                    r = c.ev("(%s)(%s)" % (HIT, json.dumps("#as-drops"))) or {}
+                    check("F21: #as-drops visible and topmost at %dx%d" % (fw, fh), not r.get("missing") and not r.get("bad"), str(r))
+                c.call("Emulation.setDeviceMetricsOverride", width=1440, height=900, deviceScaleFactor=1, mobile=False); c.pump(0.5)
+                n0 = c.ev("(AS.curRun().result.final.drop_matches||[]).length")
+                okd = real_click("#as-alts .alt-use"); c.pump(1.5)
+                n1 = c.ev("(()=>{const f=AS.curRun().result.final;return {want:(f.drop_matches||[]).length,drawn:MKLegend.detected.drawn.length,text:document.getElementById('as-drops').textContent,exp:'Drops matched '+f.drops_matched+'/'+f.drops_total}})()") or {}
+                check("F21: markers/lines/card follow the plan switch", okd and n1.get("text") == n1.get("exp") and n1.get("drawn", 0) <= n1.get("want", 0), str(n1))
+                c.ev("AS.mode='orig';window.asUi();draw()"); c.pump(0.5)
+                check("F21: no match lines in Original mode", c.ev("MKLegend.matches()===null&&MKLegend.detected.drawn.length===0") is True)
+                c.ev("AS.mode='synced';window.asUi();draw()"); c.pump(0.3)
+                okb2 = real_click("#as-alts .alt-use"); c.pump(1.2)
+                check("F21: switch back restores the original drop matches", okb2 and c.ev("(AS.curRun().result.final.drop_matches||[]).length") == n0)
                 c.ev("(()=>{const r=AS.curRun();delete r.alt;r.result.alternatives=[];window.asUi()})()")
                 check("alt-plans: card hidden when there are no alternatives", c.ev("document.getElementById('as-alts').classList.contains('hidden')") is True)
             c.ev("window.scrollTo(0,0)")
