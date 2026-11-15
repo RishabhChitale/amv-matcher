@@ -15,6 +15,9 @@ NEAR = 2                 # candidate beats per side of an event
 TAIL_STEP_S = 1.0        # video seconds per tail ramp step
 SPEED_COST = 0.02        # tie-break: prefer speeds near 1
 CANCEL_EVERY = 8         # DP outer iterations between should_cancel() polls
+DISP_COST = 0.25         # per second an event lands away from where the editor put it (x sync_unit): among equal
+                         # beat hits prefer the nearest beat, so a cut already on a beat is not slid a whole beat
+DISP_CAP_S = 0.6         # displacement counted up to this (about a beat): a real global stretch pays a flat cost
 
 
 class Cancelled(Exception):
@@ -147,8 +150,9 @@ def _anchors(events, sync_unit, arc_unit, drops, lulls, beats_out, dev, jump, sh
         for ci, (c, val) in enumerate(cands[i]):
             slot = ent[i][ci]
             s0 = e / c
+            disp = DISP_COST * min(abs(c - e), DISP_CAP_S) * sync_unit
             if lo - 1e-9 <= s0 <= hi + 1e-9:     # head link from (0, 0): its own section, no jump
-                slot[_bucket(s0)] = (val - SPEED_COST * abs(s0 - 1.0) * e * sync_unit, None, s0)
+                slot[_bucket(s0)] = (val - disp - SPEED_COST * abs(s0 - 1.0) * e * sync_unit, None, s0)
             for p in range(max(0, i - LOOKBACK), i):
                 ep = events[p]["t"]
                 if e - ep < 1e-6:
@@ -162,7 +166,7 @@ def _anchors(events, sync_unit, arc_unit, drops, lulls, beats_out, dev, jump, sh
                     for pb, (ps, _pp, psp) in ent[p][pci].items():
                         if abs(psp - s) > jump + 1e-9:
                             continue
-                        sc = ps + val - SPEED_COST * abs(s - 1.0) * (e - ep) * sync_unit
+                        sc = ps + val - disp - SPEED_COST * abs(s - 1.0) * (e - ep) * sync_unit
                         b = _bucket(s)
                         if b not in slot or sc > slot[b][0]:
                             slot[b] = (sc, (p, pci, pb), s)

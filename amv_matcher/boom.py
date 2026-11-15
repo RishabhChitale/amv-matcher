@@ -513,25 +513,28 @@ def plan_drops(song, plan, out_duration):
 
 
 def drop_matches(song, plan, video, out_duration, lead=0.0, kinds=DROP_KINDS):
-    """F21 match lines: every audio drop of `kinds` in output time paired with the nearest strong visual boom of
+    """F21 match lines: every audio drop of `kinds` in output time paired with the nearest strong visual boom or hard cut of
     `video` (the OUTPUT video: retimed when the plan retimes). delta_ms = vis_t - (t_out - lead), the same
     comparison as boom_stats (an event at video t meets the beat at t + lead). status green |d| <= DROP_GREEN_S,
     amber <= DROP_AMBER_S, red beyond or with no visual boom at all (vis_* None).
     Returns {drop_matches, drops_matched (green), drops_total}."""
     vb = [v for v in (video.get("visual_booms") or []) if 0.0 <= float(v["t"]) <= out_duration + 1e-9]
     strong = [v for v in vb if float(v.get("conf", 1.0)) >= DROP_VIS_MIN_CONF] or vb
+    # a hard cut is a picture hit too: cut-driven edits put the drop on a cut, not on a motion/flash boom
+    strong = sorted(strong + [{"t": float(c), "conf": 1.0, "kind": "cut"} for c in (video.get("cut_times") or [])
+                              if 0.0 <= float(c) <= out_duration + 1e-9], key=lambda v: float(v["t"]))
     vt = np.asarray([float(v["t"]) for v in strong])
     rows = []
     for d in plan_drops(song, plan, out_duration):
         if d["kind"] not in kinds:
             continue
         row = {"t_song": d["t_song"], "t_out": d["t_out"], "kind": d["kind"], "conf": d["conf"],
-               "vis_t": None, "vis_conf": None, "delta_ms": None, "status": "red"}
+               "vis_t": None, "vis_conf": None, "vis_kind": None, "delta_ms": None, "status": "red"}
         if len(vt):
             target = d["t_out"] - lead
             j = int(np.argmin(np.abs(vt - target)))
             err = float(vt[j] - target)
-            row.update(vis_t=round(float(vt[j]), 3), vis_conf=round(float(strong[j].get("conf", 1.0)), 3),
+            row.update(vis_t=round(float(vt[j]), 3), vis_conf=round(float(strong[j].get("conf", 1.0)), 3), vis_kind=strong[j].get("kind"),
                        delta_ms=round(1000.0 * err, 1),
                        status="green" if abs(err) <= DROP_GREEN_S + 1e-9 else ("amber" if abs(err) <= DROP_AMBER_S + 1e-9 else "red"))
         rows.append(row)

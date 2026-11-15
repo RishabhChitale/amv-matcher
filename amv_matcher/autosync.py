@@ -700,7 +700,8 @@ def _run(song, video, order, target, work, max_speed_dev, max_tempo_dev, min_sec
             "lead_silence_s": lead_silence(segs) if segs else round(max(0.0, -offset), 6),
             "original_locked": bool(lock_original)}
     return {"steps": steps, "cur": cur, "limits": limits, "out_duration": out_dur, "plan": plan,
-            "out_visual_booms": cur_video.get("visual_booms") or [], "song_used": cur_song}
+            "out_visual_booms": cur_video.get("visual_booms") or [], "out_cut_times": list(cur_video.get("cut_times") or []),
+            "song_used": cur_song}
 
 
 CONTENT_MATCH = True      # F18b: rebuild the video's own hand edit of the song (contentmatch.match) and offer it
@@ -993,7 +994,8 @@ def plan_starts_on(song, plan):
 def _drops(song0, run, lead_s):
     """F21 drop_matches / drops_matched / drops_total of a run's plan: the ORIGINAL song's drops mapped through the
     plan (tempo, segments or offset) against the run's output (retimed) video's visual booms."""
-    return boom.drop_matches(song0, run["plan"], {"visual_booms": run.get("out_visual_booms") or []},
+    return boom.drop_matches(song0, run["plan"], {"visual_booms": run.get("out_visual_booms") or [],
+                                                  "cut_times": run.get("out_cut_times") or []},
                              float(run["out_duration"]), S._lead(lead_s))
 
 
