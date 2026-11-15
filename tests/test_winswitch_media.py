@@ -28,7 +28,7 @@ def test_proxy_encode_replace_retried_and_tmp_cleaned(monkeypatch, tmp_path):
     vp = tmp_path / "v.mkv"
     vp.write_bytes(b"v")
     monkeypatch.setattr(proxy.paths, "CACHE", tmp_path / "cache", raising=False)
-    monkeypatch.setattr(proxy, "_encode", lambda v, t: Path(t).write_bytes(b"p"))
+    monkeypatch.setattr(proxy, "_encode", lambda v, t, *a, **k: Path(t).write_bytes(b"p"))
     calls = []
     monkeypatch.setattr(winsafe, "replace_retry", lambda a, b, *k, **kw: (calls.append((a, b)), os.replace(a, b)))
     out = proxy.build(vp)
