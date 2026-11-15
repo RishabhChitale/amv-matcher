@@ -468,10 +468,12 @@ def splice_song_booms(song, segments):
 
 
 # --- F21: audio drops as timeline markers, mapped through a plan and matched to visual booms ---------------
-DROP_KINDS = ("main_drop", "drop", "encore", "initial_boom")   # what "drops matched x/y" counts (class 'boom' = other hits)
+DROP_KINDS = ("main_drop", "drop", "encore", "initial_boom")   # the drop classes (auto-sync anchors drops of these)
+DROP_COUNT_KINDS = DROP_KINDS + ("boom",)  # what "drops matched x/y" counts: cut-driven own edits hit on plain booms too
+DROP_BOOM_MIN_CONF = 0.5  # a plain 'boom' hit is counted only this confident (= autosync.DROP_MIN_CONF)
 DROP_GREEN_S = 0.08        # |delta| <= this: the drop lands on the boom (same as BOOM_MATCH_S)
 DROP_AMBER_S = 0.25        # |delta| <= this: close; beyond: missed
-DROP_VIS_MIN_CONF = 0.4    # "strong" visual boom; falls back to every visual boom when none is this strong
+DROP_VIS_MIN_CONF = 0.0    # any visual boom is a picture hit (with the hard cuts); was 0.4 ("strong" only)
 
 
 def drop_kind(b, main):
@@ -512,8 +514,9 @@ def plan_drops(song, plan, out_duration):
     return out
 
 
-def drop_matches(song, plan, video, out_duration, lead=0.0, kinds=DROP_KINDS):
-    """F21 match lines: every audio drop of `kinds` in output time paired with the nearest strong visual boom or hard cut of
+def drop_matches(song, plan, video, out_duration, lead=0.0, kinds=DROP_COUNT_KINDS):
+    """F21 match lines: every audio drop of `kinds` (a plain 'boom' only at conf >= DROP_BOOM_MIN_CONF) in output time
+    paired with the nearest visual boom (conf >= DROP_VIS_MIN_CONF) or hard cut of
     `video` (the OUTPUT video: retimed when the plan retimes). delta_ms = vis_t - (t_out - lead), the same
     comparison as boom_stats (an event at video t meets the beat at t + lead). status green |d| <= DROP_GREEN_S,
     amber <= DROP_AMBER_S, red beyond or with no visual boom at all (vis_* None).
@@ -526,7 +529,7 @@ def drop_matches(song, plan, video, out_duration, lead=0.0, kinds=DROP_KINDS):
     vt = np.asarray([float(v["t"]) for v in strong])
     rows = []
     for d in plan_drops(song, plan, out_duration):
-        if d["kind"] not in kinds:
+        if d["kind"] not in kinds or (d["kind"] == "boom" and d["conf"] < DROP_BOOM_MIN_CONF):
             continue
         row = {"t_song": d["t_song"], "t_out": d["t_out"], "kind": d["kind"], "conf": d["conf"],
                "vis_t": None, "vis_conf": None, "vis_kind": None, "delta_ms": None, "status": "red"}

@@ -17,12 +17,13 @@ def test_plain_offset_maps_and_matches():
     vid = {"visual_booms": [{"t": 5.06, "conf": 0.9}, {"t": 50.2, "conf": 0.8}, {"t": 67.3, "conf": 0.9}]}
     r = boom.drop_matches(SONG, plan, vid, 80.0, lead=0.0)
     rows = {m["kind"]: m for m in r["drop_matches"]}
-    assert set(rows) == {"initial_boom", "main_drop", "encore"}          # 'boom' class not counted; 100 s is past the end
+    assert set(rows) == {"initial_boom", "boom", "main_drop", "encore"}  # a confident plain boom counts; 100 s is past the end
+    assert rows["boom"]["status"] == "red"                               # 30 s out: nearest picture hit is 50.2
     assert rows["initial_boom"]["t_out"] == 5.0 and rows["initial_boom"]["status"] == "green"
     assert rows["initial_boom"]["delta_ms"] == 60.0
     assert rows["main_drop"]["status"] == "amber" and rows["main_drop"]["delta_ms"] == 200.0
     assert rows["encore"]["status"] == "red"
-    assert (r["drops_matched"], r["drops_total"]) == (1, 3)
+    assert (r["drops_matched"], r["drops_total"]) == (1, 4)
 
 
 def test_lead_and_tempo_and_splice():
@@ -31,15 +32,15 @@ def test_lead_and_tempo_and_splice():
     # tempo 2x: drops at 7.5, 30, 38.5, 50 (song s / 2); 30 -> out 5.0, 50 -> out 15.0; 7.5 / 38.5 cut out
     vid = {"visual_booms": [{"t": 4.94, "conf": 0.9}, {"t": 14.5, "conf": 0.9}]}
     r = boom.drop_matches(SONG, plan, vid, 20.0, lead=0.06)
-    assert [(m["t_out"], m["kind"], m["status"]) for m in r["drop_matches"]] == [(5.0, "main_drop", "green"), (15.0, "drop", "red")]
+    assert [(m["t_out"], m["kind"], m["status"]) for m in r["drop_matches"]] == [(5.0, "main_drop", "green"), (15.0, "drop", "red")]  # 40 s boom cut out
     assert r["drop_matches"][0]["delta_ms"] == 0.0 and r["drop_matches"][0]["t_song"] == 60.0
 
 
-def test_weak_visual_booms_fall_back_and_none_is_red():
+def test_weak_visual_booms_count_and_none_is_red():
     plan = {"offset": 0.0}
     weak = {"visual_booms": [{"t": 60.0, "conf": 0.1}]}
     r = boom.drop_matches(SONG, plan, weak, 70.0)
-    assert r["drop_matches"][1]["status"] == "green"
+    assert next(m for m in r["drop_matches"] if m["kind"] == "main_drop")["status"] == "green"
     r2 = boom.drop_matches(SONG, plan, {"visual_booms": []}, 70.0)
     assert all(m["status"] == "red" and m["vis_t"] is None for m in r2["drop_matches"]) and r2["drops_matched"] == 0
 
@@ -65,3 +66,12 @@ def test_drop_ok_guard():
     assert A._drop_ok(dict(old), old, 2, 1)
     assert not A._drop_ok(dict(old), old, 1, 1)                                # must land MORE drops
     assert not A._drop_ok(dict(old, sync_pct=78.0), old, 3, 1)                 # sync gave up > 1 point
+
+
+def test_weak_plain_booms_are_not_counted_and_any_visual_boom_is_a_hit():
+    song = {"main_boom": 30.0, "booms": [{"t": 30.0, "conf": 1.0, "class": "drop"}, {"t": 50.0, "conf": 0.3, "class": "boom"},
+                                         {"t": 70.0, "conf": 0.6, "class": "boom"}]}
+    vid = {"visual_booms": [{"t": 30.0, "conf": 0.9}, {"t": 70.02, "conf": 0.2}]}
+    r = boom.drop_matches(song, {"offset": 0.0}, vid, 90.0, lead=0.0)
+    assert [(m["t_out"], m["status"]) for m in r["drop_matches"]] == [(30.0, "green"), (70.0, "green")]   # weak 50 s boom left out
+    assert (r["drops_matched"], r["drops_total"]) == (2, 2)
