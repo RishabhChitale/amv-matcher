@@ -53,7 +53,7 @@ def test_staged_build_and_status(env):
 def test_quality_endpoints(env):
     from fastapi.testclient import TestClient
     from amv_matcher import server
-    c = TestClient(server.app, base_url="http://127.0.0.1:8000", headers={"origin": "http://127.0.0.1:8000"})
+    c = TestClient(server.app, headers={"Origin": "http://127.0.0.1:8765"})
     r = c.get("/api/preview-quality").json()
     assert r["quality"] == 1080 and r["options"] == [720, 1080, 1440, 0]
     assert c.post("/api/preview-quality", json={"quality": 720}).json()["quality"] == 720
@@ -65,7 +65,8 @@ def test_preview_status_and_pq(env):
     from amv_matcher import server
     v = env / "a.avi"
     make_video(v, seconds=1)
-    c = TestClient(server.app, base_url="http://127.0.0.1:8000", headers={"origin": "http://127.0.0.1:8000"})
+    c = TestClient(server.app, headers={"Origin": "http://127.0.0.1:8765"})
+    server.ALLOWED_VIDEOS.add(str(v.resolve()))
     out = proxy.build(v, 720)
     r = c.get("/api/preview-status", params={"path": str(v), "pq": 720})
     assert r.status_code == 200 and r.json() == {"state": "ready", "height": 720, "playable": True}
