@@ -728,6 +728,8 @@ def clip_video(video: dict, start_s: float, end_s: float) -> dict:
     if video.get("visual_booms"):
         out["visual_booms"] = [{**v, "t": round(float(v["t"]) - a, 3)} for v in video["visual_booms"]
                                if a <= float(v["t"]) <= b]
+    if video.get("surge_booms"):
+        out["surge_booms"] = [{**v, "t": round(float(v["t"]) - a, 3)} for v in video["surge_booms"] if a <= float(v["t"]) <= b]
     cm = video.get("camera_motion")
     if cm and cm.get("hz"):
         out["camera_motion"] = {k: (_clip_series(v, cm["hz"], a, b) if isinstance(v, list) else v) for k, v in cm.items()}

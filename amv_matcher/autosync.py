@@ -284,7 +284,8 @@ def _drop_offsets(song, video, offset, lead_s=None):
 
 def _drops_at(song, video, offset, lead_s=None):
     """drops_matched on a plain trim at `offset` (song already carries any tempo change)."""
-    return boom.drop_matches(song, {"offset": offset}, video, float(video["duration"]), S._lead(lead_s))["drops_matched"]
+    return boom.drop_matches(song, {"offset": offset}, video, float(video["duration"]), S._lead(lead_s),
+                             surge=False)["drops_matched"]      # P3: surge hits never steer the sync
 
 
 def _drop_ok(new, old, n_new, n_old):
@@ -701,6 +702,7 @@ def _run(song, video, order, target, work, max_speed_dev, max_tempo_dev, min_sec
             "original_locked": bool(lock_original)}
     return {"steps": steps, "cur": cur, "limits": limits, "out_duration": out_dur, "plan": plan,
             "out_visual_booms": cur_video.get("visual_booms") or [], "out_cut_times": list(cur_video.get("cut_times") or []),
+            "out_surge_booms": cur_video.get("surge_booms") or [],
             "song_used": cur_song}
 
 
@@ -799,6 +801,7 @@ def auto_sync(song: dict, video: dict, target: float = 100, budget_s: float = 20
     {applied, smooth: {total, sync, tight, arc, max_jump, max_accel}, best: {same}}, where `best` is the plan
     plain auto-sync (smooth off) would have chosen and `smooth` the plan applied. Not applicable (looped,
     original-locked, no retime) -> the plain result is returned with smooth.applied False and a reason."""
+    video = boom.ensure_surges(video)    # P3: surge picture hits (lazy, from the cached motion curve; drop counts only)
     song0 = song                         # F21: drops are mapped from the song as given (before any loop)
     if not allow_loop and float(song["duration"]) < float(video["duration"]) - LENGTH_SLACK_S:
         return _auto_sync_window(song, video, dict(
@@ -995,6 +998,7 @@ def _drops(song0, run, lead_s):
     """F21 drop_matches / drops_matched / drops_total of a run's plan: the ORIGINAL song's drops mapped through the
     plan (tempo, segments or offset) against the run's output (retimed) video's visual booms."""
     return boom.drop_matches(song0, run["plan"], {"visual_booms": run.get("out_visual_booms") or [],
+                                                  "surge_booms": run.get("out_surge_booms") or [],
                                                   "cut_times": run.get("out_cut_times") or []},
                              float(run["out_duration"]), S._lead(lead_s))
 

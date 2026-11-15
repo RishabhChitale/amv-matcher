@@ -15,6 +15,8 @@ STFT magnitude, the visual side reuses the flow pass and per-frame brightness.
 """
 from __future__ import annotations
 
+import os
+
 import numpy as np
 from scipy.ndimage import maximum_filter1d, median_filter, uniform_filter1d
 from scipy.signal import find_peaks
@@ -385,6 +387,65 @@ def visual_booms(subject, subject_hz, bright, fps, flow_series=None, camera_even
     return merged
 
 
+# --- surge picture hits (P3) -----------------------------------------------------------------
+# A surge is where the whole picture's motion jumps from a calm stretch to a sustained high: median motion over the
+# next SURGE_POST_S >= SURGE_RATIO x the mean over the SURGE_PRE_S before (and >= SURGE_LEVEL x the video median),
+# timed at the motion peak within SURGE_PEAK_S of the rise. It is ONLY an extra picture hit for "drops matched"
+# (drop_matches): kept in video["surge_booms"], never in visual_booms, so the boom bonus, auto-sync anchors and
+# every score stay as they were. Added lazily from the cached motion curve (ensure_surges), no re-analysis.
+SURGE = os.environ.get("AMV_SURGE", "1") != "0"
+SURGE_VERSION = 1
+SURGE_PRE_S = 1.0
+SURGE_GAP_S = 0.05
+SURGE_POST_S = 0.3
+SURGE_RATIO = 4.0
+SURGE_LEVEL = 1.5
+SURGE_PEAK_S = 0.25
+SURGE_SEP_S = 0.6
+SURGE_DUP_S = MERGE_S    # a surge this close to an existing visual boom adds nothing
+
+
+def surge_booms(motion, fps, existing=()):
+    """Surge hits [{t, conf, kind 'surge'}] of a per-frame motion curve, skipping any within SURGE_DUP_S of `existing`
+    times (the V1 visual booms)."""
+    m = np.asarray(motion if motion is not None else [], float)
+    fps = float(fps or 0.0)
+    n = len(m)
+    if fps <= 0 or n < int(2 * SURGE_PRE_S * fps):
+        return []
+    c = np.r_[0.0, np.cumsum(m)]
+    i = np.arange(n)
+    a = np.clip(i - int(SURGE_PRE_S * fps), 0, n)
+    b = np.clip(i - int(SURGE_GAP_S * fps), 0, n)
+    pre = (c[b] - c[a]) / np.maximum(b - a, 1)
+    w = int(SURGE_POST_S * fps) | 1
+    post = median_filter(m, size=w, origin=-(w // 2), mode="nearest")
+    med = float(np.median(m)) + 1e-9
+    r = post / np.maximum(pre, 0.05 * med)
+    ok = (r >= SURGE_RATIO) & (post >= SURGE_LEVEL * med) & (i > SURGE_PRE_S * fps)
+    pk, _ = find_peaks(np.where(ok, r, 0.0), height=SURGE_RATIO, distance=max(1, int(SURGE_SEP_S * fps)))
+    ex = np.asarray(sorted(float(t) for t in existing))
+    out = []
+    for p in pk:
+        q0 = max(0, p - int(0.2 * fps))
+        q = q0 + int(np.argmax(m[q0:p + int(0.2 * fps)] >= 0.5 * post[p]))
+        q = q + int(np.argmax(m[q:q + int(SURGE_PEAK_S * fps) + 1]))
+        t = round(q / fps, 3)
+        if len(ex) and float(np.min(np.abs(ex - t))) <= SURGE_DUP_S:
+            continue
+        out.append({"t": t, "conf": round(float(min(1.0, 0.3 + 0.1 * np.log2(r[p]))), 3), "kind": "surge"})
+    return out
+
+
+def ensure_surges(video):
+    """video with surge_booms (P3), computed from its cached motion curve when missing or stale; the same dict when
+    it already has them, AMV_SURGE is off, or there is no motion curve."""
+    if not SURGE or not isinstance(video, dict) or video.get("surge_v") == SURGE_VERSION or not video.get("motion_curve"):
+        return video
+    vb = [float(v["t"]) for v in video.get("visual_booms") or []]
+    return dict(video, surge_booms=surge_booms(video["motion_curve"], video.get("fps"), vb), surge_v=SURGE_VERSION)
+
+
 # --- key visual moments (F15) ----------------------------------------------------------------
 # The biggest visual drops of a video: where the picture's activity jumps from a calmer stretch to a
 # sustained high (motion + subject + camera). Visual booms rank instantaneous spikes, so a long climb
@@ -599,14 +660,17 @@ def plan_drops(song, plan, out_duration):
     return out
 
 
-def drop_matches(song, plan, video, out_duration, lead=0.0, kinds=DROP_COUNT_KINDS):
+def drop_matches(song, plan, video, out_duration, lead=0.0, kinds=DROP_COUNT_KINDS, surge=True):
     """F21 match lines: every audio drop of `kinds` (a plain 'boom' only at conf >= DROP_BOOM_MIN_CONF) in output time
     paired with the nearest visual boom (conf >= DROP_VIS_MIN_CONF) or hard cut of
     `video` (the OUTPUT video: retimed when the plan retimes). delta_ms = vis_t - (t_out - lead), the same
     comparison as boom_stats (an event at video t meets the beat at t + lead). status green |d| <= DROP_GREEN_S,
     amber <= DROP_AMBER_S, red beyond or with no visual boom at all (vis_* None).
+    surge: count the P3 surge hits too (video['surge_booms'], AMV_SURGE).
     Returns {drop_matches, drops_matched (green), drops_total}."""
-    vb = [v for v in (video.get("visual_booms") or []) if 0.0 <= float(v["t"]) <= out_duration + 1e-9]
+    video = ensure_surges(video) if surge else video
+    vb = [v for v in (video.get("visual_booms") or []) + ((video.get("surge_booms") or []) if surge and SURGE else [])
+          if 0.0 <= float(v["t"]) <= out_duration + 1e-9]
     strong = [v for v in vb if float(v.get("conf", 1.0)) >= DROP_VIS_MIN_CONF] or vb
     # a hard cut is a picture hit too: cut-driven edits put the drop on a cut, not on a motion/flash boom
     strong = sorted(strong + [{"t": float(c), "conf": 1.0, "kind": "cut"} for c in (video.get("cut_times") or [])
