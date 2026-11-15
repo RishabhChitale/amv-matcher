@@ -5,7 +5,7 @@ import os
 
 import numpy as np
 
-from . import motif
+from . import motif, trajectory
 from ._memo import IdMemo, farr, pearson, pstd
 
 # F15 (story gate cap, story/key-moment fields) is held out of releases. Off by default; AMV_F15=1 turns it on.
@@ -555,7 +555,6 @@ def _pack(song, video, off, tempo_pct, rate, sync_pct, arc_pct, lead_s=None, qui
     bs = buildup.build_stats(song, video, off) if buildup.W_BUILD > 0 else None
     bm = boom.boom_stats(song, video, off, _lead(lead_s)) if boom.W_BOOM > 0 else None
     total = boom.blend_total(buildup.blend_total(_combine(tempo_pct, sync_pct, arc_pct), bs), bm)
-    from . import trajectory
     tj = None
     if trajectory.F22_ENABLED:       # F22 (flagged): closeness to the reference coupling profile, W_TRAJ of the total
         try:
