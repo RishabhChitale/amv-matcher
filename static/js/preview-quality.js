@@ -40,7 +40,7 @@
     if (my !== token) return;
     if (!j) { say(''); return; }
     const orig = [...sel.options].find(o => o.value === '0'); if (orig) orig.disabled = j.playable === false;
-    if (j.state === 'building') { say('Upgrading preview…'); pollTimer = setTimeout(() => poll(path, my), 1500); return; }
+    if (j.state === 'building' || j.state === 'quick') { say('Upgrading preview…'); if (j.state === 'quick') swap(path, j.height | 0); pollTimer = setTimeout(() => poll(path, my), 1500); return; }
     say(''); if (j.state === 'ready') swap(path, j.height | 0);
   }
   function refresh() { const p = window.S && S.videoPath; if (!p) return; const my = ++token; poll(p, my); }
