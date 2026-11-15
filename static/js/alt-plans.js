@@ -39,7 +39,7 @@
     const run = AS.curRun && AS.curRun(), st = state(run);
     const so = $('as-starts'), sf = run && run.result && run.result.eligible !== false && !AS.running ? run.result.final : null;
     const dr = $('as-drops'), dt = dropsTxt(sf); if (dr) { dr.textContent = dt; dr.classList.toggle('hidden', !dt || !(sf.drops_total > 0)); }
-    const tj = $('as-traj'), tt = trajTxt(sf); if (tj) { $('as-traj-txt').textContent = tt; tj.classList.toggle('hidden', !tt); const cb = $('as-traj-on'); if (cb && !cb._f22) { cb._f22 = 1; cb.checked = !(window.MKLegend && !window.MKLegend.trajOn()); cb.onchange = () => { try { localStorage.setItem('amv-traj-off', cb.checked ? '' : '1'); } catch (e) {} if (typeof draw === 'function') draw(); }; } }
+    const tj = $('as-traj'), tt = trajTxt(sf); if (tj) { const on = !window.MKLegend || window.MKLegend.trajOn(); $('as-traj-txt').textContent = on ? tt : 'Intensity curves'; tj.classList.toggle('hidden', !tt || AS.mode !== 'synced'); const cb = $('as-traj-on'); if (cb && !cb._f22) { cb._f22 = 1; cb.checked = !(window.MKLegend && !window.MKLegend.trajOn()); cb.onchange = () => { try { localStorage.setItem('amv-traj-off', cb.checked ? '' : '1'); } catch (e) {} if (typeof draw === 'function') render(); if (typeof draw === 'function') draw(); }; } }
     if (so) { so.textContent = startsTxt(sf); so.classList.toggle('hidden', !startsTxt(sf)); }
     box.classList.toggle('hidden', !st || !!AS.running);
     if (!st) { box.innerHTML = ''; return; }

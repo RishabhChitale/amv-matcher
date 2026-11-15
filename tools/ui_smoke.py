@@ -1157,17 +1157,21 @@ def main():
                     c.ev("window.dispatchEvent(new Event('resize'));draw()"); c.pump(0.6)
                     st = c.ev("(()=>{const t=document.getElementById('as-traj'),tj=AS.curRun().result.final.trajectory,tt=(document.getElementById('as-traj-txt')||{}).textContent||'';return {pts:MKLegend.detected.tj.pts,ramps:MKLegend.detected.tj.ramps,txt:tt,shown:!!t&&!t.classList.contains('hidden'),has:!!tj,nr:((tj||{}).ramps||[]).length}})()") or {}
                     check("F22: curves drawn on V1/A1 and ramp brackets shown at %dx%d" % (fw, fh), st.get("pts", 0) > 0 and st.get("ramps", 0) <= st.get("nr", 0), str(st))
+                    ov = c.ev("(()=>{const d=document.documentElement,W=d.clientWidth,o=[];document.querySelectorAll('body *').forEach(e=>{const r=e.getBoundingClientRect();if(r.width&&r.right>W+0.5&&o.length<6)o.push((e.id?'#'+e.id:e.tagName)+' right='+Math.round(r.right))});return {sw:d.scrollWidth,cw:W,o}})()") or {}
+                    check("no horizontal page overflow at %dx%d (results shown)" % (fw, fh), ov.get("sw", 99999) <= ov.get("cw", 0), str(ov))
                     check("F22: stats line shown on the card at %dx%d" % (fw, fh), st.get("shown") and st.get("txt", "").startswith("Intensity:"), str(st))
                     r = c.ev("(%s)(%s)" % (HIT, json.dumps("#as-traj-on"))) or {}
                     check("F22: toggle visible and topmost at %dx%d" % (fw, fh), not r.get("missing") and not r.get("bad"), str(r))
                 c.call("Emulation.setDeviceMetricsOverride", width=1440, height=900, deviceScaleFactor=1, mobile=False); c.pump(0.5)
                 okt = real_click("#as-traj-on"); c.pump(0.5)
                 check("F22: real click on the toggle hides the curves", okt and c.ev("MKLegend.detected.tj.pts===0&&MKLegend.detected.tj.ramps===0") is True)
+                check("F22: stats line hides with the curves (toggle stays to turn them back on)", c.ev("(()=>{const t=(document.getElementById('as-traj-txt')||{}).textContent||'';return !t.startsWith('Intensity:')&&!document.getElementById('as-traj').classList.contains('hidden')})()") is True)
                 okt2 = real_click("#as-traj-on"); c.pump(0.5)
                 check("F22: toggle back shows them again", okt2 and (c.ev("MKLegend.detected.tj.pts") or 0) > 0)
                 tp = c.ev("MKLegend.detected.tj.pts")
                 c.ev("AS.mode='orig';window.asUi();draw()"); c.pump(0.4)
                 check("F22: no curves in Original mode", c.ev("MKLegend.trajectory()===null&&MKLegend.detected.tj.pts===0") is True)
+                check("F22: stats line hidden in Original mode", c.ev("document.getElementById('as-traj').classList.contains('hidden')") is True)
                 c.ev("AS.mode='synced';window.asUi();draw()"); c.pump(0.3)
                 okp = real_click("#as-alts .alt-use"); c.pump(1.5)
                 check("F22: curves/stats follow the plan switch", okp and (c.ev("MKLegend.detected.tj.pts") or 0) > 0 and (c.ev("document.getElementById('as-traj-txt').textContent") or "").startswith("Intensity:"))
