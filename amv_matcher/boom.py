@@ -30,9 +30,13 @@ AUDIO_SEP_S = 8.0       # booms are phrase events, not beats
 SNAP_S = 0.12           # snap to the strongest onset within this
 AUDIO_MAX = 8
 AUDIO_MIN_CONF = 0.25
-BOOM_VERSION = 4        # bump when audio booms change: cached song analyses recompute them
+BOOM_VERSION = 6        # bump when audio booms change: cached song analyses recompute them
 DOWN_BACK_B = 0.75      # P1: a boom moves to the grid beat in [t - this, t + DOWN_FWD_B] beats ...
 DOWN_FWD_B = 2.0        # ... where the kick hits and the bass re-enters hardest (the drop's downbeat)
+BASS_WIN_S = 1.0        # P2: the bass entry is the biggest low-band rise within +-this of the boom ...
+BASS_HALF_S = 0.3       # ... (mean over the next this minus the previous this) ...
+BASS_MIN_DB = 3.0       # ... of at least this ...
+BASS_ALT_S = 0.5        # ... kept as an alternative marker time only when this far from the boom
 
 # F6e classes (docs/TIMELINE-LOG-FORMAT.md booms[].class), from the user's 2026-11-11 review.
 # Levels are dB against the song's p90 low band (0.5 s smoothed); profiles are 24 log bands.
@@ -149,6 +153,7 @@ def audio_booms(S, freqs, sr, hop, onset_env, low_S=None, source="mix", beat_gri
     main = _classify(out, S[:, :m], freqs, fps, L, env, beats) if out else None
     if out and drop_beats is not None and len(drop_beats) >= 4:
         main = _downbeat_snap(out, main, L[:, :m], freqs, fps, np.asarray(drop_beats, dtype=float))
+    _bass_entry(out, low, fps, beats)
     for d in out:
         del d["_rank"]
     return {"booms": out, "main": main, "source": source}
@@ -189,6 +194,32 @@ def _downbeat_snap(out, main, L, freqs, fps, beats):
             d["t"] = nt
     out.sort(key=lambda d: d["t"])
     return main
+
+
+def _bass_entry(out, low, fps, beats):
+    """P2: where the bass actually comes in can sit up to a second off the boom (a pre-drop bass stab, a delayed
+    bass under the kick). The strongest low-band rise > BASS_ALT_S away from the boom (within BASS_WIN_S) is stored
+    as d["bass_t"] (grid-snapped within 0.08 s); the marker moves there only for a pair whose picture hit agrees
+    (drop_matches)."""
+    n, h, w = len(low), max(1, int(round(BASS_HALF_S * fps))), int(round(BASS_WIN_S * fps))
+    c = np.concatenate([[0.0], np.cumsum(low)])
+    for d in out:
+        i0 = int(round(float(d["t"]) * fps))
+        idx = np.arange(max(h, i0 - w), min(n - h, i0 + w) + 1)
+        if not len(idx):
+            continue
+        rise = (c[idx + h] - c[idx]) / h - (c[idx] - c[idx - h]) / h
+        rise[np.abs(idx - i0) <= int(round(BASS_ALT_S * fps))] = -np.inf     # the boom's own rise is not an alternative
+        j = int(np.argmax(rise))
+        if rise[j] < BASS_MIN_DB:
+            continue
+        bt = idx[j] / fps
+        if len(beats):
+            k = int(np.argmin(np.abs(beats - bt)))
+            if abs(beats[k] - bt) <= 0.08:
+                bt = float(beats[k])
+        if abs(bt - float(d["t"])) > BASS_ALT_S:
+            d["bass_t"] = round(float(bt), 3)
 
 
 def _bands(S, freqs, n=24):
@@ -528,8 +559,19 @@ def drop_kind(b, main):
 def song_drops(song):
     """[{t (song s), kind, conf}] of the song's audio booms, sorted by t; [] when none."""
     main = song.get("main_boom")
-    return [{"t": round(float(b["t"]), 3), "kind": drop_kind(b, main), "conf": round(float(b.get("conf", 1.0)), 3)}
-            for b in sorted(song.get("booms") or [], key=lambda x: float(x["t"]))]
+    return [{"t": round(float(b["t"]), 3), "kind": drop_kind(b, main), "conf": round(float(b.get("conf", 1.0)), 3),
+             "alts": _alts(b)} for b in sorted(song.get("booms") or [], key=lambda x: float(x["t"]))]
+
+
+def _alts(b):
+    """P2 alternative marker times of one boom (song s): [(t, why)] -- its time before the downbeat snap and its
+    bass entry. drop_matches moves a marker to one only when a picture hit lands on it and none on the boom."""
+    t, out = float(b["t"]), []
+    if b.get("downbeat_shift"):
+        out.append((round(t - float(b["downbeat_shift"]), 3), "pre_snap"))
+    if b.get("bass_t") is not None:
+        out.append((round(float(b["bass_t"]), 3), "bass_entry"))
+    return out
 
 
 def plan_drops(song, plan, out_duration):
@@ -550,7 +592,9 @@ def plan_drops(song, plan, out_duration):
             if a <= t < b:
                 to = t - a + d0
                 if 0.0 <= to <= out_duration + 1e-9:
-                    out.append({"t_song": d["t"], "t_out": round(to, 3), "kind": d["kind"], "conf": d["conf"]})
+                    alts = [(round(x / r - a + d0, 3), why) for x, why in d.get("alts") or [] if a <= x / r < b]
+                    out.append({"t_song": d["t"], "t_out": round(to, 3), "kind": d["kind"], "conf": d["conf"],
+                                "alts": [(x, why) for x, why in alts if 0.0 <= x <= out_duration + 1e-9]})
     out.sort(key=lambda d: (d["t_out"], d["t_song"]))
     return out
 
@@ -569,15 +613,26 @@ def drop_matches(song, plan, video, out_duration, lead=0.0, kinds=DROP_COUNT_KIN
                               if 0.0 <= float(c) <= out_duration + 1e-9], key=lambda v: float(v["t"]))
     vt = np.asarray([float(v["t"]) for v in strong])
     rows = []
+
+    def nearest(t):
+        j = int(np.argmin(np.abs(vt - t)))
+        return j, float(vt[j] - t)
+
     for d in plan_drops(song, plan, out_duration):
         if d["kind"] not in kinds or (d["kind"] == "boom" and d["conf"] < DROP_BOOM_MIN_CONF):
             continue
         row = {"t_song": d["t_song"], "t_out": d["t_out"], "kind": d["kind"], "conf": d["conf"],
                "vis_t": None, "vis_conf": None, "vis_kind": None, "delta_ms": None, "status": "red"}
         if len(vt):
-            target = d["t_out"] - lead
-            j = int(np.argmin(np.abs(vt - target)))
-            err = float(vt[j] - target)
+            j, err = nearest(d["t_out"] - lead)
+            if abs(err) > DROP_GREEN_S + 1e-9:
+                # P2: the boom's pre-snap time / bass entry, only where a picture hit lands on it (green)
+                for x, why in d.get("alts") or []:
+                    ja, ea = nearest(x - lead)
+                    if abs(ea) <= DROP_GREEN_S + 1e-9:
+                        row.update(t_out=x, moved_from=d["t_out"], moved_why=why)
+                        j, err = ja, ea
+                        break
             row.update(vis_t=round(float(vt[j]), 3), vis_conf=round(float(strong[j].get("conf", 1.0)), 3), vis_kind=strong[j].get("kind"),
                        delta_ms=round(1000.0 * err, 1),
                        status="green" if abs(err) <= DROP_GREEN_S + 1e-9 else ("amber" if abs(err) <= DROP_AMBER_S + 1e-9 else "red"))
