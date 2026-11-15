@@ -1190,7 +1190,7 @@ def main():
                 for (fw, fh) in ((1280, 720), (1920, 1080)):
                     c.call("Emulation.setDeviceMetricsOverride", width=fw, height=fh, deviceScaleFactor=1, mobile=False)
                     c.ev("window.dispatchEvent(new Event('resize'))"); c.pump(0.6)
-                    for hs in ("#bm-mark", "#bm-perfect", "#bm-export", "#bm-import", "#bm-legend .bm-lg"):
+                    for hs in ("#bm-mark", "#bm-perfect", "#bm-export", "#bm-import", "#bm-snap", "#bm-types .bm-type"):
                         r = c.ev("(%s)(%s)" % (HIT, json.dumps(hs))) or {}
                         check("bookmarks: %s visible and topmost at %dx%d" % (hs, fw, fh), not r.get("missing") and not r.get("bad"), str(r))
                 c.call("Emulation.setDeviceMetricsOverride", width=1440, height=900, deviceScaleFactor=1, mobile=False)
@@ -1265,6 +1265,55 @@ def main():
                 # Delete removes the selected bookmark (not the clip)
                 c.ev("BM.sel=BM.items[2].id"); c.key("Delete", "Delete", vk=46); c.pump(0.3)
                 check("bookmarks: Delete removes the selected bookmark only", c.ev("BM.items.length") == 2 and bool(c.ev("S.videoPath")))
+                # ---- F26: toggle marker types, V1/A1 targeting, M placement, magnet (N) ----
+                c.ev("BM.load({items:[]});BM.activeType=null;BM.targets={video:true,audio:true};BM.setSnap(false);document.activeElement&&document.activeElement.blur()"); c.pump(0.3)
+                ctr = lambda sel: c.ev("(()=>{const r=document.querySelector(%s).getBoundingClientRect();return [r.left+r.width/2,r.top+r.height/2]})()" % json.dumps(sel))
+                clk = lambda sel: (lambda p: (c.mouse("mousePressed", p[0], p[1]), c.mouse("mouseReleased", p[0], p[1]), c.pump(0.2)))(ctr(sel))
+                c.ev("seek(S.dur*0.3)"); c.pump(0.2)
+                c.key("m", "KeyM", vk=77, text="m"); c.pump(0.15)
+                check("F26: M with no active type places nothing and pulses the type bar", c.ev("BM.items.length") == 0 and c.ev("document.getElementById('bm-types').classList.contains('pulse')") is True)
+                clk("#bm-types .bm-type[data-type=drop]")
+                check("F26: clicking a type activates it (highlighted)", c.ev("BM.activeType") == "drop" and c.ev("document.querySelector('#bm-types .bm-type[data-type=drop]').getAttribute('aria-pressed')") == "true" and c.ev("document.querySelectorAll('#bm-types .bm-type.on').length") == 1)
+                clk("#bm-types .bm-type[data-type=encore]")
+                check("F26: only one type active at a time", c.ev("BM.activeType") == "encore" and c.ev("document.querySelectorAll('#bm-types .bm-type.on').length") == 1)
+                clk("#bm-types .bm-type[data-type=encore]")
+                check("F26: clicking the active type again clears it", c.ev("BM.activeType") is None and c.ev("document.querySelectorAll('#bm-types .bm-type.on').length") == 0)
+                clk("#bm-types .bm-type[data-type=drop]")
+                check("F26: both tracks are targeted by default and highlighted", c.ev("BM.targets.video&&BM.targets.audio&&document.querySelector('.lbl.v1').classList.contains('trk-on')&&document.querySelector('.lbl.a1').classList.contains('trk-on')") is True)
+                clk(".lbl.a1")
+                check("F26: clicking the A1 header deselects it", c.ev("BM.targets.video&&!BM.targets.audio&&!document.querySelector('.lbl.a1').classList.contains('trk-on')") is True)
+                c.key("m", "KeyM", vk=77, text="m"); c.pump(0.3)
+                its = c.ev("BM.items.map(b=>[b.track,b.type])") or []
+                check("F26: V1 only: M places the active type on V1 only", its == [["video", "drop"]], str(its))
+                clk(".lbl.a1"); clk(".lbl.v1")
+                c.key("m", "KeyM", vk=77, text="m"); c.pump(0.3)
+                its = c.ev("BM.items.map(b=>[b.track,b.type])") or []
+                check("F26: A1 only: M places on A1 only", its[1:] == [["audio", "drop"]], str(its))
+                clk(".lbl.v1")
+                c.key("m", "KeyM", vk=77, text="m"); c.pump(0.3)
+                its = c.ev("BM.items.map(b=>[b.track,b.type,b.t])") or []
+                check("F26: both: M places a linked pair (V1 and A1, same time and type)", len(its) == 4 and sorted(i[0] for i in its[2:]) == ["audio", "video"] and its[2][2] == its[3][2], str(its))
+                c.ev("BM.load({items:[]});BM.targets={video:true,audio:true};BM.activeType=null;BM.setType('drop')"); c.pump(0.2)
+                c.ev("BM.add('video', S.dur*0.5, 'drop')"); c.pump(0.2)
+                r = tlr(); xat = lambda t: r["l"] + c.ev("t2x(%f)" % t); ry = r["t"] + 10
+                t5 = c.ev("S.dur*0.5") or 0
+                c.mouse("mousePressed", xat(t5) + 5, ry); c.mouse("mouseReleased", xat(t5) + 5, ry); c.pump(0.3)
+                off_unsnapped = abs((c.ev("vid.currentTime") or 0) - t5)
+                check("F26: magnet is OFF by default and scrubbing does not snap", c.ev("BM.snapOn") is False and off_unsnapped > 0.0005, str(off_unsnapped))
+                clk("#bm-snap")
+                check("F26: magnet button turns snapping on (highlighted, remembered)", c.ev("BM.snapOn") is True and c.ev("document.getElementById('bm-snap').classList.contains('on')") is True and c.ev("localStorage.getItem('amv-snap')") == "1")
+                c.mouse("mousePressed", xat(t5) + 5, ry); c.mouse("mouseMoved", xat(t5) + 4, ry); c.pump(0.2)
+                sn = abs((c.ev("vid.currentTime") or 0) - t5); hit = c.ev("BM.snapHit")
+                c.mouse("mouseReleased", xat(t5) + 4, ry); c.pump(0.2)
+                check("F26: scrubbing within 8 px snaps to the nearest marker and shows the snap line", sn < 0.001 and hit is not None, "%s %s" % (sn, hit))
+                c.ev("seek(%f)" % (t5 + 3 / max(1, c.ev("W") or 1) * (c.ev("S.dur") or 1)))
+                c.key("m", "KeyM", vk=77, text="m"); c.pump(0.3)
+                check("F26: M placement snaps to the nearest marker", abs((c.ev("BM.items[BM.items.length-1].t") or 0) - t5) < 0.002 and c.ev("BM.items.length") >= 3, str(c.ev("BM.items.map(b=>b.t)")))
+                c.ev("BM.sel=null"); c.key("n", "KeyN", vk=78, text="n"); c.pump(0.2)
+                check("F26: N toggles the magnet off", c.ev("BM.snapOn") is False and c.ev("localStorage.getItem('amv-snap')") == "0")
+                c.key("n", "KeyN", vk=78, text="n"); c.pump(0.2)
+                check("F26: N toggles the magnet on again", c.ev("BM.snapOn") is True)
+                c.ev("BM.setSnap(false);BM.setType('drop');BM.load({items:[]})"); c.pump(0.2)
                 c.ev("BM.load({items:[]})")
             # F7: marker legend (visible, collapsible, real clicks) + tooltips on real mouse moves + extension point
             lb = vis("#mk-lg-btn")

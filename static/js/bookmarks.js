@@ -17,7 +17,8 @@
   const el = id => document.getElementById(id);
   const cv = el('tl'); if (!cv) return;
   const R = 7;                                   // marker half-size in px
-  const BM = window.BM = { items: [], perfect: false, sel: null, markMode: false, TYPES };
+  const BM = window.BM = { items: [], perfect: false, sel: null, markMode: false, TYPES, activeType: null, targets: { video: true, audio: true }, snapOn: false, snapHit: null };
+  try { BM.snapOn = localStorage.getItem('amv-snap') === '1'; } catch (e) { /* storage blocked: stays off */ }
   const newId = () => Array.from(crypto.getRandomValues(new Uint8Array(6)), x => x.toString(16).padStart(2, '0')).join('');   // 12 hex, as the backend
   const nowIso = () => new Date().toISOString();
   const dur = () => (window.S && S.dur) || 0;
@@ -186,7 +187,31 @@
       ctx.closePath();
     } else ctx.arc(x, y, r - 1, 0, Math.PI * 2);
   }
-  function drawTrack(ctx, track, y0, t2x) {
+  // ---------- F26: magnet (N). Snap to bookmarks, detected drops/booms and cuts within SNAP_PX ----------
+  const SNAP_PX = 8;
+  BM.snapPoints = function (ignoreId) {
+    const S_ = window.S || {}, off = (typeof spliceActive === 'function' && spliceActive()) ? 0 : (S_.offset || 0), pts = [];
+    BM.items.forEach(b => { if (b.id !== ignoreId) pts.push(b.t); });
+    const D = (window.MKLegend && MKLegend.detected) || {};
+    (D.booms || []).forEach(b => pts.push(b.t - off)); (D.vbooms || []).forEach(b => pts.push(b.t));
+    (D.cams || []).forEach(b => pts.push(b.t));
+    ((S_.video && S_.video.cut_times) || []).forEach(t => pts.push(t));
+    return pts.filter(t => isFinite(t));
+  };
+  BM.snap = function (t, ignoreId) {
+    BM.snapHit = null; if (!BM.snapOn || !dur()) return t;
+    let best = null, bd = SNAP_PX + 1e-6;
+    BM.snapPoints(ignoreId).forEach(c => { const d = Math.abs(tx(c) - tx(t)); if (d < bd) { bd = d; best = c; } });
+    if (best == null) return t; BM.snapHit = best; return best;
+  };
+  const clearSnapSoon = () => { clearTimeout(BM._st); BM._st = setTimeout(() => { BM.snapHit = null; redraw(); }, 700); };
+  function drawSnap(ctx, y0, h, t2x) {
+    if (BM.snapHit == null) return;
+    const x = Math.round(t2x(BM.snapHit)) + .5; ctx.save(); ctx.strokeStyle = '#22d3ee'; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+    ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y0 + h); ctx.stroke(); ctx.restore();
+  }
+  function drawTrack(ctx, track, y0, t2x, h) {
+    drawSnap(ctx, y0, h || 84, t2x);
     BM.items.forEach(b => {
       if (b.track !== track) return;
       const x = t2x(b.t), y = y0 + 12, t = T[b.type], sel = BM.sel === b.id;
@@ -199,8 +224,8 @@
     });
   }
   const v1 = window.asDrawV1, a1 = window.asDrawA1;
-  window.asDrawV1 = function (ctx, y0, h, t2x) { if (v1) v1.apply(this, arguments); drawTrack(ctx, 'video', y0, t2x); };
-  window.asDrawA1 = function (ctx, y0, h, t2x, W) { if (a1) a1.apply(this, arguments); drawTrack(ctx, 'audio', y0, t2x); };
+  window.asDrawV1 = function (ctx, y0, h, t2x) { if (v1) v1.apply(this, arguments); drawTrack(ctx, 'video', y0, t2x, h); };
+  window.asDrawA1 = function (ctx, y0, h, t2x, W) { if (a1) a1.apply(this, arguments); drawTrack(ctx, 'audio', y0, t2x, h); };
   // the V1 hook only runs when a video is loaded; A1's runs always, so drawing here is safe.
 
   // ---------- interaction on the canvas ----------
@@ -229,17 +254,17 @@
       cv.setPointerCapture(e.pointerId); closePop(); redraw(); return;
     }
     const tr = trackAt(p.y);
-    if (BM.markMode && tr) { e.stopImmediatePropagation(); e.preventDefault(); const nb = BM.add(tr, xt(p.x), 'other'); if (nb) openPop(nb); return; }
+    if (BM.markMode && tr) { e.stopImmediatePropagation(); e.preventDefault(); const nb = BM.add(tr, BM.snap(xt(p.x)), BM.activeType || 'other'); clearSnapSoon(); if (nb) openPop(nb); return; }
     if (BM.sel) { BM.sel = null; closePop(); redraw(); }
   }, true);
   cv.addEventListener('pointermove', e => {
     if (!mdrag) { const p = pt(e); cv.style.cursor = hit(p.x, p.y) ? 'grab' : ''; return; }
     e.stopImmediatePropagation(); const p = pt(e);
     if (!mdrag.moved && Math.abs(p.x - mdrag.x0) < 3) return;
-    mdrag.moved = true; cv.style.cursor = 'grabbing'; const b = BM.get(mdrag.id); if (b) { b.t = r3(clampT(xt(p.x))); redraw(); }
+    mdrag.moved = true; cv.style.cursor = 'grabbing'; const b = BM.get(mdrag.id); if (b) { b.t = r3(clampT(BM.snap(xt(p.x), b.id))); redraw(); }
   }, true);
   cv.addEventListener('pointerup', e => {
-    if (!mdrag) return; e.stopImmediatePropagation(); const d = mdrag; mdrag = null; cv.style.cursor = '';
+    if (!mdrag) return; e.stopImmediatePropagation(); const d = mdrag; mdrag = null; cv.style.cursor = ''; BM.snapHit = null;
     const b = BM.get(d.id); if (b) { if (d.moved) { changed(); sync('upd', b); } else openPop(b); }
   }, true);
   cv.addEventListener('dblclick', e => {
@@ -253,9 +278,41 @@
     if (e.key === 'b' || e.key === 'B') {
       if (!dur()) return; e.preventDefault(); e.stopImmediatePropagation();
       const tr = window.S && S.selClip === 'a' ? 'audio' : 'video', nb = BM.add(tr, vid.currentTime, 'other'); if (nb) openPop(nb);
+    } else if (e.key === 'm' || e.key === 'M') {
+      if (!dur()) return; e.preventDefault(); e.stopImmediatePropagation(); BM.placeActive();
+    } else if (e.key === 'n' || e.key === 'N') {
+      e.preventDefault(); e.stopImmediatePropagation(); BM.setSnap(!BM.snapOn);
     } else if ((e.key === 'Delete' || e.key === 'Backspace') && BM.sel) { e.preventDefault(); e.stopImmediatePropagation(); BM.remove(BM.sel); }
     else if (e.key === 'Escape' && pop && !pop.classList.contains('hidden')) { closePop(); }
   }, true);
+
+  // M: the active type goes at the playhead on every targeted track (both = a linked pair: two bookmarks, same time and type)
+  BM.placeActive = function () {
+    if (!BM.activeType) { pulseBar(); return []; }
+    const t = BM.snap(vid.currentTime || 0), out = [];
+    ['video', 'audio'].forEach(tr => { if (BM.targets[tr]) { const b = BM.add(tr, t, BM.activeType); if (b) out.push(b); } });
+    clearSnapSoon(); redraw(); return out;
+  };
+  function pulseBar() { const b = el('bm-types'); if (!b) return; b.classList.remove('pulse'); void b.offsetWidth; b.classList.add('pulse'); setTimeout(() => b.classList.remove('pulse'), 900); }
+  BM.setType = function (id) { BM.activeType = BM.activeType === id ? null : (T[id] ? id : null); renderBar(); };
+  BM.setTarget = function (tr, on) {
+    const nv = on == null ? !BM.targets[tr] : !!on, other = tr === 'video' ? 'audio' : 'video';
+    if (!nv && !BM.targets[other]) return;                 // keep at least one track targeted
+    BM.targets[tr] = nv; renderTargets();
+  };
+  BM.setSnap = function (on) { BM.snapOn = !!on; try { localStorage.setItem('amv-snap', on ? '1' : '0'); } catch (e) { /* ignore */ } BM.snapHit = null; renderBar(); redraw(); };
+  function renderTargets() {
+    [['video', '.lbl.v1'], ['audio', '.lbl.a1']].forEach(([tr, sel]) => { const l = document.querySelector(sel); if (l) { l.classList.toggle('trk-on', !!BM.targets[tr]); l.setAttribute('aria-pressed', BM.targets[tr] ? 'true' : 'false'); } });
+  }
+  function initTargets() {
+    [['video', '.lbl.v1', 'V1'], ['audio', '.lbl.a1', 'A1']].forEach(([tr, sel, nm]) => {
+      const l = document.querySelector(sel); if (!l) return;
+      l.setAttribute('role', 'button'); l.tabIndex = 0; l.title = 'Target ' + nm + ' for markers (M). Click to select or deselect; both can be selected.';
+      l.addEventListener('click', () => BM.setTarget(tr));
+      l.addEventListener('keydown', e => { if (e.key === 'Enter') BM.setTarget(tr); });
+    });
+    renderTargets();
+  }
 
   // ---------- editor popover ----------
   let pop = null;
@@ -294,6 +351,8 @@
     const n = BM.items.length, mb = el('bm-mark'), pf = el('bm-perfect'), cnt = el('bm-count');
     if (mb) { mb.classList.toggle('on', BM.markMode); mb.setAttribute('aria-pressed', BM.markMode ? 'true' : 'false'); }
     if (pf) pf.checked = BM.perfect;
+    bar.querySelectorAll('.bm-type').forEach(b => { const on = b.dataset.type === BM.activeType; b.classList.toggle('on', on); b.setAttribute('aria-pressed', on ? 'true' : 'false'); });
+    const sn = el('bm-snap'); if (sn) { sn.classList.toggle('on', BM.snapOn); sn.setAttribute('aria-pressed', BM.snapOn ? 'true' : 'false'); }
     if (cnt) cnt.textContent = n ? n + (n === 1 ? ' bookmark' : ' bookmarks') : 'No bookmarks';
     const ex = el('bm-export'); if (ex) ex.disabled = !n;
   }
@@ -302,13 +361,14 @@
     const bar = document.createElement('div'); bar.id = 'bm-bar'; bar.className = 'bm-bar glass';
     const sw = t => { const c = document.createElement('canvas'); c.width = c.height = 18; c.className = 'bm-sw'; const x = c.getContext('2d'); shape(x, t.shape, 9, 9, 7); x.fillStyle = t.shape === 'ring' ? 'rgba(15,17,24,.9)' : t.color; x.fill(); x.lineWidth = 1.5; x.strokeStyle = t.shape === 'ring' ? t.color : 'rgba(10,12,18,.9)'; x.stroke(); return c; };
     bar.innerHTML = '<button id="bm-mark" class="toggle bm-mark" aria-pressed="false" title="Mark mode: click V1 or A1 to add a bookmark (or press B at the playhead, or double-click a track)">Mark</button>' +
-      '<span class="bm-leg" id="bm-legend" aria-label="Bookmark types"></span><span class="muted" id="bm-count">No bookmarks</span><span class="bm-sp"></span>' +
+      '<button id="bm-snap" class="toggle bm-snap" aria-pressed="false" title="Magnet: snap the playhead, dragged markers and M to the nearest marker, drop, boom or cut within 8 px (N)">&#x1F9F2; Snap</button><span class="bm-leg" id="bm-types" role="group" aria-label="Marker type (M places it on the selected tracks)"></span><span id="bm-legend"></span><span class="muted" id="bm-count">No bookmarks</span><span class="bm-sp"></span>' +
       '<label class="chk" title="Flag this whole project as an example of perfect sync"><input type="checkbox" id="bm-perfect"> Perfect sync example</label>' +
       '<button id="bm-export" title="Download bookmarks as JSON and CSV" disabled>Export timelines</button><button id="bm-import" title="Load bookmarks from a JSON or CSV file">Import timelines</button>' +
       '<input type="file" id="bm-file" accept=".json,.csv,application/json,text/csv" class="hidden">';
     wrap.parentNode.insertBefore(bar, wrap);
-    const lg = bar.querySelector('#bm-legend');
-    TYPES.forEach(t => { const s = document.createElement('span'); s.className = 'bm-lg'; s.dataset.type = t.id; s.appendChild(sw(t)); const lt = document.createElement('span'); lt.className = 'bm-lt'; lt.textContent = t.label; s.title = t.label; s.appendChild(lt); lg.appendChild(s); });
+    const lg = bar.querySelector('#bm-types');
+    TYPES.forEach(t => { const s = document.createElement('button'); s.type = 'button'; s.className = 'bm-type bm-lg'; s.dataset.type = t.id; s.setAttribute('aria-pressed', 'false'); s.appendChild(sw(t)); const lt = document.createElement('span'); lt.className = 'bm-lt'; lt.textContent = t.label; s.title = t.label + ': click to make it the active marker type (click again for none), then press M. Shown by this color and shape on the timeline.'; s.appendChild(lt); s.onclick = () => BM.setType(t.id); lg.appendChild(s); });
+    el('bm-snap').onclick = () => BM.setSnap(!BM.snapOn);
     el('bm-mark').onclick = () => { BM.markMode = !BM.markMode; cv.classList.toggle('bm-marking', BM.markMode); renderBar(); };
     el('bm-perfect').onchange = e => { BM.perfect = e.target.checked; renderBar(); sync('perfect', {}); if (window.PROJECT_UI) { /* dirty via sig() */ } };
     el('bm-export').onclick = () => BM.exportAll();
@@ -316,5 +376,5 @@
     el('bm-file').onchange = async e => { const f = e.target.files[0]; e.target.value = ''; if (f) BM.importText(await f.text(), f.name); };
     renderBar();
   }
-  buildBar();
+  buildBar(); initTargets();
 })();

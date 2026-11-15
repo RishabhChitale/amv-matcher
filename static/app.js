@@ -486,20 +486,21 @@ function setOffset(o) {
   syncAudio(true); readout(); draw(); drawOv(); staleExport();
   clearTimeout(scoreTimer); scoreTimer = setTimeout(rescore, 120);
 }
+const snapT = t => (window.BM && BM.snap ? BM.snap(t) : t);   // F26 magnet (N); identity while it is off
 cv.addEventListener('pointerdown', e => {
   const r = cv.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
   const inV1 = y >= RULER && y < RULER + V1H, inA1 = y >= RULER + V1H && y < RULER + V1H + A1H;
   if (y >= RULER) selectClip(inV1 ? 'v' : inA1 ? 'a' : null);   // ruler clicks only seek
   if (inA1 && S.wf && !locked()) drag = {kind: 'clip', x, off: S.offset};
-  else { drag = {kind: 'seek'}; seek(x2t(x)); }
+  else { drag = {kind: 'seek'}; seek(snapT(x2t(x))); }
   cv.setPointerCapture(e.pointerId);
 });
 cv.addEventListener('pointermove', e => {
   if (!drag) return; const x = e.clientX - cv.getBoundingClientRect().left;
-  if (drag.kind === 'seek') return seek(x2t(x));
+  if (drag.kind === 'seek') return seek(snapT(x2t(x)));
   setOffset(drag.off - x2t(x - drag.x));
 });
-cv.addEventListener('pointerup', () => { drag = null; });
+cv.addEventListener('pointerup', () => { drag = null; if (window.BM) { BM.snapHit = null; draw(); } });
 function clampOff(o) { const mx = S.wf ? Math.max(0, S.wf.duration - S.dur) : 0; return Math.min(mx, Math.max(0, o)); }
 function partsText(segs) {
   const f = segs.map(g => fmtMS(g.src_start) + '-' + fmtMS(g.src_end));
