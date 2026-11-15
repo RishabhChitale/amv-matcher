@@ -50,11 +50,15 @@ MIN_OVERLAP_S = 8.0
 # Reference = the common region of the user's gold pairs (four edits, each with its own audio),
 # measured on LOCAL coupling features (local_features). Each bound is the lowest gold value (a
 # one-sided band: more coupling than the weakest gold pair is never punished); closeness falls
-# linearly from the bound to 0 at FLOOR. GOLD_SPREAD is the measured min / median / max per feature
-# over the four gold pairs (info for reports and the UI; ratio and peak are info only).
-REFERENCE = {"loc_r": 0.475, "agree": 0.535, "rise": 0.515}
-FLOOR = {"loc_r": 0.0, "agree": 0.30, "rise": 0.25}
-GOLD_SPREAD = {"loc_r": (0.475, 0.792, 0.883), "agree": (0.535, 0.619, 0.692), "rise": (0.515, 0.545, 0.631),
+# linearly from the bound to 0 at FLOOR. FLOOR is CHANCE: the mean of each feature when the edit's
+# own song is decoupled from it (circular shifts >= 30 s, 10 s block shuffles, reversal; 486 nulls
+# over six real pairs), so an unrelated song scores near 0, not ~60 (agree / rise sit near 0.5 by
+# chance). The gold minimum is close to the null spread (null p90 loc_r .475, agree .598, rise .585),
+# so the sub-score is a weak signal: info + a small flagged weight, never a gate. GOLD_SPREAD is the
+# measured min / median / max per feature over the four gold pairs (ratio and peak are info only).
+REFERENCE = {"loc_r": 0.446, "agree": 0.535, "rise": 0.515}
+FLOOR = {"loc_r": 0.265, "agree": 0.493, "rise": 0.467}
+GOLD_SPREAD = {"loc_r": (0.446, 0.794, 0.883), "agree": (0.535, 0.619, 0.692), "rise": (0.515, 0.544, 0.631),
                "follow": (0.055, 0.653, 0.766), "ratio": (0.54, 1.044, 1.556), "peak": (0.541, 0.823, 1.0)}
 LOC_WIN_S, LOC_HOP_S = 30.0, 10.0   # local Pearson windows (one window when the overlap is shorter)
 LOC_Q = 75                          # loc_r = this percentile of the window r's
@@ -177,7 +181,10 @@ def local_features(v, s) -> dict:
     W, H, L = int(LOC_WIN_S * HZ), int(LOC_HOP_S * HZ), int(SLOPE_S * HZ)
     if m <= L + 4:
         return {"loc_r": 0.0, "agree": 0.0, "rise": 0.0}
-    lr = [_pearson(v[i:i + W], s[i:i + W]) for i in range(0, m - W + 1, H)] if m >= W else [_pearson(v, s)]
+    starts = list(range(0, m - W + 1, H)) if m >= W else []
+    if starts and starts[-1] != m - W:
+        starts.append(m - W)                                   # last window ends at the overlap end: no dropped tail
+    lr = [_pearson(v[i:i + W], s[i:i + W]) for i in starts] if starts else [_pearson(v, s)]
     dv, ds = v[L:] - v[:-L], s[L:] - s[:-L]
     w = np.abs(dv)
     big = w > np.percentile(w, 50)

@@ -38,6 +38,24 @@ def test_flat_or_unrelated_song_scores_low():
     assert abs(T.sub_score(mid) - 50.0) < 0.1
 
 
+def test_unrelated_pairs_score_near_chance_floor():
+    rng = np.random.default_rng(0)
+
+    def walk(n):                                             # smooth random curve (4 s box filter)
+        return np.convolve(rng.standard_normal(n + 39), np.ones(40) / 40, mode="valid")
+
+    null = [T.local_features(walk(1200), walk(1200)) for _ in range(60)]   # 120 s, independent song
+    for k in ("agree", "rise"):                              # FLOOR is chance: ~0.5 for the sign features
+        assert abs(np.mean([f[k] for f in null]) - T.FLOOR[k]) < 0.05
+    subs = [T.sub_score(f) for f in null]
+    assert np.mean(subs) < 45 and np.median(subs) < 40        # uncoupled pairs land well below the gold pairs
+    coupled = []
+    for _ in range(20):
+        v = walk(1200)
+        coupled.append(T.sub_score(T.local_features(v, v + 0.05 * walk(1200))))
+    assert min(coupled) == 100.0 and np.mean(subs) < min(coupled) - 50
+
+
 def test_local_features_short_and_opposed():
     n = 200                                                  # 20 s: under one local window -> whole-overlap r
     v = np.array(_arc(n, 10.0))
