@@ -30,7 +30,9 @@ AUDIO_SEP_S = 8.0       # booms are phrase events, not beats
 SNAP_S = 0.12           # snap to the strongest onset within this
 AUDIO_MAX = 8
 AUDIO_MIN_CONF = 0.25
-BOOM_VERSION = 3        # bump when audio booms change: cached song analyses recompute them
+BOOM_VERSION = 4        # bump when audio booms change: cached song analyses recompute them
+DOWN_BACK_B = 0.75      # P1: a boom moves to the grid beat in [t - this, t + DOWN_FWD_B] beats ...
+DOWN_FWD_B = 2.0        # ... where the kick hits and the bass re-enters hardest (the drop's downbeat)
 
 # F6e classes (docs/TIMELINE-LOG-FORMAT.md booms[].class), from the user's 2026-11-11 review.
 # Levels are dB against the song's p90 low band (0.5 s smoothed); profiles are 24 log bands.
@@ -79,7 +81,7 @@ def _p95(x):
     return float(np.percentile(x, 95)) + 1e-9 if len(x) else 1.0
 
 
-def audio_booms(S, freqs, sr, hop, onset_env, low_S=None, source="mix", beat_grid=None):
+def audio_booms(S, freqs, sr, hop, onset_env, low_S=None, source="mix", beat_grid=None, drop_beats=None):
     """Ranked audio booms [{t, conf, jump_db, onset, cue, kind}] plus the index of the main one.
 
     S: |STFT| (freq x frames) of the mix; low_S: optional |STFT| of the drums+bass stems used for
@@ -145,9 +147,48 @@ def audio_booms(S, freqs, sr, hop, onset_env, low_S=None, source="mix", beat_gri
     out = out[:AUDIO_MAX]
     out.sort(key=lambda d: d["t"])
     main = _classify(out, S[:, :m], freqs, fps, L, env, beats) if out else None
+    if out and drop_beats is not None and len(drop_beats) >= 4:
+        main = _downbeat_snap(out, main, L[:, :m], freqs, fps, np.asarray(drop_beats, dtype=float))
     for d in out:
         del d["_rank"]
     return {"booms": out, "main": main, "source": source}
+
+
+def _downbeat_snap(out, main, L, freqs, fps, beats):
+    """P1: the peak-picked frame is often the hit BEFORE the drop (a fill / pickup one beat early) or sits on
+    the off-beat; the drop itself is the beat where the kick lands and the bass re-enters. Each boom without a
+    lead-in snap moves to the beat in [t - DOWN_BACK_B, t + DOWN_FWD_B] beats maximising kick onset (dB rise
+    over the 0.1 s before) + bass re-entry (1 beat after vs 1 beat before). Returns the (moved) main time."""
+    T = float(np.median(np.diff(beats))) if len(beats) >= 2 else 0.0
+    if not np.isfinite(T) or T <= 0:
+        return main
+    low = _db((L[freqs < LOW_HZ] ** 2).sum(axis=0))
+    n, nb = len(low), max(1, int(round(T * fps)))
+    f = lambda s: int(round(s * fps))
+
+    def strength(b):
+        i = f(b)
+        if i - nb < 0 or i + nb > n:
+            return -np.inf
+        kick = low[max(0, i - f(0.03)):i + f(0.06) + 1].max() - low[max(0, i - f(0.15)):max(1, i - f(0.04))].mean()
+        return float(kick + low[i:i + nb].mean() - low[i - nb:max(i - nb + 1, i - f(0.02))].mean())
+
+    for d in out:
+        if d.get("lead_in"):
+            continue        # placed on a lead-in hit on purpose (the hit starts before the bass peak)
+        t = float(d["t"])
+        cand = beats[(beats >= t - DOWN_BACK_B * T) & (beats <= t + DOWN_FWD_B * T)]
+        sc = [strength(b) for b in cand]
+        if not len(cand) or not np.isfinite(max(sc)):
+            continue
+        nt = round(float(cand[int(np.argmax(sc))]), 3)
+        if nt != t:
+            if main is not None and abs(float(main) - t) < 1e-6:
+                main = nt
+            d["downbeat_shift"] = round(nt - t, 3)
+            d["t"] = nt
+    out.sort(key=lambda d: d["t"])
+    return main
 
 
 def _bands(S, freqs, n=24):

@@ -283,7 +283,7 @@ def _compute(path: str):
         "drops": curves.find_drops(energy),
         "lulls": curves.find_lulls(energy),
     }
-    result.update(_booms(path, S, freqs, env, result.get("beat_grid")))
+    result.update(_booms(path, S, freqs, env, result.get("beat_grid"), _drop_beats(result)))
     from .structure import analyze_structure
     try:
         result["sections"] = analyze_structure(y, sr, result)
@@ -319,13 +319,19 @@ def _stem_low(path, n_frames):
     return None
 
 
-def _booms(path, S, freqs, env, beat_grid):
+def _drop_beats(r):
+    """Beats a drop may snap onto (boom._downbeat_snap): the grid when it is used, else the tracker beats."""
+    return r.get("beat_grid") if r.get("grid_used") else r.get("beat_times")
+
+
+def _booms(path, S, freqs, env, beat_grid, drop_beats=None):
     """F6 audio booms (sub-bass / kick re-entry), see boom.audio_booms."""
     from . import boom
     low = _stem_low(path, S.shape[1])
     try:
         r = boom.audio_booms(S, freqs, SR, HOP, env, low_S=low,
-                             source="stems" if low is not None else "mix", beat_grid=beat_grid)
+                             source="stems" if low is not None else "mix", beat_grid=beat_grid,
+                             drop_beats=drop_beats)
     except Exception:
         r = {"booms": [], "main": None, "source": "mix"}
     return {"booms": r["booms"], "main_boom": r["main"], "boom_source": r["source"], "boom_version": boom.BOOM_VERSION}
@@ -348,7 +354,7 @@ def analyze_song(path: str, cache_path: Path = CACHE_PATH, flush: bool = True) -
     if hit is not None:
         if not is_current(hit):
             S, freqs, env = _boom_inputs(path)
-            hit = {**hit, **_booms(path, S, freqs, env, hit.get("beat_grid"))}
+            hit = {**hit, **_booms(path, S, freqs, env, hit.get("beat_grid"), _drop_beats(hit))}
             cache.set(key, hit, flush=flush)
         return hit
     result, peaks = _compute(path)
