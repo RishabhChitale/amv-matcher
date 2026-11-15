@@ -110,6 +110,9 @@
   }
   function lullsPeaks() { const S_ = window.S, V = S_.video, W_ = S_.wf; D.lulls = ((W_ && W_.lulls) || []); D.peaks = ((V && V.peak_segments) || []); }
   // F21: per-plan audio drops mapped to OUTPUT time + their visual-boom matches (result.final.drop_matches); only in Auto-synced mode
+  // Fallback flag: A1<->V1 match lines and 'Drops matched x/y' are OFF by default (plain A1 drop markers stay). On via localStorage amv-matchlines='1' or MATCHLINES_DEFAULT.
+  const MATCHLINES_DEFAULT = false;
+  const matchLinesOn = () => { try { const v = localStorage.getItem('amv-matchlines'); return v === '1' ? true : v === '0' ? false : MATCHLINES_DEFAULT; } catch (e) { return MATCHLINES_DEFAULT; } };
   const MC = {green: '#22c55e', amber: '#f59e0b', red: '#ef4444'};
   const KINDNAME = {main_drop: 'Main drop', drop: 'Drop', initial_boom: 'Initial boom', encore: 'Encore'};
   function matches() {
@@ -176,7 +179,7 @@
     ctx.fillStyle = css('--mk-peak') || 'rgba(34,211,238,.12)';
     D.peaks.forEach(p => { const s = Array.isArray(p) ? p[0] : p.start, e = Array.isArray(p) ? p[1] : p.end; const x0 = t2x_(s), x1 = t2x_(e); if (x1 > 0 && x0 < W) ctx.fillRect(x0, v0, x1 - x0, V1H_); });
     ctx.strokeStyle = css('--mk-visual'); ctx.lineWidth = 1; D.vbooms.forEach(b => { const x = t2x_(b.t); if (x >= 0 && x <= W) { ctx.beginPath(); ctx.moveTo(x, v0 + V1H_ - 14); ctx.lineTo(x, v0 + V1H_); ctx.stroke(); } });
-    const M2 = matches();   // match lines last so they sit on top of the markers; they only span the V1 bottom edge to the A1 top edge
+    const M2 = matchLinesOn() ? matches() : null;   // match lines last so they sit on top of the markers; they only span the V1 bottom edge to the A1 top edge
     if (M2) { ctx.lineWidth = 2; M2.forEach(m => { const xa = t2x_(m.t_out); if (xa < 0 || xa > W) return; const xv = m.vis_t != null ? t2x_(m.vis_t) : xa;
       ctx.strokeStyle = MC[m.status] || MC.red; ctx.setLineDash(m.vis_t == null ? [3, 3] : []); ctx.beginPath(); ctx.moveTo(xv, v0 + V1H_ - 14); ctx.lineTo(xa, a0 + 6); ctx.stroke();
       D.drawn.push({status: m.status, kind: m.kind, xa, xv, y0: v0 + V1H_ - 14, y1: a0 + 6}); }); ctx.setLineDash([]); }
@@ -186,7 +189,7 @@
   addTip(c => {
     const out = [], S_ = window.S, tol = 5, near = t => Math.abs(t2x(t) - c.x) <= tol;
     const inV1 = c.y >= RULER && c.y <= RULER + V1H, inA1 = c.y > RULER + V1H && c.y <= RULER + V1H + A1H;
-    if (inA1 && matches()) matches().forEach(m => { if (!near(m.t_out)) return; out.push({text: (KINDNAME[m.kind] || 'Drop') + ' · ' + mmss(m.t_out) + ' · ' + pct(m.conf) + ' · ' + (m.vis_t == null ? 'no visual boom to match (red)' : 'visual boom ' + (m.delta_ms >= 0 ? '+' : '') + Math.round(m.delta_ms) + ' ms (' + m.status + ')')}); });
+    if (inA1 && matches()) matches().forEach(m => { if (!near(m.t_out)) return; out.push({text: (KINDNAME[m.kind] || 'Drop') + ' · ' + mmss(m.t_out) + ' · ' + pct(m.conf) + (!matchLinesOn() ? '' : ' · ' + (m.vis_t == null ? 'no visual boom to match (red)' : 'visual boom ' + (m.delta_ms >= 0 ? '+' : '') + Math.round(m.delta_ms) + ' ms (' + m.status + ')'))}); });
     if (inA1) { const toT = mapA(); if (!matches()) D.booms.forEach(b => { const t = toT(b.t); if (!near(t)) return; const nm = isMain(b) ? 'Main drop' : b.class === 'initial_boom' ? 'Initial boom' : b.class === 'encore' ? 'Encore' : 'Drop'; out.push({text: nm + ' · ' + mmss(t) + ' · ' + pct(b.conf)}); });
       D.lulls.forEach(l => { const s = toT(Array.isArray(l) ? l[0] : l.start), e = toT(Array.isArray(l) ? l[1] : l.end); if (c.t >= s && c.t <= e && !out.length) out.push({text: 'Quiet stretch · ' + span(s, e)}); }); }
     if (inV1 && D.vw && (c.t < D.vw.a || c.t > D.vw.b)) out.push({text: 'Unused video · ' + D.vw.label + ' · the song is shorter than the video, so this part is not used'});
@@ -216,6 +219,6 @@
     const place = () => { root.style.left = (cv.offsetLeft + cv.clientWidth - 6) + 'px'; root.style.top = (cv.offsetTop + 3) + 'px'; };
     place(); addEventListener('resize', () => { place(); fit(); }); setInterval(() => { place(); refresh(); }, 800);
   }
-  window.MKLegend = {register, addTip, rows: () => rows.slice(), detected: D, matches, trajectory, trajOn};
+  window.MKLegend = {register, addTip, rows: () => rows.slice(), detected: D, matches, trajectory, trajOn, matchLinesOn};
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 })();

@@ -1115,6 +1115,11 @@ def main():
                     c.ev("(()=>{const r=AS.curRun(),mk=(st)=>[{t_song:10,t_out:3,kind:'initial_boom',conf:.8,vis_t:3.05,vis_conf:.6,delta_ms:50,status:'green'},{t_song:30,t_out:9,kind:'main_drop',conf:.9,vis_t:9.2,vis_conf:.6,delta_ms:200,status:'amber'},{t_song:40,t_out:12,kind:'drop',conf:.6,vis_t:null,vis_conf:null,delta_ms:null,status:'red'}].slice(0,st);"
                          "const f=r.result.final;f.drop_matches=mk(3);f.drops_matched=1;f.drops_total=3;"
                          "(r.result.alternatives||[]).forEach(a=>{a.final.drop_matches=mk(2);a.final.drops_matched=1;a.final.drops_total=2});AS.mode='synced';window.asUi();draw()})()")
+                # fallback flag: match lines + 'Drops matched x/y' are OFF by default; the plain A1 drop markers stay
+                c.ev("try{localStorage.removeItem('amv-matchlines')}catch(e){};AS.mode='synced';window.asUi();draw()"); c.pump(0.5)
+                off = c.ev("(()=>{const d=document.getElementById('as-drops');return {flag:MKLegend.matchLinesOn(),lines:MKLegend.detected.drawn.length,markers:(MKLegend.matches()||[]).length,drops:d?d.classList.contains('hidden')||!d.textContent:true,alts:/drops matched/i.test((document.getElementById('as-alts')||{}).textContent||'')}})()") or {}
+                check("F21 fallback: default hides match lines and 'Drops matched' (card + alt rows), A1 markers stay", off.get("flag") is False and off.get("lines") == 0 and off.get("markers", 0) >= 1 and off.get("drops") is True and off.get("alts") is False, str(off))
+                c.ev("try{localStorage.setItem('amv-matchlines','1')}catch(e){};window.asUi();draw()"); c.pump(0.5)
                 for (fw, fh) in ((1280, 720), (1440, 900), (1920, 1080)):
                     c.call("Emulation.setDeviceMetricsOverride", width=fw, height=fh, deviceScaleFactor=1, mobile=False)
                     c.ev("window.dispatchEvent(new Event('resize'));draw()"); c.pump(0.6)
@@ -1139,6 +1144,7 @@ def main():
                 c.ev("AS.mode='synced';window.asUi();draw()"); c.pump(0.3)
                 okb2 = real_click("#as-alts .alt-use"); c.pump(1.2)
                 check("F21: switch back restores the original drop matches", okb2 and c.ev("(AS.curRun().result.final.drop_matches||[]).length") == n0)
+                c.ev("try{localStorage.removeItem('amv-matchlines')}catch(e){};window.asUi();draw()"); c.pump(0.3)
                 # ---- F22: intensity curves + build-up brackets on V1/A1 (information), stats line, toggle (real data when present, else injected) ----
                 real_tj = bool(c.ev("!!(AS.curRun().result.final||{}).trajectory"))
                 print("INFO  F22: real auto-sync result has trajectory=%s%s" % (real_tj, "" if real_tj else " (injecting test data)"))

@@ -17,15 +17,16 @@
     }
     return run.alt;
   }
+  const mlOn = () => !!(window.MKLegend && window.MKLegend.matchLinesOn && window.MKLegend.matchLinesOn());   // fallback flag amv-matchlines (default off)
   const pct = v => v == null ? '-' : Math.round(v) + '%';
   function row(e, on) {
     const f = e.final || {};
     return `<div class="alt${on ? ' on' : ''}" data-id="${e.id}"><div class="alt-top"><b class="alt-name">${e.label}</b><span class="alt-total">Total ${pct(f.total_pct)}</span></div>`
-      + `<div class="alt-sub">Sync ${pct(f.sync_pct)} · Tight ${pct(f.tight_pct)} · Energy ${pct(f.arc_pct)} · Tempo ${pct(f.tempo_pct)}${f.median_err_ms != null ? ' · median error ' + Math.round(f.median_err_ms) + ' ms' : ''}${f.starts_on ? ' · starts on ' + f.starts_on : ''}${f.drops_total > 0 ? ' · drops matched ' + (f.drops_matched || 0) + '/' + f.drops_total : ''}</div>`
+      + `<div class="alt-sub">Sync ${pct(f.sync_pct)} · Tight ${pct(f.tight_pct)} · Energy ${pct(f.arc_pct)} · Tempo ${pct(f.tempo_pct)}${f.median_err_ms != null ? ' · median error ' + Math.round(f.median_err_ms) + ' ms' : ''}${f.starts_on ? ' · starts on ' + f.starts_on : ''}${mlOn() && f.drops_total > 0 ? ' · drops matched ' + (f.drops_matched || 0) + '/' + f.drops_total : ''}</div>`
       + (on && e.err ? '<div class="alt-err">Preview audio unavailable for this plan; export is unaffected.</div>' : '')
       + (on ? '<span class="alt-badge">In use</span>' : '<button class="alt-use" data-id="' + e.id + '">Use this plan</button>') + '</div>';
   }
-  const dropsTxt = f => f && f.drops_total != null ? 'Drops matched ' + (f.drops_matched || 0) + '/' + f.drops_total : '';
+  const dropsTxt = f => mlOn() && f && f.drops_total != null ? 'Drops matched ' + (f.drops_matched || 0) + '/' + f.drops_total : '';
   const f2 = (v, d) => typeof v === 'number' && isFinite(v) ? v.toFixed(d == null ? 2 : d) : null;
   function trajTxt(f) {   // F22: information only, never a score
     const t = f && f.trajectory; if (!t) return '';

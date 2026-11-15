@@ -43,6 +43,7 @@ def test_f21_drop_matches_ui_strings():
     assert "drop_matches" in leg and "MC = {green" in leg and "matches," in leg or "detected: D, matches" in leg
     alt = (ROOT / "static" / "js" / "alt-plans.js").read_text()
     assert "Drops matched" in alt and "drops_total" in alt
+    assert "amv-matchlines" in leg and "MATCHLINES_DEFAULT = false" in leg and "mlOn()" in alt
     assert 'id="as-drops"' in (ROOT / "static" / "index.html").read_text()
 
 
