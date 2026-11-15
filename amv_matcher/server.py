@@ -187,6 +187,7 @@ def _video_info(video: dict) -> dict:
     info["has_audio"] = bool(video.get("has_audio"))
     info["original_audio"] = video.get("original_audio")
     info["preview_proxy"] = bool(video.get("preview_proxy"))
+    info["preview_quality"] = proxy.get_quality()
     info["cut_count"] = len(video["cut_times"])
     info["peak_count"] = len(video["motion_peaks"])
     # F7 markers (additive; cached video entries carry them from the same analysis pass as camera_motion)
@@ -532,15 +533,75 @@ def _needs_proxy(vp: Path) -> bool:
 
 
 @app.get("/api/video")
-def video_file(path: str):
+def video_file(path: str, original: int = 0, pq: Optional[str] = None):
     vp = _safe_video(path)
-    if _needs_proxy(vp):   # browser can't decode this one: serve the cached 540p H.264 proxy
+    q = proxy.parse_pq(pq)
+    if q == 0 and not _needs_proxy(vp):   # "Original if playable"
+        return FileResponse(vp)
+    h = proxy.target_height(q)
+    if original:           # client verified WebView2 plays the original (Windows, quality "Original")
+        return FileResponse(vp)
+    if _needs_proxy(vp):   # browser can't decode this one: serve the cached H.264 proxy
         try:
+            ready = proxy.best_ready(vp, h)   # full quality if built, else the quick low-res one
+            if ready is not None:
+                return FileResponse(ready)
             wp = _wp()
-            return FileResponse(Path(_wait("proxy", vp, 0)["proxy"]) if wp else proxy.build(vp))
+            if wp is not None and h == proxy.target_height():
+                return FileResponse(Path(_wait("proxy", vp, 0)["proxy"]))
+            return FileResponse(proxy.build(vp, h))
         except Exception:
             pass           # last resort: the original (the UI shows its "can't preview" message)
     return FileResponse(vp)  # Starlette FileResponse honours Range -> 206
+
+
+class PreviewQuality(BaseModel):
+    quality: int
+
+
+@app.get("/api/preview-status")
+def preview_status(path: str, pq: Optional[str] = None):
+    """{state: none|building|ready, height: int being served, playable: bool}. Kicks the build off."""
+    vp = _safe_video(path)
+    q = proxy.parse_pq(pq)
+    h = proxy.target_height(q)
+    if not _needs_proxy(vp):
+        return {"state": "none", "height": 0, "playable": True}
+    st = proxy.status(vp, h)
+    if st == "failed":
+        return {"state": "none", "height": 0, "playable": False}
+    if st == "ready":
+        return {"state": "ready", "height": h, "playable": True}
+    if h == proxy.target_height():
+        _proxy_bg(vp)
+    else:
+        proxy.build_async(vp, _PROXY_POOL, h)
+    ready = proxy.best_ready(vp, h)
+    sh = 0
+    if ready is not None:
+        sh = proxy.QUICK_H
+    return {"state": "building", "height": sh, "playable": True,
+            "progress": proxy.progress(vp, h)}
+
+
+@app.get("/api/preview-quality")
+def preview_quality_get(path: str = ""):
+    out = {"quality": proxy.get_quality(), "options": list(proxy.QUALITIES),
+           "note": "Preview only. Export and scoring always use the original file."}
+    if path:
+        vp = _safe_video(path)
+        out.update(status=proxy.status(vp), progress=proxy.progress(vp), codec=proxy.video_codec(vp),
+                   needs_proxy=_needs_proxy(vp), original_url="/api/video?path=" + urllib.parse.quote(path, safe="") + "&original=1")
+    return out
+
+
+@app.post("/api/preview-quality", dependencies=[Depends(_origin_guard)])
+def preview_quality_set(req: PreviewQuality):
+    try:
+        q = proxy.set_quality(req.quality)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"quality": q}
 
 
 # ---- worker-pool job API (non-blocking; the UI polls /api/jobs?since=)
