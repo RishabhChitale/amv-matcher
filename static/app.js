@@ -144,7 +144,7 @@ function poll(id) {
 function loadVideo(j) {
   S.linked = true; S.video = j.video; S.videoPath = j.video_path; S.dur = j.video.duration; S.fps = j.video.fps || 30;
   $('empty').classList.add('hidden'); $('vid-msg').classList.add('hidden');
-  vid.src = '/api/video?path=' + encodeURIComponent(j.video_path);
+  vid.src = '/api/video?path=' + encodeURIComponent(j.video_path) + '&pq=' + (window.MKPQ ? MKPQ() : (function () { try { return localStorage.getItem('amv-preview-quality') || '1080'; } catch (e) { return '1080'; } })());
   $('vinfo').textContent = `${fmtMS(S.dur)} | ${j.video.motion_tempo_bpm.toFixed(0)} BPM motion`;
   $('vc-dur').textContent = fmtMS(S.dur) + ' (' + S.dur.toFixed(1) + 's)'; $('vc-bpm').textContent = j.video.motion_tempo_bpm.toFixed(1) + ' BPM';
   $('vc-cuts').textContent = j.video.cut_count ?? (j.video.cut_times || []).length;

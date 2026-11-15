@@ -90,7 +90,7 @@ async function doVideo(file) {
         applyVideo(j); S.video = j.video; S.videoPath = j.video_path;
         note('Video analyzed. Add songs to score them.');
       } catch (e) {
-        vid.src = '/api/video?path=' + encodeURIComponent(path);
+        vid.src = '/api/video?path=' + encodeURIComponent(path) + '&pq=' + (window.MKPQ ? MKPQ() : (function () { try { return localStorage.getItem('amv-preview-quality') || '1080'; } catch (e) { return '1080'; } })());
         note(e.message + ' (video loaded without analysis)', true);
       }
     }

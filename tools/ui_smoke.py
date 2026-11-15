@@ -1166,6 +1166,10 @@ def main():
                     check("F25: Preview quality select visible and topmost at %dx%d" % (fw, fh), not r.get("missing") and not r.get("bad"), str(r))
                     pq = c.ev("(()=>{const o=[...document.querySelectorAll('#pq-sel option')].map(x=>x.value),b=document.getElementById('pq-box');return {o:o.join(','),tip:b?b.title:'',sel:document.getElementById('pq-sel').value}})()") or {}
                     check("F25: options 720/1080/1440/Original, default 1080, preview-only tooltip at %dx%d" % (fw, fh), pq.get("o") == "720,1080,1440,0" and pq.get("sel") == "1080" and "Preview only" in pq.get("tip", ""), str(pq))
+                    dec = c.ev("(()=>{const d=MKPreviewQuality.decide,u='/api/video?path=x&pq=1080';return [d(u,u,480,1080),d(u,u,1080,1080),d(u,u,0,1080),d('/api/video?path=x',u,1080,1080),d(u+'&r=1',u,1080,1080),d(u,u,480,0)].join(',')})()")
+                    check("F25: quick proxy already built at load -> reloads to target height (480p<1080p), keeps when at height", dec == "reload,keep,wait,reload,keep,keep", str(dec))
+                    srcq = c.ev("(()=>{const v=document.getElementById('vid'),s=v.getAttribute('src')||'';return s?(s.indexOf('&pq=')>0):true})()")
+                    check("F25: video src carries an explicit pq", srcq is True, str(srcq))
                 c.call("Emulation.setDeviceMetricsOverride", width=1440, height=900, deviceScaleFactor=1, mobile=False); c.pump(0.5)
                 okt = real_click("#as-traj-on"); c.pump(0.5)
                 check("F22: real click on the toggle hides the curves", okt and c.ev("MKLegend.detected.tj.pts===0&&MKLegend.detected.tj.ramps===0") is True)
@@ -1187,9 +1191,11 @@ def main():
             c.ev("window.dispatchEvent(new Event('resize'))"); c.pump(0.5)
             # ---- F6d bookmarks: visible controls, real pointer/keyboard events, markers drawn, drag, B key, delete, export round trip
             if c.ev("!!window.BM && !!S.dur"):
-                for (fw, fh) in ((1280, 720), (1920, 1080)):
+                for (fw, fh) in ((1280, 720), (1440, 900), (1920, 1080)):
                     c.call("Emulation.setDeviceMetricsOverride", width=fw, height=fh, deviceScaleFactor=1, mobile=False)
                     c.ev("window.dispatchEvent(new Event('resize'))"); c.pump(0.6)
+                    ov = c.ev("(()=>{const bar=document.getElementById('bm-bar');if(!bar)return ['no bar'];const els=[...bar.children,...bar.querySelectorAll('.bm-type')].filter(e=>e.id!=='bm-types'&&e.id!=='bm-legend'&&e.id!=='bm-file'&&e.offsetParent&&e.getBoundingClientRect().width>0);const bad=[];for(let i=0;i<els.length;i++)for(let j=i+1;j<els.length;j++){if(els[i].contains(els[j])||els[j].contains(els[i]))continue;const a=els[i].getBoundingClientRect(),b=els[j].getBoundingClientRect();if(a.left<b.right-.5&&b.left<a.right-.5&&a.top<b.bottom-.5&&b.top<a.bottom-.5)bad.push((els[i].id||els[i].textContent.trim())+' x '+(els[j].id||els[j].textContent.trim()));}const br=bar.getBoundingClientRect();els.forEach(e=>{const r=e.getBoundingClientRect();if(r.right>br.right+1||r.left<br.left-1)bad.push((e.id||e.textContent.trim())+' outside bar')});return bad})()") or []
+                    check("bookmarks: no bar controls overlap each other or spill out at %dx%d" % (fw, fh), ov == [], str(ov))
                     for hs in ("#bm-mark", "#bm-perfect", "#bm-export", "#bm-import", "#bm-snap", "#bm-types .bm-type"):
                         r = c.ev("(%s)(%s)" % (HIT, json.dumps(hs))) or {}
                         check("bookmarks: %s visible and topmost at %dx%d" % (hs, fw, fh), not r.get("missing") and not r.get("bad"), str(r))
