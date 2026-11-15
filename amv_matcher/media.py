@@ -25,12 +25,33 @@ COPYABLE_VIDEO = {"h264", "hevc", "mpeg4", "av1", "vp9"}   # codecs we remux int
 # ---------------------------------------------------------------- extraction
 def _extract_key(path: Path) -> str:
     st = path.stat()
-    return hashlib.sha256(f"{winsafe.norm_case_path(path.resolve())}|{int(st.st_mtime)}|{st.st_size}".encode()).hexdigest()[:12]
+    # "|a2" (F24): the wav is aligned to the video's first frame; re-extract wavs written before that
+    return hashlib.sha256(f"{winsafe.norm_case_path(path.resolve())}|{int(st.st_mtime)}|{st.st_size}|a2".encode()).hexdigest()[:12]
 
 
 def has_audio_stream(video_path) -> bool:
     with av.open(str(video_path)) as c:
         return len(c.streams.audio) > 0
+
+
+def _video_start(c) -> float:
+    """Start of the picture on the container clock (the analysis' t = 0): first video stream's start_time, else 0."""
+    for vs in c.streams.video:
+        if vs.start_time is not None and vs.time_base is not None:
+            return float(vs.start_time * vs.time_base)
+    return 0.0
+
+
+def _align_to_video(data: np.ndarray, lag_s: float) -> np.ndarray:
+    """F24: put audio sample 0 at the video's first frame. A stream that starts lag_s after the picture (edit list,
+    late audio, muxer delay) gets lag_s of leading silence; one that starts before it loses the part before the
+    picture. Without this every own-audio score of such a file is shifted by lag_s."""
+    n = int(round(lag_s * SR))
+    if n > 0:
+        return np.concatenate([np.zeros((n, data.shape[1]), data.dtype), data])
+    if n < 0:
+        return data[-n:]
+    return data
 
 
 def extract_audio(video_path, out_dir: Path) -> Optional[Path]:
@@ -40,9 +61,11 @@ def extract_audio(video_path, out_dir: Path) -> Optional[Path]:
     if out.is_file() and out.stat().st_size > 44:
         return out
     chunks = []
+    first_t = None              # time of the first decoded audio sample (stream clock, seconds)
     with av.open(str(vp)) as c:
         if not c.streams.audio:
             return None
+        v0 = _video_start(c)
         rs = av.AudioResampler(format="s16", layout="stereo", rate=SR)
         # packet by packet so one undecodable packet (seen in real files) does not cost the track.
         # The bad packet is replaced by silence of its duration so later samples keep their timestamps.
@@ -60,6 +83,8 @@ def extract_audio(video_path, out_dir: Path) -> Optional[Path]:
                     chunks.append(np.zeros((1, n * 2), np.int16))
                 continue
             for frame in frames:
+                if first_t is None and frame.pts is not None and frame.time_base is not None:
+                    first_t = float(frame.pts * frame.time_base)
                 for f in rs.resample(frame):
                     chunks.append(f.to_ndarray())
         for f in rs.resample(None):
@@ -68,6 +93,7 @@ def extract_audio(video_path, out_dir: Path) -> Optional[Path]:
         return None
     # packed s16 stereo -> shape (1, n*2); interleaved L R
     data = np.concatenate([a.reshape(-1) for a in chunks]).reshape(-1, 2)
+    data = _align_to_video(data, (first_t if first_t is not None else v0) - v0)
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(".tmp.wav")
     sf.write(str(tmp), data, SR, subtype="PCM_16")

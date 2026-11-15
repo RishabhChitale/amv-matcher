@@ -33,7 +33,7 @@ from . import paths as _paths
 CACHE_PATH = _paths.CACHE / "songs.json"
 WF_DIR = CACHE_PATH.parent / "wf"
 WF_POINTS = 4000
-CACHE_VERSION = "v9"   # v9: half-beat phase check against the kick band (F20)
+CACHE_VERSION = "v10"  # v9: half-beat phase check against the kick band (F20); v10: beats-only flip (F24)
 GRID_MAX_FIT_MS = 70.0     # use the constant-tempo grid when the robust beat residual is below this
 GRID_MAX_DRIFT_MS = 100.0   # ...and no 16-beat window drifts further than this from the line
 GRID_MIN_BEATS = 8
@@ -193,10 +193,12 @@ def half_beat_fix(grid: dict, beat_times, kenv, fps):
     dur = (len(e) - 1) / fps
     per = float(grid.get("grid_period") or 0.0)
     has_grid = bool(grid.get("beat_grid")) and per > 0
-    want_g = want_b = False
+    want_g = want_b = grid_on_kick = False
     if has_grid:
         ph = float(grid["grid_t0"])
-        want_g = _comb(e, fps, per, (ph + per / 2) % per) > HALF_FLIP_RATIO * _comb(e, fps, per, ph)
+        c_on, c_and = _comb(e, fps, per, ph), _comb(e, fps, per, (ph + per / 2) % per)
+        want_g = c_and > HALF_FLIP_RATIO * c_on
+        grid_on_kick = c_on > HALF_FLIP_RATIO * c_and
     if len(bt) >= GRID_MIN_BEATS:
         mid = (bt[:-1] + bt[1:]) / 2
         want_b = np.interp(mid, t, e).mean() > HALF_FLIP_RATIO * np.interp(bt, t, e).mean()
@@ -212,7 +214,21 @@ def half_beat_fix(grid: dict, beat_times, kenv, fps):
         pre = [bt[0] - d0 / 2] if bt[0] - d0 / 2 >= 0 else []
         post = [bt[-1] + d1 / 2] if bt[-1] + d1 / 2 < dur else []
         bt = np.concatenate([pre, mid, post])
-    if fg:      # the residual of the (moved) tracker beats against the (moved) grid
+    if has_grid and not (fg or fb) and grid_on_kick and len(bt) >= 2:
+        # F24: the grid comb sits clearly on the kicks but the tracker is not on the grid: it locked onto the "and"
+        # for part of the song (house hats), so grid_fit_ms reads ~half a beat, grid_used goes False and every
+        # consumer falls back to those off-beat beats. Move each tracker beat that sits on the grid's "and" half a
+        # beat back onto the kick (keeping its own jitter); keep it only if the beats then fit the grid.
+        g = np.asarray(grid["beat_grid"], dtype=float)
+        res = lambda b: 1000.0 * 1.4826 * float(np.median(np.abs(b[:, None] - g[None, :]).min(axis=1)))
+        if res(bt) > GRID_MAX_FIT_MS:
+            u = ((bt - float(grid["grid_t0"])) / per) % 1.0
+            nb = np.sort(np.where(np.abs(u - 0.5) < 0.25, bt - per / 2, bt))
+            nb = nb[nb >= 0]
+            nb = nb[np.concatenate([[True], np.diff(nb) > per / 4])] if len(nb) else nb
+            if len(nb) >= 2 and res(nb) <= GRID_MAX_FIT_MS:
+                bt, fb = nb, True
+    if fg or fb:  # the residual of the (moved) tracker beats against the (moved) grid
         g = np.asarray(grid["beat_grid"])
         near = np.abs(bt[:, None] - g[None, :]).min(axis=1)
         fit_ms = 1000.0 * 1.4826 * float(np.median(near))
