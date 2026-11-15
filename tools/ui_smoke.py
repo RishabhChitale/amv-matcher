@@ -1162,6 +1162,10 @@ def main():
                     check("F22: stats line shown on the card at %dx%d" % (fw, fh), st.get("shown") and st.get("txt", "").startswith("Intensity:"), str(st))
                     r = c.ev("(%s)(%s)" % (HIT, json.dumps("#as-traj-on"))) or {}
                     check("F22: toggle visible and topmost at %dx%d" % (fw, fh), not r.get("missing") and not r.get("bad"), str(r))
+                    r = c.ev("(%s)(%s)" % (HIT, json.dumps("#pq-sel"))) or {}
+                    check("F25: Preview quality select visible and topmost at %dx%d" % (fw, fh), not r.get("missing") and not r.get("bad"), str(r))
+                    pq = c.ev("(()=>{const o=[...document.querySelectorAll('#pq-sel option')].map(x=>x.value),b=document.getElementById('pq-box');return {o:o.join(','),tip:b?b.title:'',sel:document.getElementById('pq-sel').value}})()") or {}
+                    check("F25: options 720/1080/1440/Original, default 1080, preview-only tooltip at %dx%d" % (fw, fh), pq.get("o") == "720,1080,1440,0" and pq.get("sel") == "1080" and "Preview only" in pq.get("tip", ""), str(pq))
                 c.call("Emulation.setDeviceMetricsOverride", width=1440, height=900, deviceScaleFactor=1, mobile=False); c.pump(0.5)
                 okt = real_click("#as-traj-on"); c.pump(0.5)
                 check("F22: real click on the toggle hides the curves", okt and c.ev("MKLegend.detected.tj.pts===0&&MKLegend.detected.tj.ramps===0") is True)

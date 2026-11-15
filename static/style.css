@@ -290,3 +290,5 @@ body.dragging #fit,body.dragging .ovwrap{opacity:.5;transition:opacity var(--eas
 .as-alts .alt-use,.as-alts .alt-badge{grid-column:2;grid-row:1 / span 2;white-space:nowrap;font-size:12px}
 
 .as-alts .alt-err{grid-column:1 / span 2;font-size:12px;color:#e8a33d;overflow-wrap:anywhere}
+
+.vc-pq select{font-size:12px;max-width:150px}.pq-row{flex-direction:row!important;align-items:center;gap:8px}.pq-status{font-style:normal;font-size:11px;color:var(--mut);white-space:nowrap}.pq-status::before{content:"";display:inline-block;width:8px;height:8px;margin-right:5px;border-radius:50%;border:2px solid var(--mut);border-top-color:transparent;animation:pqspin 1s linear infinite;vertical-align:-1px}@keyframes pqspin{to{transform:rotate(360deg)}}
