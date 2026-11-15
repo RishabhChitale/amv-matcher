@@ -532,8 +532,27 @@ def _needs_proxy(vp: Path) -> bool:
     return _NEEDS_PROXY[k]
 
 
+def _serve_preview(request: Request, f: Path, served_h: int, target_h: int) -> FileResponse:
+    """FileResponse + headers telling the client which height it got vs asked for. A Range that starts
+    past the end of THIS file (the browser cached the length of a different proxy: quick vs full) is
+    answered with the whole file (200) instead of 416; the video element just restarts from there."""
+    rng = request.headers.get("range", "")
+    if rng.startswith("bytes="):
+        try:
+            start = rng[6:].split("-", 1)[0].strip()
+            if start and int(start) >= f.stat().st_size:
+                request.scope["headers"] = [(k, v) for k, v in request.scope["headers"] if k != b"range"]
+        except (ValueError, OSError):
+            request.scope["headers"] = [(k, v) for k, v in request.scope["headers"] if k != b"range"]
+    hdr = {"X-Preview-Height": str(served_h), "X-Preview-Target": str(target_h),
+           "Access-Control-Expose-Headers": "X-Preview-Height, X-Preview-Target"}
+    if served_h < target_h:
+        hdr["Cache-Control"] = "no-store"     # a lower-res stand-in: never let the browser reuse it
+    return FileResponse(f, headers=hdr)
+
+
 @app.get("/api/video")
-def video_file(path: str, original: int = 0, pq: Optional[str] = None):
+def video_file(request: Request, path: str, original: int = 0, pq: Optional[str] = None):
     vp = _safe_video(path)
     q = proxy.parse_pq(pq)
     if q == 0 and not _needs_proxy(vp):   # "Original if playable"
@@ -543,13 +562,20 @@ def video_file(path: str, original: int = 0, pq: Optional[str] = None):
         return FileResponse(vp)
     if _needs_proxy(vp):   # browser can't decode this one: serve the cached H.264 proxy
         try:
-            ready = proxy.best_ready(vp, h)   # full quality if built, else the quick low-res one
-            if ready is not None:
-                return FileResponse(ready)
+            full = proxy.proxy_path(vp, h)
+            if full.is_file():
+                return _serve_preview(request, full, h, h)
+            quick = proxy.quick_path(vp)
+            if quick.is_file():   # stand-in at QUICK_H; make sure the full build is running
+                if h == proxy.target_height():
+                    _proxy_bg(vp)
+                else:
+                    proxy.build_async(vp, _PROXY_POOL, h)
+                return _serve_preview(request, quick, proxy.QUICK_H, h)
             wp = _wp()
             if wp is not None and h == proxy.target_height():
-                return FileResponse(Path(_wait("proxy", vp, 0)["proxy"]))
-            return FileResponse(proxy.build(vp, h))
+                return _serve_preview(request, Path(_wait("proxy", vp, 0)["proxy"]), h, h)
+            return _serve_preview(request, proxy.build(vp, h), h, h)
         except Exception:
             pass           # last resort: the original (the UI shows its "can't preview" message)
     return FileResponse(vp)  # Starlette FileResponse honours Range -> 206
@@ -571,7 +597,7 @@ def preview_status(path: str, pq: Optional[str] = None):
     if st == "failed":
         return {"state": "none", "height": 0, "playable": False}
     if st == "ready":
-        return {"state": "ready", "height": h, "playable": True}
+        return {"state": "ready", "height": h, "target": h, "playable": True}
     if h == proxy.target_height():
         _proxy_bg(vp)
     else:
@@ -580,7 +606,7 @@ def preview_status(path: str, pq: Optional[str] = None):
     sh = 0
     if ready is not None:
         sh = proxy.QUICK_H
-    return {"state": "building", "height": sh, "playable": True,
+    return {"state": "building", "height": sh, "target": h, "playable": True,
             "progress": proxy.progress(vp, h)}
 
 
